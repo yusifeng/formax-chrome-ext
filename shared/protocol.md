@@ -122,6 +122,7 @@ Selected CDP page/runtime event example:
 ```json
 {
   "sessionId": "uuid",
+  "name": "Checkout task",
   "groupId": 123,
   "activeTabId": 456,
   "tabIds": [456],
@@ -278,12 +279,66 @@ Params:
 ```json
 {
   "sessionId": "optional stable id",
+  "name": "optional session name",
   "active": true,
   "initialUrl": "about:blank"
 }
 ```
 
 Result payload: `BrowserSession`
+
+### waitForEvent
+
+Params:
+
+```json
+{
+  "sessionId": "optional uuid",
+  "tabId": 456,
+  "name": "cdpEvent",
+  "sinceSequence": 42,
+  "timeoutMs": 15000,
+  "pollMs": 100
+}
+```
+
+Waits for a buffered extension event matching the optional filters.
+
+Result payload:
+
+```json
+{
+  "matched": true,
+  "timedOut": false,
+  "elapsedMs": 321,
+  "event": {
+    "type": "event",
+    "name": "cdpEvent",
+    "sequence": 45
+  }
+}
+```
+
+### nameSession
+
+Params:
+
+```json
+{
+  "sessionId": "existing session id",
+  "name": "Checkout task"
+}
+```
+
+Updates the in-memory session name and best-effort Chrome tab group title.
+
+Result payload:
+
+```json
+{
+  "session": {}
+}
+```
 
 ### claimTab
 
@@ -328,7 +383,9 @@ Result payload:
     "title": "Example",
     "url": "https://example.com/",
     "active": true,
-    "groupId": 123
+    "groupId": 123,
+    "sessionId": "uuid",
+    "controlled": true
   }
 }
 
@@ -359,8 +416,65 @@ Result payload:
     "title": "Example",
     "url": "https://example.com/",
     "active": true,
-    "groupId": 123
+    "groupId": 123,
+    "sessionId": "uuid",
+    "controlled": true
   }
+}
+```
+
+### listTabs
+
+Params:
+
+```json
+{
+  "sessionId": "optional session id",
+  "controlledOnly": true,
+  "currentWindow": true
+}
+```
+
+Returns Chrome tab summaries. Each summary includes whether the tab is currently
+controlled by an agent session.
+
+Result payload:
+
+```json
+{
+  "tabs": [
+    {
+      "id": 456,
+      "windowId": 1,
+      "title": "Example",
+      "url": "https://example.com",
+      "active": true,
+      "groupId": 123,
+      "sessionId": "uuid",
+      "controlled": true
+    }
+  ]
+}
+```
+
+### getTab
+
+Params:
+
+```json
+{
+  "sessionId": "optional session id",
+  "tabId": 456
+}
+```
+
+If `tabId` is omitted, the active tab in `sessionId` is returned.
+
+Result payload:
+
+```json
+{
+  "tab": {}
 }
 ```
 
@@ -588,6 +702,101 @@ By default, `observe` returns a lightweight DOM-derived summary. When
 `includeAccessibility` is true, the extension adds a truncated
 `accessibilityTree` from `Accessibility.getFullAXTree`. When `includeDomSnapshot`
 is true, it adds the raw `DOMSnapshot.captureSnapshot` payload.
+
+### locatorQuery
+
+Params:
+
+```json
+{
+  "sessionId": "uuid",
+  "tabId": 456,
+  "locator": {
+    "kind": "css",
+    "selector": "input[name=q]"
+  },
+  "kind": "isVisible",
+  "args": {},
+  "timeoutMs": 10000
+}
+```
+
+First-pass locator primitive for SDK facades. Currently only CSS locators in
+the top frame are supported. Supported query kinds are `count`,
+`allTextContents`, `textContent`, `innerText`, `getAttribute`, `isVisible`,
+`isEnabled`, and `boundingBox`.
+
+Result payload:
+
+```json
+{
+  "sessionId": "uuid",
+  "tabId": 456,
+  "kind": "isVisible",
+  "value": true,
+  "count": 1
+}
+```
+
+### locatorAction
+
+Params:
+
+```json
+{
+  "sessionId": "uuid",
+  "tabId": 456,
+  "locator": {
+    "kind": "css",
+    "selector": "input[name=q]"
+  },
+  "kind": "fill",
+  "args": {
+    "value": "hello"
+  },
+  "waitMs": 300
+}
+```
+
+First-pass CSS locator action primitive. Supported action kinds are `click`,
+`dblclick`, `fill`, `type`, `press`, `setChecked`, and `selectOption`. Actions
+resolve the CSS locator at action time instead of caching DOM nodes.
+
+Result payload: `BrowserObservation`
+
+### locatorWait
+
+Params:
+
+```json
+{
+  "sessionId": "uuid",
+  "tabId": 456,
+  "locator": {
+    "kind": "css",
+    "selector": "button[type=submit]"
+  },
+  "state": "visible",
+  "timeoutMs": 15000,
+  "pollMs": 100
+}
+```
+
+Supported states are `attached`, `visible`, `hidden`, and `detached`.
+
+Result payload:
+
+```json
+{
+  "sessionId": "uuid",
+  "tabId": 456,
+  "state": "visible",
+  "matched": true,
+  "timedOut": false,
+  "elapsedMs": 220,
+  "count": 1
+}
+```
 
 ### click
 
@@ -896,6 +1105,74 @@ Result payload:
   "tabId": 456,
   "method": "DOMSnapshot.captureSnapshot",
   "result": {}
+}
+```
+
+### getDevLogs
+
+Params:
+
+```json
+{
+  "sessionId": "optional uuid",
+  "tabId": 456,
+  "level": "error",
+  "sinceSequence": 42,
+  "limit": 100
+}
+```
+
+Returns console, log, and runtime exception entries derived from buffered CDP
+events. The extension currently buffers `Runtime.consoleAPICalled`,
+`Runtime.exceptionThrown`, and `Log.entryAdded` while the debugger is attached.
+
+Result payload:
+
+```json
+{
+  "logs": [
+    {
+      "sequence": 45,
+      "time": 1760000000000,
+      "sessionId": "uuid",
+      "tabId": 456,
+      "source": "console",
+      "level": "error",
+      "text": "Example error"
+    }
+  ]
+}
+```
+
+### getCapabilities
+
+Params:
+
+```json
+{
+  "scope": "browser",
+  "sessionId": "optional uuid",
+  "tabId": 456
+}
+```
+
+Returns a first-pass capability registry for the current backend. This is not a
+complete permission model yet; it gives the SDK enough information to expose
+basic browser/tab capability listings and mark planned capabilities as
+unavailable.
+
+Result payload:
+
+```json
+{
+  "capabilities": [
+    {
+      "id": "browser.tabs",
+      "scope": "browser",
+      "description": "List, create, select, and finalize controlled tabs.",
+      "available": true
+    }
+  ]
 }
 ```
 

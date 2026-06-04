@@ -78,9 +78,23 @@ class DebuggerManager {
         }
         catch (error) {
             if (error instanceof CdpCommandTimeoutError) {
-                this.attachedTabs.delete(tabId);
+                await this.forceDetachTab(tabId);
             }
             throw error;
+        }
+    }
+    async forceDetachTab(tabId) {
+        try {
+            await chrome.debugger.detach({ tabId });
+        }
+        catch {
+            // A timed-out CDP command can leave Chrome and our local bookkeeping out of
+            // sync. Detach is best-effort here; always clear local state so the next
+            // attach starts from a clean lock.
+        }
+        finally {
+            this.attachedTabs.delete(tabId);
+            this.attachLocks.delete(tabId);
         }
     }
     async attachTabUnlocked(tabId) {
@@ -89,6 +103,12 @@ class DebuggerManager {
             await this.sendEnabledCommand(tabId, "Page.enable");
             await this.sendEnabledCommand(tabId, "Runtime.enable");
             await this.sendEnabledCommand(tabId, "DOM.enable");
+            try {
+                await this.sendEnabledCommand(tabId, "Log.enable");
+            }
+            catch {
+                // Log domain is useful for dev logs but should not block control.
+            }
             this.attachedTabs.add(tabId);
         }
         catch (error) {

@@ -2,7 +2,9 @@ export type BrowserAction =
   | "health"
   | "getEvents"
   | "clearEvents"
+  | "waitForEvent"
   | "startSession"
+  | "nameSession"
   | "claimTab"
   | "createTab"
   | "switchTab"
@@ -15,6 +17,9 @@ export type BrowserAction =
   | "waitForSelector"
   | "waitForText"
   | "observe"
+  | "locatorQuery"
+  | "locatorAction"
+  | "locatorWait"
   | "click"
   | "moveMouse"
   | "scroll"
@@ -26,8 +31,11 @@ export type BrowserAction =
   | "uploadFile"
   | "cdp"
   | "listTabs"
+  | "getTab"
   | "listDownloads"
   | "waitForDownload"
+  | "getDevLogs"
+  | "getCapabilities"
   | "closeTab"
   | "finalizeSession"
   | "stopSession";
@@ -77,6 +85,7 @@ export type NativeEvent = {
 
 export type BrowserSession = {
   sessionId: string;
+  name?: string;
   groupId: number;
   activeTabId: number | null;
   tabIds: number[];
@@ -165,6 +174,7 @@ export type HealthResult = {
   lastNativeError: string | null;
   sessions: BrowserSession[];
   attachedTabs: number[];
+  supportedActions?: BrowserAction[];
 };
 
 export type BrowserEvent = NativeEvent & {
@@ -194,10 +204,32 @@ export type ClearEventsResult = {
   cleared: number;
 };
 
+export type WaitForEventParams = GetEventsParams & {
+  timeoutMs?: number;
+  pollMs?: number;
+};
+
+export type WaitForEventResult = {
+  matched: boolean;
+  timedOut: boolean;
+  elapsedMs: number;
+  event: BrowserEvent | null;
+};
+
 export type StartSessionParams = {
   sessionId?: string;
+  name?: string;
   active?: boolean;
   initialUrl?: string;
+};
+
+export type NameSessionParams = {
+  sessionId: string;
+  name: string;
+};
+
+export type NameSessionResult = {
+  session: BrowserSession;
 };
 
 export type OpenUrlParams = {
@@ -249,6 +281,25 @@ export type SwitchTabParams = {
 
 export type SwitchTabResult = {
   session: BrowserSession | null;
+  tab: BrowserTabSummary;
+};
+
+export type ListTabsParams = {
+  sessionId?: string;
+  controlledOnly?: boolean;
+  currentWindow?: boolean;
+};
+
+export type ListTabsResult = {
+  tabs: BrowserTabSummary[];
+};
+
+export type GetTabParams = {
+  sessionId?: string;
+  tabId?: number;
+};
+
+export type GetTabResult = {
   tab: BrowserTabSummary;
 };
 
@@ -336,6 +387,76 @@ export type ObserveParams = {
   includeAccessibility?: boolean;
   maxAccessibilityNodes?: number;
   includeDomSnapshot?: boolean;
+};
+
+export type LocatorPlan = {
+  kind: "css";
+  selector: string;
+};
+
+export type LocatorQueryKind =
+  | "count"
+  | "allTextContents"
+  | "textContent"
+  | "innerText"
+  | "getAttribute"
+  | "isVisible"
+  | "isEnabled"
+  | "boundingBox";
+
+export type LocatorQueryParams = {
+  sessionId?: string;
+  tabId?: number;
+  locator: LocatorPlan;
+  kind: LocatorQueryKind;
+  args?: JsonObject;
+  timeoutMs?: number;
+};
+
+export type LocatorQueryResult = {
+  sessionId: string | null;
+  tabId: number;
+  kind: LocatorQueryKind;
+  value: unknown;
+  count: number;
+};
+
+export type LocatorActionKind =
+  | "click"
+  | "dblclick"
+  | "fill"
+  | "type"
+  | "press"
+  | "setChecked"
+  | "selectOption";
+
+export type LocatorActionParams = {
+  sessionId?: string;
+  tabId?: number;
+  locator: LocatorPlan;
+  kind: LocatorActionKind;
+  args?: JsonObject;
+  timeoutMs?: number;
+  waitMs?: number;
+};
+
+export type LocatorWaitParams = {
+  sessionId?: string;
+  tabId?: number;
+  locator: LocatorPlan;
+  state?: "attached" | "visible" | "hidden" | "detached";
+  timeoutMs?: number;
+  pollMs?: number;
+};
+
+export type LocatorWaitResult = {
+  sessionId: string | null;
+  tabId: number;
+  state: "attached" | "visible" | "hidden" | "detached";
+  matched: boolean;
+  timedOut: boolean;
+  elapsedMs: number;
+  count: number;
 };
 
 export type ClickParams = {
@@ -457,6 +578,53 @@ export type CdpResult = {
   result: unknown;
 };
 
+export type DevLogLevel = "log" | "debug" | "info" | "warning" | "error";
+
+export type DevLogEntry = {
+  sequence: number;
+  time: number;
+  sessionId: string | null;
+  tabId: number | null;
+  source: "console" | "log" | "exception";
+  level?: DevLogLevel | string;
+  text?: string;
+  url?: string;
+  lineNumber?: number;
+  columnNumber?: number;
+};
+
+export type GetDevLogsParams = {
+  sessionId?: string;
+  tabId?: number;
+  level?: DevLogLevel | string;
+  sinceSequence?: number;
+  limit?: number;
+};
+
+export type GetDevLogsResult = {
+  logs: DevLogEntry[];
+};
+
+export type BrowserCapabilityScope = "browser" | "tab";
+
+export type BrowserCapability = {
+  id: string;
+  scope: BrowserCapabilityScope;
+  description: string;
+  available: boolean;
+  reason?: string;
+};
+
+export type GetCapabilitiesParams = {
+  scope?: BrowserCapabilityScope;
+  sessionId?: string;
+  tabId?: number;
+};
+
+export type GetCapabilitiesResult = {
+  capabilities: BrowserCapability[];
+};
+
 export type CloseTabParams = {
   sessionId?: string;
   tabId?: number;
@@ -502,6 +670,8 @@ export type BrowserTabSummary = {
   url?: string;
   active: boolean;
   groupId: number;
+  sessionId?: string | null;
+  controlled: boolean;
 };
 
 export type BrowserDownloadState = "in_progress" | "interrupted" | "complete";
@@ -553,10 +723,14 @@ export type BrowserActionParams =
   | JsonObject
   | GetEventsParams
   | ClearEventsParams
+  | WaitForEventParams
   | StartSessionParams
+  | NameSessionParams
   | ClaimTabParams
   | CreateTabParams
   | SwitchTabParams
+  | ListTabsParams
+  | GetTabParams
   | OpenUrlParams
   | NavigationParams
   | ReloadParams
@@ -565,6 +739,9 @@ export type BrowserActionParams =
   | WaitForSelectorParams
   | WaitForTextParams
   | ObserveParams
+  | LocatorQueryParams
+  | LocatorActionParams
+  | LocatorWaitParams
   | ClickParams
   | MoveMouseParams
   | ScrollParams
@@ -575,6 +752,8 @@ export type BrowserActionParams =
   | ScreenshotParams
   | UploadFileParams
   | CdpParams
+  | GetDevLogsParams
+  | GetCapabilitiesParams
   | ListDownloadsParams
   | WaitForDownloadParams
   | CloseTabParams

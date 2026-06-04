@@ -8,7 +8,13 @@
     "build:runtime": "tsc -p tsconfig.build.json",
     "build:extension": "tsc -p tsconfig.extension.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.extension.json --noEmit",
+    "chat:llm": "node test-scripts/llm-browser-chat.js",
+    "chat:node-repl": "node test-scripts/llm-node-repl-chat.js",
+    "mcp:node-repl": "node mcp-node-repl/server.js",
     "test": "vitest run",
+    "test:llm": "node test-scripts/llm-browser-agent.js",
+    "test:mcp-node-repl": "node test-scripts/mcp-node-repl-smoke.js",
+    "test:real": "node test-scripts/real-browser-e2e.js",
     "test:watch": "vitest"
   },
   "devDependencies": {
@@ -16,5 +22,9 @@
     "@types/node": "^24.0.0",
     "typescript": "^5.8.3",
     "vitest": "^3.2.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.4.3"
   }
 }

@@ -8,10 +8,16 @@ import type {
   EvaluateResult,
   FinalizeSessionParams,
   FinalizeSessionResult,
+  GetCapabilitiesParams,
+  GetCapabilitiesResult,
   ClearEventsParams,
   ClearEventsResult,
+  GetDevLogsParams,
+  GetDevLogsResult,
   GetEventsParams,
   GetEventsResult,
+  GetTabParams,
+  GetTabResult,
   HandleDialogParams,
   HandleDialogResult,
   BrowserKey,
@@ -26,10 +32,19 @@ import type {
   JsonObject,
   ListDownloadsParams,
   ListDownloadsResult,
+  ListTabsParams,
+  ListTabsResult,
+  LocatorActionParams,
+  LocatorQueryParams,
+  LocatorQueryResult,
+  LocatorWaitParams,
+  LocatorWaitResult,
   MoveMouseParams,
   MoveMouseResult,
   NavigationParams,
   NavigationResult,
+  NameSessionParams,
+  NameSessionResult,
   OpenUrlParams,
   ObserveParams,
   PressKeyParams,
@@ -46,6 +61,8 @@ import type {
   UploadFileParams,
   WaitForDownloadParams,
   WaitForDownloadResult,
+  WaitForEventParams,
+  WaitForEventResult,
   WaitForLoadStateParams,
   WaitForLoadStateResult,
   WaitForUrlParams,
@@ -106,8 +123,16 @@ export async function browserClearEvents(args: ClearEventsParams = {}) {
   return browserRpc<ClearEventsResult>("clearEvents", args as JsonObject);
 }
 
+export async function browserWaitForEvent(args: WaitForEventParams = {}) {
+  return browserRpc<WaitForEventResult>("waitForEvent", args as JsonObject);
+}
+
 export async function browserStartSession(args: StartSessionParams = {}) {
   return browserRpc<BrowserSession>("startSession", args as JsonObject);
+}
+
+export async function browserNameSession(args: NameSessionParams) {
+  return browserRpc<NameSessionResult>("nameSession", args as JsonObject);
 }
 
 export async function browserClaimTab(args: ClaimTabParams = {}) {
@@ -120,6 +145,14 @@ export async function browserCreateTab(args: CreateTabParams = {}) {
 
 export async function browserSwitchTab(args: SwitchTabParams) {
   return browserRpc<SwitchTabResult>("switchTab", args as JsonObject);
+}
+
+export async function browserListTabs(args: ListTabsParams = {}) {
+  return browserRpc<ListTabsResult>("listTabs", args as JsonObject);
+}
+
+export async function browserGetTab(args: GetTabParams = {}) {
+  return browserRpc<GetTabResult>("getTab", args as JsonObject);
 }
 
 export async function browserOpenUrl(args: OpenUrlParams) {
@@ -162,6 +195,18 @@ export async function browserWaitForText(args: WaitForTextParams) {
 
 export async function browserObserve(args: ObserveParams) {
   return browserRpc<BrowserObservation>("observe", args as JsonObject);
+}
+
+export async function browserLocatorQuery(args: LocatorQueryParams) {
+  return browserRpc<LocatorQueryResult>("locatorQuery", args as unknown as JsonObject);
+}
+
+export async function browserLocatorAction(args: LocatorActionParams) {
+  return browserRpc<BrowserObservation>("locatorAction", args as unknown as JsonObject);
+}
+
+export async function browserLocatorWait(args: LocatorWaitParams) {
+  return browserRpc<LocatorWaitResult>("locatorWait", args as unknown as JsonObject);
 }
 
 export async function browserClick(args: ClickParams) {
@@ -207,6 +252,14 @@ export async function browserCdp(args: CdpParams) {
   return browserRpc<CdpResult>("cdp", args as unknown as JsonObject);
 }
 
+export async function browserGetDevLogs(args: GetDevLogsParams = {}) {
+  return browserRpc<GetDevLogsResult>("getDevLogs", args as JsonObject);
+}
+
+export async function browserGetCapabilities(args: GetCapabilitiesParams = {}) {
+  return browserRpc<GetCapabilitiesResult>("getCapabilities", args as JsonObject);
+}
+
 export async function browserListDownloads(args: ListDownloadsParams = {}) {
   return browserRpc<ListDownloadsResult>("listDownloads", args as JsonObject);
 }
@@ -234,6 +287,15 @@ export async function browserStopSession(args: StopSessionParams) {
 }
 
 export const browserToolSchemas = [
+  {
+    name: "browser_health",
+    description: "Check whether the browser extension and native host are connected.",
+    parameters: {
+      type: "object",
+      properties: {},
+      additionalProperties: false
+    }
+  },
   {
     name: "browser_get_events",
     description: "Read recent buffered browser events such as navigation, dialogs, downloads, and debugger detach.",
@@ -264,14 +326,45 @@ export const browserToolSchemas = [
     }
   },
   {
+    name: "browser_wait_for_event",
+    description: "Wait for a buffered browser event such as navigation, dialog, download, or dev log.",
+    parameters: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string" },
+        tabId: { type: "number" },
+        name: { type: "string" },
+        sinceSequence: { type: "number" },
+        limit: { type: "number" },
+        timeoutMs: { type: "number" },
+        pollMs: { type: "number" }
+      },
+      additionalProperties: false
+    }
+  },
+  {
     name: "browser_start_session",
     description: "Start a Chrome browser control session.",
     parameters: {
       type: "object",
       properties: {
         active: { type: "boolean" },
-        initialUrl: { type: "string" }
+        initialUrl: { type: "string" },
+        name: { type: "string" }
       },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "browser_name_session",
+    description: "Name an active browser automation session and its Chrome tab group.",
+    parameters: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string" },
+        name: { type: "string" }
+      },
+      required: ["sessionId", "name"],
       additionalProperties: false
     }
   },
@@ -304,6 +397,31 @@ export const browserToolSchemas = [
   {
     name: "browser_switch_tab",
     description: "Make a controlled tab active inside its session.",
+    parameters: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string" },
+        tabId: { type: "number" }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "browser_list_tabs",
+    description: "List Chrome tabs, optionally filtered to controlled tabs or a browser session.",
+    parameters: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string" },
+        controlledOnly: { type: "boolean" },
+        currentWindow: { type: "boolean" }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "browser_get_tab",
+    description: "Get one Chrome tab summary by tabId or the active tab in a session.",
     parameters: {
       type: "object",
       properties: {
@@ -460,6 +578,106 @@ export const browserToolSchemas = [
         maxAccessibilityNodes: { type: "number" },
         includeDomSnapshot: { type: "boolean" }
       },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "browser_locator_query",
+    description: "Query a CSS locator in the controlled tab for count, visibility, text, attributes, or bounds.",
+    parameters: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string" },
+        tabId: { type: "number" },
+        locator: {
+          type: "object",
+          properties: {
+            kind: { type: "string", enum: ["css"] },
+            selector: { type: "string" }
+          },
+          required: ["kind", "selector"],
+          additionalProperties: false
+        },
+        kind: {
+          type: "string",
+          enum: [
+            "count",
+            "allTextContents",
+            "textContent",
+            "innerText",
+            "getAttribute",
+            "isVisible",
+            "isEnabled",
+            "boundingBox"
+          ]
+        },
+        args: {
+          type: "object",
+          additionalProperties: true
+        },
+        timeoutMs: { type: "number" }
+      },
+      required: ["locator", "kind"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "browser_locator_action",
+    description: "Perform a basic action on a CSS locator, resolving it at action time.",
+    parameters: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string" },
+        tabId: { type: "number" },
+        locator: {
+          type: "object",
+          properties: {
+            kind: { type: "string", enum: ["css"] },
+            selector: { type: "string" }
+          },
+          required: ["kind", "selector"],
+          additionalProperties: false
+        },
+        kind: {
+          type: "string",
+          enum: ["click", "dblclick", "fill", "type", "press", "setChecked", "selectOption"]
+        },
+        args: {
+          type: "object",
+          additionalProperties: true
+        },
+        timeoutMs: { type: "number" },
+        waitMs: { type: "number" }
+      },
+      required: ["locator", "kind"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "browser_locator_wait",
+    description: "Wait for a CSS locator to become attached, visible, hidden, or detached.",
+    parameters: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string" },
+        tabId: { type: "number" },
+        locator: {
+          type: "object",
+          properties: {
+            kind: { type: "string", enum: ["css"] },
+            selector: { type: "string" }
+          },
+          required: ["kind", "selector"],
+          additionalProperties: false
+        },
+        state: {
+          type: "string",
+          enum: ["attached", "visible", "hidden", "detached"]
+        },
+        timeoutMs: { type: "number" },
+        pollMs: { type: "number" }
+      },
+      required: ["locator"],
       additionalProperties: false
     }
   },
@@ -647,6 +865,37 @@ export const browserToolSchemas = [
     }
   },
   {
+    name: "browser_get_dev_logs",
+    description: "Read buffered console, log, and runtime exception entries for a tab.",
+    parameters: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string" },
+        tabId: { type: "number" },
+        level: { type: "string" },
+        sinceSequence: { type: "number" },
+        limit: { type: "number" }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "browser_get_capabilities",
+    description: "List browser or tab capabilities advertised by the current backend.",
+    parameters: {
+      type: "object",
+      properties: {
+        scope: {
+          type: "string",
+          enum: ["browser", "tab"]
+        },
+        sessionId: { type: "string" },
+        tabId: { type: "number" }
+      },
+      additionalProperties: false
+    }
+  },
+  {
     name: "browser_list_downloads",
     description: "List recent Chrome downloads matching optional filters.",
     parameters: {
@@ -734,18 +983,28 @@ export const browserToolSchemas = [
 
 export async function callBrowserTool(name: string, args: JsonObject) {
   switch (name) {
+    case "browser_health":
+      return browserHealth();
     case "browser_get_events":
       return browserGetEvents(args as GetEventsParams);
     case "browser_clear_events":
       return browserClearEvents(args as ClearEventsParams);
+    case "browser_wait_for_event":
+      return browserWaitForEvent(args as WaitForEventParams);
     case "browser_start_session":
       return browserStartSession(args as StartSessionParams);
+    case "browser_name_session":
+      return browserNameSession(args as NameSessionParams);
     case "browser_claim_tab":
       return browserClaimTab(args as ClaimTabParams);
     case "browser_create_tab":
       return browserCreateTab(args as CreateTabParams);
     case "browser_switch_tab":
       return browserSwitchTab(args as SwitchTabParams);
+    case "browser_list_tabs":
+      return browserListTabs(args as ListTabsParams);
+    case "browser_get_tab":
+      return browserGetTab(args as GetTabParams);
     case "browser_open_url":
       return browserOpenUrl(args as OpenUrlParams);
     case "browser_go_back":
@@ -764,6 +1023,12 @@ export async function callBrowserTool(name: string, args: JsonObject) {
       return browserWaitForText(args as WaitForTextParams);
     case "browser_observe":
       return browserObserve(args as ObserveParams);
+    case "browser_locator_query":
+      return browserLocatorQuery(args as unknown as LocatorQueryParams);
+    case "browser_locator_action":
+      return browserLocatorAction(args as unknown as LocatorActionParams);
+    case "browser_locator_wait":
+      return browserLocatorWait(args as unknown as LocatorWaitParams);
     case "browser_click":
       return browserClick(args as ClickParams);
     case "browser_move_mouse":
@@ -784,6 +1049,10 @@ export async function callBrowserTool(name: string, args: JsonObject) {
       return browserUploadFile(args as unknown as UploadFileParams);
     case "browser_cdp":
       return browserCdp(args as unknown as CdpParams);
+    case "browser_get_dev_logs":
+      return browserGetDevLogs(args as GetDevLogsParams);
+    case "browser_get_capabilities":
+      return browserGetCapabilities(args as GetCapabilitiesParams);
     case "browser_list_downloads":
       return browserListDownloads(args as ListDownloadsParams);
     case "browser_wait_for_download":

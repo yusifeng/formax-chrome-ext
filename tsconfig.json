@@ -22,6 +22,7 @@
   },
   "include": [
     "agent/**/*.ts",
+    "mcp-node-repl/**/*.ts",
     "native-host/**/*.ts",
     "shared/**/*.ts",
     "tests/**/*.ts",

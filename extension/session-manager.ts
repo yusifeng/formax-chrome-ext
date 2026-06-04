@@ -4,6 +4,7 @@ type AgentSessionStatus = "active" | "stopped" | "error";
 
 type AgentSession = {
   sessionId: string;
+  name?: string;
   groupId: number;
   activeTabId: number | null;
   tabIds: number[];
@@ -37,6 +38,7 @@ class SessionManager {
 
     return {
       sessionId: session.sessionId,
+      name: session.name,
       groupId: session.groupId,
       activeTabId: session.activeTabId,
       tabIds: [...session.tabIds],
@@ -125,7 +127,7 @@ class SessionManager {
       throw new Error("Chrome did not return a valid tab id");
     }
 
-    return this.createSessionForTab(sessionId, tab.id);
+    return this.createSessionForTab(sessionId, tab.id, params.name);
   }
 
   async claimTab(params: SessionActionParams = {}): Promise<{
@@ -146,7 +148,7 @@ class SessionManager {
 
     if (!session) {
       const sessionId = this.resolveNewSessionId(params.sessionId);
-      session = await this.createSessionForTab(sessionId, tab.id);
+      session = await this.createSessionForTab(sessionId, tab.id, params.name);
     } else {
       await this.addTabToSession(session, tab.id);
     }
@@ -202,7 +204,7 @@ class SessionManager {
 
     if (!session) {
       const sessionId = this.resolveNewSessionId(params.sessionId);
-      session = await this.createSessionForTab(sessionId, tab.id);
+      session = await this.createSessionForTab(sessionId, tab.id, params.name);
     } else {
       await this.addTabToSession(session, tab.id);
     }
@@ -251,6 +253,24 @@ class SessionManager {
     return session;
   }
 
+  async nameSession(sessionId: string, name: string): Promise<AgentSession> {
+    const session = this.getExistingSession(sessionId);
+    const title = this.normalizeSessionName(name);
+
+    session.name = title;
+    session.lastActiveAt = Date.now();
+
+    try {
+      await chrome.tabGroups.update(session.groupId, {
+        title
+      });
+    } catch {
+      // The group may have been closed by the user. Keep metadata in memory.
+    }
+
+    return session;
+  }
+
   deleteSession(sessionId: string): void {
     this.sessions.delete(sessionId);
   }
@@ -288,14 +308,21 @@ class SessionManager {
 
   private async createSessionForTab(
     sessionId: string,
-    tabId: number
+    tabId: number,
+    name?: unknown
   ): Promise<AgentSession> {
     const groupId = await chrome.tabs.group({
       tabIds: [tabId]
     });
 
+    const sessionName =
+      typeof name === "string" && name.trim()
+        ? this.normalizeSessionName(name)
+        : undefined;
+    const title = sessionName || `Agent ${sessionId.slice(0, 6)}`;
+
     await chrome.tabGroups.update(groupId, {
-      title: `Agent ${sessionId.slice(0, 6)}`,
+      title,
       color: "green",
       collapsed: false
     });
@@ -303,6 +330,7 @@ class SessionManager {
     const now = Date.now();
     const session: AgentSession = {
       sessionId,
+      name: sessionName,
       groupId,
       activeTabId: tabId,
       tabIds: [tabId],
@@ -338,7 +366,7 @@ class SessionManager {
 
       session.groupId = groupId;
       await chrome.tabGroups.update(groupId, {
-        title: `Agent ${session.sessionId.slice(0, 6)}`,
+        title: session.name || `Agent ${session.sessionId.slice(0, 6)}`,
         color: "green",
         collapsed: false
       });
@@ -372,6 +400,14 @@ class SessionManager {
     return typeof sessionId === "string" && sessionId.trim()
       ? sessionId.trim()
       : crypto.randomUUID();
+  }
+
+  private normalizeSessionName(name: unknown): string {
+    if (typeof name !== "string" || !name.trim()) {
+      throw new Error("Session name must be a non-empty string");
+    }
+
+    return name.trim().slice(0, 80);
   }
 
   private assertAllowedNavigationUrl(url: string): void {

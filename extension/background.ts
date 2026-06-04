@@ -10,6 +10,48 @@ const HOST_NAME = "com.example.agentbrowser";
 const CDP_VERSION = "1.3";
 const HEARTBEAT_ALARM = "agentbrowser-native-reconnect";
 const DEFAULT_CDP_TIMEOUT_MS = 10000;
+const SUPPORTED_ACTIONS = [
+  "health",
+  "getEvents",
+  "clearEvents",
+  "waitForEvent",
+  "startSession",
+  "nameSession",
+  "claimTab",
+  "createTab",
+  "switchTab",
+  "openUrl",
+  "goBack",
+  "goForward",
+  "reload",
+  "waitForLoadState",
+  "waitForUrl",
+  "waitForSelector",
+  "waitForText",
+  "observe",
+  "locatorQuery",
+  "locatorAction",
+  "locatorWait",
+  "click",
+  "moveMouse",
+  "scroll",
+  "typeText",
+  "evaluate",
+  "pressKey",
+  "handleDialog",
+  "screenshot",
+  "uploadFile",
+  "cdp",
+  "listTabs",
+  "getTab",
+  "listDownloads",
+  "waitForDownload",
+  "getDevLogs",
+  "getCapabilities",
+  "closeTab",
+  "finalizeSession",
+  "stopSession"
+];
 
 let nativePort = null;
 let lastNativeError: string | null = null;
@@ -235,8 +277,14 @@ async function dispatchActionRaw(action: string, params: ActionParams) {
     case "clearEvents":
       return clearEvents(params);
 
+    case "waitForEvent":
+      return waitForEvent(params);
+
     case "startSession":
       return startSession(params);
+
+    case "nameSession":
+      return nameSession(params);
 
     case "claimTab":
       return claimTab(params);
@@ -274,6 +322,15 @@ async function dispatchActionRaw(action: string, params: ActionParams) {
     case "observe":
       return observe(params);
 
+    case "locatorQuery":
+      return locatorQuery(params);
+
+    case "locatorAction":
+      return locatorAction(params);
+
+    case "locatorWait":
+      return locatorWait(params);
+
     case "click":
       return click(params);
 
@@ -305,13 +362,22 @@ async function dispatchActionRaw(action: string, params: ActionParams) {
       return rawCdp(params);
 
     case "listTabs":
-      return listTabs();
+      return listTabs(params);
+
+    case "getTab":
+      return getTab(params);
 
     case "listDownloads":
       return listDownloads(params);
 
     case "waitForDownload":
       return waitForDownload(params);
+
+    case "getDevLogs":
+      return getDevLogs(params);
+
+    case "getCapabilities":
+      return getCapabilities(params);
 
     case "closeTab":
       return closeTab(params);
@@ -382,7 +448,8 @@ function health() {
     nativeConnected: nativePort != null,
     lastNativeError,
     sessions: sessionManager.serializeAll(),
-    attachedTabs: debuggerManager.listAttachedTabs()
+    attachedTabs: debuggerManager.listAttachedTabs(),
+    supportedActions: SUPPORTED_ACTIONS
   };
 }
 
@@ -398,6 +465,40 @@ function clearEvents(params: ActionParams = {}) {
   };
 }
 
+async function waitForEvent(params: ActionParams = {}) {
+  const timeoutMs = numberOrDefault(params.timeoutMs, 15000);
+  const pollMs = Math.max(50, numberOrDefault(params.pollMs, 100));
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt <= timeoutMs) {
+    const events = eventBuffer.list({
+      sessionId: params.sessionId,
+      tabId: params.tabId,
+      name: params.name,
+      sinceSequence: params.sinceSequence,
+      limit: 1
+    });
+
+    if (events.length > 0) {
+      return {
+        matched: true,
+        timedOut: false,
+        elapsedMs: Date.now() - startedAt,
+        event: events[0]
+      };
+    }
+
+    await sleep(pollMs);
+  }
+
+  return {
+    matched: false,
+    timedOut: true,
+    elapsedMs: Date.now() - startedAt,
+    event: null
+  };
+}
+
 async function startSession(params: ActionParams = {}) {
   const session = await sessionManager.startSession(params);
 
@@ -406,6 +507,16 @@ async function startSession(params: ActionParams = {}) {
   }
 
   return sessionManager.serializeSession(session);
+}
+
+async function nameSession(params: ActionParams = {}) {
+  const sessionId = requireString(params.sessionId, "nameSession.params.sessionId");
+  const name = requireString(params.name, "nameSession.params.name");
+  const session = await sessionManager.nameSession(sessionId, name);
+
+  return {
+    session: sessionManager.serializeSession(session)
+  };
 }
 
 async function claimTab(params: ActionParams = {}) {
@@ -897,6 +1008,147 @@ async function observe(params: ActionParams = {}) {
   return observation;
 }
 
+async function locatorQuery(params: ActionParams = {}) {
+  const { session, tabId } = sessionManager.resolveSessionAndTab(params);
+  const locator = normalizeLocatorPlan(params.locator);
+  const kind = normalizeLocatorQueryKind(params.kind);
+  await debuggerManager.attachTab(tabId);
+
+  const evaluated = await cdp(tabId, "Runtime.evaluate", {
+    expression: locatorQueryExpression(locator.selector, kind, params.args),
+    returnByValue: true,
+    awaitPromise: true
+  });
+  const value = readRuntimeValue(evaluated);
+
+  if (!value || value.ok !== true) {
+    throw new Error(value?.error || `Locator query failed: ${locator.selector}`);
+  }
+
+  sessionManager.touchSession(session?.sessionId);
+
+  return {
+    sessionId: session?.sessionId ?? null,
+    tabId,
+    kind,
+    value: value.value,
+    count: value.count
+  };
+}
+
+async function locatorAction(params: ActionParams = {}) {
+  const { session, tabId } = sessionManager.resolveSessionAndTab(params);
+  const locator = normalizeLocatorPlan(params.locator);
+  const kind = normalizeLocatorActionKind(params.kind);
+  const args = params.args && typeof params.args === "object" ? params.args : {};
+  const waitMs = numberOrDefault(params.waitMs, 300);
+
+  await debuggerManager.attachTab(tabId);
+
+  if (kind === "click" || kind === "dblclick") {
+    return click({
+      sessionId: session?.sessionId,
+      tabId,
+      selector: locator.selector,
+      clickCount: kind === "dblclick" ? 2 : numberOrDefault(args.clickCount, 1),
+      button: args.button,
+      waitMs
+    });
+  }
+
+  if (kind === "fill" || kind === "type") {
+    const text = requireString(args.value ?? args.text, `locatorAction.${kind}.text`);
+
+    return typeText({
+      sessionId: session?.sessionId,
+      tabId,
+      selector: locator.selector,
+      text,
+      clear: kind === "fill" ? args.clear !== false : args.clear === true,
+      waitMs
+    });
+  }
+
+  if (kind === "press") {
+    const key = requireString(args.key, "locatorAction.press.key");
+    await focusLocator(tabId, locator.selector);
+
+    return pressKey({
+      sessionId: session?.sessionId,
+      tabId,
+      key,
+      waitMs
+    });
+  }
+
+  if (kind === "setChecked" || kind === "selectOption") {
+    const evaluated = await cdp(tabId, "Runtime.evaluate", {
+      expression: locatorMutationExpression(locator.selector, kind, args),
+      returnByValue: true,
+      awaitPromise: true
+    });
+    const value = readRuntimeValue(evaluated);
+
+    if (!value || value.ok !== true) {
+      throw new Error(value?.error || `Locator action failed: ${locator.selector}`);
+    }
+
+    await sleep(waitMs);
+
+    return observe({
+      sessionId: session?.sessionId,
+      tabId
+    });
+  }
+
+  throw new Error(`Unsupported locator action: ${kind}`);
+}
+
+async function locatorWait(params: ActionParams = {}) {
+  const { session, tabId } = sessionManager.resolveSessionAndTab(params);
+  const locator = normalizeLocatorPlan(params.locator);
+  const state = normalizeSelectorWaitState(params.state);
+  const timeoutMs = numberOrDefault(params.timeoutMs, 15000);
+  const pollMs = Math.max(50, numberOrDefault(params.pollMs, 100));
+  const startedAt = Date.now();
+  let lastMatch = null;
+
+  await debuggerManager.attachTab(tabId);
+
+  while (Date.now() - startedAt <= timeoutMs) {
+    const match = await selectorState(tabId, locator.selector);
+    lastMatch = match;
+
+    if (selectorStateIsSatisfied(match, state)) {
+      sessionManager.touchSession(session?.sessionId);
+
+      return {
+        sessionId: session?.sessionId ?? null,
+        tabId,
+        state,
+        matched: true,
+        timedOut: false,
+        elapsedMs: Date.now() - startedAt,
+        count: match.attached ? 1 : 0
+      };
+    }
+
+    await sleep(pollMs);
+  }
+
+  sessionManager.touchSession(session?.sessionId);
+
+  return {
+    sessionId: session?.sessionId ?? null,
+    tabId,
+    state,
+    matched: false,
+    timedOut: true,
+    elapsedMs: Date.now() - startedAt,
+    count: lastMatch?.attached ? 1 : 0
+  };
+}
+
 async function click(params: ActionParams = {}) {
   const { session, tabId } = sessionManager.resolveSessionAndTab(params);
 
@@ -1038,13 +1290,34 @@ async function pressKey(params: ActionParams = {}) {
 
   await debuggerManager.attachTab(tabId);
 
+  const keyText =
+    normalized.key === "Enter"
+      ? {
+          text: "\r",
+          unmodifiedText: "\r"
+        }
+      : {};
+
   await cdp(tabId, "Input.dispatchKeyEvent", {
     type: "keyDown",
     key: normalized.key,
     code: normalized.code,
+    ...keyText,
     windowsVirtualKeyCode: normalized.keyCode,
     nativeVirtualKeyCode: normalized.keyCode
   });
+
+  if (normalized.key === "Enter") {
+    await cdp(tabId, "Input.dispatchKeyEvent", {
+      type: "char",
+      key: normalized.key,
+      code: normalized.code,
+      text: "\r",
+      unmodifiedText: "\r",
+      windowsVirtualKeyCode: normalized.keyCode,
+      nativeVirtualKeyCode: normalized.keyCode
+    });
+  }
 
   await cdp(tabId, "Input.dispatchKeyEvent", {
     type: "keyUp",
@@ -1190,10 +1463,77 @@ async function uploadFile(params: ActionParams = {}) {
   });
 }
 
-async function listTabs() {
-  const tabs = await chrome.tabs.query({});
+async function listTabs(params: ActionParams = {}) {
+  const query: chrome.tabs.QueryInfo = {};
+  const session =
+    typeof params.sessionId === "string" && params.sessionId.trim()
+      ? sessionManager.getExistingSession(params.sessionId.trim())
+      : null;
 
-  return tabs.map(summarizeTab);
+  if (params.currentWindow === true) {
+    query.currentWindow = true;
+  }
+
+  let tabs = await chrome.tabs.query(query);
+
+  if (session) {
+    const tabIds = new Set(session.tabIds);
+    tabs = tabs.filter((tab) => typeof tab.id === "number" && tabIds.has(tab.id));
+  }
+
+  if (params.controlledOnly === true) {
+    tabs = tabs.filter(
+      (tab) =>
+        typeof tab.id === "number" &&
+        sessionManager.findSessionByTabId(tab.id) != null
+    );
+  }
+
+  return {
+    tabs: tabs.map(summarizeTab)
+  };
+}
+
+async function getTab(params: ActionParams = {}) {
+  const { tabId } = sessionManager.resolveSessionAndTab(params);
+  const tab = await chrome.tabs.get(tabId);
+
+  return {
+    tab: summarizeTab(tab)
+  };
+}
+
+function getCapabilities(params: ActionParams = {}) {
+  const scope = params.scope === "tab" ? "tab" : params.scope === "browser" ? "browser" : null;
+  const capabilities = listCapabilities().filter(
+    (capability) => !scope || capability.scope === scope
+  );
+
+  return {
+    capabilities
+  };
+}
+
+function getDevLogs(params: ActionParams = {}) {
+  const limit = Math.max(1, Math.min(Math.floor(numberOrDefault(params.limit, 100)), 500));
+  const level = typeof params.level === "string" && params.level.trim()
+    ? params.level.trim()
+    : null;
+  const events = eventBuffer.list({
+    sessionId: params.sessionId,
+    tabId: params.tabId,
+    sinceSequence: params.sinceSequence,
+    limit: 500
+  });
+  let logs = events.map(devLogFromEvent).filter((log) => log != null);
+
+  if (level) {
+    logs = logs.filter((log) => log.level === level);
+  }
+
+  return {
+    logs: logs.slice(-limit)
+  };
 }
 
 async function listDownloads(params: ActionParams = {}) {
@@ -1530,6 +1870,230 @@ function elementTargetExpression(
       width: rect.width,
       height: rect.height
     }
+  };
+})()`;
+}
+
+function normalizeLocatorPlan(locator: any) {
+  if (!locator || typeof locator !== "object") {
+    throw new Error("locator params require a locator object");
+  }
+
+  if (locator.kind !== "css") {
+    throw new Error(`Unsupported locator kind: ${String(locator.kind)}`);
+  }
+
+  const selector = requireString(locator.selector, "locator.selector");
+
+  return {
+    kind: "css",
+    selector
+  };
+}
+
+function normalizeLocatorQueryKind(kind: any) {
+  const value = requireString(kind, "locatorQuery.kind");
+  const allowed = [
+    "count",
+    "allTextContents",
+    "textContent",
+    "innerText",
+    "getAttribute",
+    "isVisible",
+    "isEnabled",
+    "boundingBox"
+  ];
+
+  if (!allowed.includes(value)) {
+    throw new Error(`Unsupported locator query kind: ${value}`);
+  }
+
+  return value;
+}
+
+function normalizeLocatorActionKind(kind: any) {
+  const value = requireString(kind, "locatorAction.kind");
+  const allowed = [
+    "click",
+    "dblclick",
+    "fill",
+    "type",
+    "press",
+    "setChecked",
+    "selectOption"
+  ];
+
+  if (!allowed.includes(value)) {
+    throw new Error(`Unsupported locator action kind: ${value}`);
+  }
+
+  return value;
+}
+
+async function focusLocator(tabId: number, selector: string) {
+  const evaluated = await cdp(tabId, "Runtime.evaluate", {
+    expression: `(() => {
+  const selector = ${JSON.stringify(selector)};
+  const el = document.querySelector(selector);
+
+  if (!el) {
+    return {
+      ok: false,
+      error: "Element target not found"
+    };
+  }
+
+  el.scrollIntoView({
+    block: "center",
+    inline: "center",
+    behavior: "instant"
+  });
+  el.focus();
+
+  return { ok: true };
+})()`,
+    returnByValue: true,
+    awaitPromise: true
+  });
+  const value = readRuntimeValue(evaluated);
+
+  if (!value || value.ok !== true) {
+    throw new Error(value?.error || `Unable to focus locator: ${selector}`);
+  }
+}
+
+function locatorQueryExpression(selector: string, kind: string, args: any) {
+  return `(() => {
+  const selector = ${JSON.stringify(selector)};
+  const kind = ${JSON.stringify(kind)};
+  const args = ${JSON.stringify(args && typeof args === "object" ? args : {})};
+  const normalizeText = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+  const isVisible = (el) => {
+    if (!el) return false;
+    const style = getComputedStyle(el);
+    const rect = el.getBoundingClientRect();
+    return style.visibility !== "hidden" &&
+      style.display !== "none" &&
+      style.opacity !== "0" &&
+      rect.width > 0 &&
+      rect.height > 0;
+  };
+  const isEnabled = (el) => {
+    if (!el) return false;
+    return !el.disabled && el.getAttribute("aria-disabled") !== "true";
+  };
+
+  let elements;
+
+  try {
+    elements = Array.from(document.querySelectorAll(selector));
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+
+  const first = elements[0] || null;
+  let value = null;
+
+  if (kind === "count") {
+    value = elements.length;
+  } else if (kind === "allTextContents") {
+    value = elements.map((el) => el.textContent || "");
+  } else if (kind === "textContent") {
+    value = first ? first.textContent : null;
+  } else if (kind === "innerText") {
+    value = first ? normalizeText(first.innerText || first.textContent || "") : "";
+  } else if (kind === "getAttribute") {
+    const name = typeof args.name === "string" ? args.name : "";
+    value = first && name ? first.getAttribute(name) : null;
+  } else if (kind === "isVisible") {
+    value = isVisible(first);
+  } else if (kind === "isEnabled") {
+    value = isEnabled(first);
+  } else if (kind === "boundingBox") {
+    if (first) {
+      const rect = first.getBoundingClientRect();
+      value = {
+        x: rect.left,
+        y: rect.top,
+        width: rect.width,
+        height: rect.height
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    value,
+    count: elements.length
+  };
+})()`;
+}
+
+function locatorMutationExpression(selector: string, kind: string, args: any) {
+  return `(() => {
+  const selector = ${JSON.stringify(selector)};
+  const kind = ${JSON.stringify(kind)};
+  const args = ${JSON.stringify(args && typeof args === "object" ? args : {})};
+  const el = document.querySelector(selector);
+
+  if (!el) {
+    return {
+      ok: false,
+      error: "Element target not found"
+    };
+  }
+
+  el.scrollIntoView({
+    block: "center",
+    inline: "center",
+    behavior: "instant"
+  });
+  el.focus();
+
+  if (kind === "setChecked") {
+    if (!("checked" in el)) {
+      return {
+        ok: false,
+        error: "Element is not checkable"
+      };
+    }
+
+    el.checked = args.checked === true;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return { ok: true };
+  }
+
+  if (kind === "selectOption") {
+    if (el.tagName.toLowerCase() !== "select") {
+      return {
+        ok: false,
+        error: "Element is not a select"
+      };
+    }
+
+    const rawValues = Array.isArray(args.values)
+      ? args.values
+      : Array.isArray(args.value)
+        ? args.value
+        : [args.value ?? args.values].filter((value) => value != null);
+    const values = new Set(rawValues.map((value) => String(value)));
+
+    for (const option of Array.from(el.options)) {
+      option.selected = values.has(option.value) || values.has(option.label);
+    }
+
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return { ok: true };
+  }
+
+  return {
+    ok: false,
+    error: "Unsupported locator mutation"
   };
 })()`;
 }
@@ -1997,13 +2561,72 @@ function textStateIsSatisfied(match: any, state: string) {
 }
 
 function summarizeTab(tab: chrome.tabs.Tab) {
+  const sessionId =
+    typeof tab.id === "number" ? sessionIdForTab(tab.id) : null;
+
   return {
     id: tab.id,
     windowId: tab.windowId,
     title: tab.title,
     url: tab.url,
     active: tab.active,
-    groupId: tab.groupId
+    groupId: tab.groupId,
+    sessionId,
+    controlled: sessionId != null
+  };
+}
+
+function listCapabilities() {
+  const nativeAvailable = nativePort != null;
+
+  return [
+    browserCapability("browser.tabs", "List, create, select, and finalize controlled tabs.", true),
+    browserCapability("browser.user.claimTab", "Claim the current or specified user tab.", true),
+    browserCapability("browser.session.name", "Name the current browser automation session.", true),
+    browserCapability("events.wait", "Wait for buffered browser events.", true),
+    browserCapability("downloads", "List and wait for Chrome downloads.", true),
+    browserCapability("dev.logs", "Read buffered console/log/runtime exception entries.", true),
+    browserCapability("rawCdp", "Send raw Chrome DevTools Protocol commands.", true),
+    browserCapability("clipboard", "Read and write browser clipboard content.", false, "not_implemented"),
+    browserCapability("history", "Read user browsing history.", false, "not_implemented"),
+    tabCapability("tab.navigation", "Navigate, reload, and read URL/title for tabs.", true),
+    tabCapability("tab.cua", "Coordinate mouse, keyboard, and scroll interactions.", true),
+    tabCapability("tab.domSnapshot", "Capture DOMSnapshot output through CDP.", true),
+    tabCapability("tab.accessibility", "Read accessibility tree data through CDP.", true),
+    tabCapability("tab.locator.css", "Use CSS selector based waits/actions.", true),
+    tabCapability("tab.locator.semantic", "Use role/label/text locator engine.", false, "not_implemented"),
+    tabCapability("tab.frameLocator", "Target nested frames with locator chains.", false, "not_implemented"),
+    tabCapability("native.connected", "Native host connection is available.", nativeAvailable, nativeAvailable ? undefined : "native_disconnected")
+  ];
+}
+
+function browserCapability(
+  id: string,
+  description: string,
+  available: boolean,
+  reason?: string
+) {
+  return {
+    id,
+    scope: "browser",
+    description,
+    available,
+    reason
+  };
+}
+
+function tabCapability(
+  id: string,
+  description: string,
+  available: boolean,
+  reason?: string
+) {
+  return {
+    id,
+    scope: "tab",
+    description,
+    available,
+    reason
   };
 }
 
@@ -2130,7 +2753,9 @@ function shouldBufferDebuggerEvent(method: string) {
     "Page.loadEventFired",
     "Page.javascriptDialogOpening",
     "Page.javascriptDialogClosed",
-    "Runtime.exceptionThrown"
+    "Runtime.consoleAPICalled",
+    "Runtime.exceptionThrown",
+    "Log.entryAdded"
   ].includes(method);
 }
 
@@ -2198,7 +2823,67 @@ function summarizeDebuggerEvent(method: string, params: any) {
     };
   }
 
+  if (method === "Runtime.consoleAPICalled") {
+    return {
+      type: params.type,
+      timestamp: params.timestamp,
+      args: Array.isArray(params.args)
+        ? params.args.map((arg) => summarizeRemoteObject(arg))
+        : [],
+      stackTrace: summarizeStackTrace(params.stackTrace)
+    };
+  }
+
+  if (method === "Log.entryAdded") {
+    const entry = params.entry || {};
+
+    return {
+      source: entry.source,
+      level: entry.level,
+      text: truncateString(entry.text, 1000),
+      url: entry.url,
+      lineNumber: entry.lineNumber,
+      columnNumber: entry.columnNumber
+    };
+  }
+
   return {};
+}
+
+function summarizeRemoteObject(value: any) {
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  return {
+    type: value.type,
+    subtype: value.subtype,
+    value:
+      typeof value.value === "string"
+        ? truncateString(value.value, 1000)
+        : value.value,
+    description: truncateString(value.description, 1000)
+  };
+}
+
+function summarizeStackTrace(stackTrace: any) {
+  if (!stackTrace || typeof stackTrace !== "object") {
+    return undefined;
+  }
+
+  const callFrames = Array.isArray(stackTrace.callFrames)
+    ? stackTrace.callFrames.slice(0, 5)
+    : [];
+
+  return {
+    description: stackTrace.description,
+    callFrames: callFrames.map((frame) => ({
+      functionName: frame.functionName,
+      url: frame.url,
+      lineNumber: frame.lineNumber,
+      columnNumber: frame.columnNumber
+    }))
+  };
 }
 
 function summarizeFrame(frame: any) {
@@ -2224,6 +2909,127 @@ function sessionIdForTab(tabId: number | undefined) {
   }
 
   return sessionManager.findSessionByTabId(tabId)?.sessionId ?? null;
+}
+
+function devLogFromEvent(event: ActionParams) {
+  if (!event || event.name !== "cdpEvent") {
+    return null;
+  }
+
+  const method = event.method;
+  const params = event.params && typeof event.params === "object"
+    ? event.params
+    : {};
+
+  if (method === "Runtime.consoleAPICalled") {
+    const args = Array.isArray(params.args)
+      ? params.args
+          .map((arg) => {
+            if (!arg || typeof arg !== "object") {
+              return String(arg);
+            }
+
+            if ("value" in arg) {
+              return String(arg.value);
+            }
+
+            return String(arg.description ?? arg.type ?? "");
+          })
+          .filter(Boolean)
+      : [];
+
+    return {
+      sequence: event.sequence,
+      time: event.time,
+      sessionId: event.sessionId ?? null,
+      tabId: event.tabId ?? null,
+      source: "console",
+      level: normalizeDevLogLevel(params.type),
+      text: truncateString(args.join(" "), 1000),
+      url: firstStackFrameUrl(params.stackTrace),
+      lineNumber: firstStackFrameNumber(params.stackTrace, "lineNumber"),
+      columnNumber: firstStackFrameNumber(params.stackTrace, "columnNumber")
+    };
+  }
+
+  if (method === "Log.entryAdded") {
+    return {
+      sequence: event.sequence,
+      time: event.time,
+      sessionId: event.sessionId ?? null,
+      tabId: event.tabId ?? null,
+      source: "log",
+      level: normalizeDevLogLevel(params.level),
+      text: truncateString(params.text, 1000),
+      url: params.url,
+      lineNumber: params.lineNumber,
+      columnNumber: params.columnNumber
+    };
+  }
+
+  if (method === "Runtime.exceptionThrown") {
+    return {
+      sequence: event.sequence,
+      time: event.time,
+      sessionId: event.sessionId ?? null,
+      tabId: event.tabId ?? null,
+      source: "exception",
+      level: "error",
+      text: truncateString(
+        params.text ||
+          (params.exception && typeof params.exception === "object"
+            ? params.exception.description
+            : undefined),
+        1000
+      ),
+      url: params.url,
+      lineNumber: params.lineNumber,
+      columnNumber: params.columnNumber
+    };
+  }
+
+  return null;
+}
+
+function normalizeDevLogLevel(level: any) {
+  if (level === "warning") {
+    return "warning";
+  }
+
+  if (level === "warn") {
+    return "warning";
+  }
+
+  if (level === "error" || level === "assert") {
+    return "error";
+  }
+
+  if (level === "debug") {
+    return "debug";
+  }
+
+  if (level === "info") {
+    return "info";
+  }
+
+  return "log";
+}
+
+function firstStackFrameUrl(stackTrace: any) {
+  const frame = Array.isArray(stackTrace?.callFrames)
+    ? stackTrace.callFrames[0]
+    : null;
+
+  return typeof frame?.url === "string" ? frame.url : undefined;
+}
+
+function firstStackFrameNumber(stackTrace: any, key: string) {
+  const frame = Array.isArray(stackTrace?.callFrames)
+    ? stackTrace.callFrames[0]
+    : null;
+  const value = frame?.[key];
+
+  return typeof value === "number" ? value : undefined;
 }
 
 function readRuntimeValue(evaluated: any) {

@@ -24,6 +24,93 @@ npm run typecheck
 npm test
 ```
 
+Run real Chrome smoke/e2e checks after the extension and native host are
+installed and the popup shows `Connected`:
+
+```bash
+npm run build
+# Reload the unpacked extension in chrome://extensions after rebuilding.
+npm run test:real
+```
+
+This starts a local HTTP fixture server and verifies the native host, session
+creation, navigation, observation, accessibility tree, DOM snapshot, click,
+typing, keyboard input, raw CDP, content-script cursor overlay, scroll,
+screenshot, file upload, JavaScript dialogs, downloads, and history navigation.
+
+Keep the controlled tab open for inspection:
+
+```bash
+KEEP_TABS=1 npm run test:real
+```
+
+Run the LLM-driven browser agent check:
+
+```bash
+npm run test:llm
+```
+
+By default this reads `DEEPSEEK_API_KEY` from `.env`, calls
+`https://api.deepseek.com/chat/completions`, and uses `deepseek-v4-flash`.
+Override with `LLM_BROWSER_BASE_URL` and `LLM_BROWSER_MODEL` when needed.
+
+This starts a local fixture server, gives a small browser tool allowlist to a
+model through function calling, executes the requested tool calls locally, and
+then performs hard assertions over the resulting tool trace.
+
+Start an interactive LLM browser debugging chat:
+
+```bash
+npm run chat:llm
+```
+
+Use `/trace` to inspect tool calls, `/reset` to clear chat context, `/cleanup`
+to close tracked browser sessions, and `/exit` to quit.
+
+Start the Codex-like LLM chat that exposes only the MCP `node_repl` tools:
+
+```bash
+npm run chat:node-repl
+```
+
+This starts the local MCP server, lists its three tools, and sends only those
+tool schemas to the model. When browser control is needed, the model can inject
+the browser runtime into the persistent JavaScript kernel:
+
+```js
+const { setupBrowserRuntime } = await import("./mcp-node-repl/browser-client.js");
+await setupBrowserRuntime({ globals: globalThis });
+const browser = await agent.browsers.get("extension");
+await browser.openUrl("https://www.baidu.com");
+```
+
+Use `/bootstrap` in the chat to inject the browser runtime manually.
+
+Run the Codex-like MCP `node_repl` server:
+
+```bash
+npm run mcp:node-repl
+```
+
+It exposes exactly three MCP tools:
+
+```text
+js({ code, timeout_ms?, title? })
+js_add_node_module_dir({ path })
+js_reset({})
+```
+
+Smoke test the MCP server through the official MCP SDK client:
+
+```bash
+npm run test:mcp-node-repl
+```
+
+This first version is intentionally separate from the Chrome extension. It
+provides a persistent Node-backed JavaScript kernel where state stored on
+`globalThis` survives across `js` calls until `js_reset`. Browser control will
+be added later through a browser client injected into this runtime.
+
 ## Chrome Setup
 
 1. Open `chrome://extensions`.
