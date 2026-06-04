@@ -1,0 +1,9 @@
+{
+  "name": "com.example.agentbrowser",
+  "description": "Agent Browser Controller Native Host",
+  "path": "/ABSOLUTE/PATH/TO/formax-extension/native-host/host.js",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://YOUR_EXTENSION_ID/"
+  ]
+}

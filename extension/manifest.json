@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Agent Browser Controller",
+  "version": "0.1.0",
+  "description": "Control Chrome tabs from a local agent through native messaging.",
+  "permissions": [
+    "alarms",
+    "debugger",
+    "downloads",
+    "nativeMessaging",
+    "scripting",
+    "storage",
+    "tabGroups",
+    "tabs"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Agent Browser Controller",
+    "default_popup": "popup.html"
+  }
+}
