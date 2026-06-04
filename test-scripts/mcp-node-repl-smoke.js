@@ -85,6 +85,11 @@ try {
           "  hasLocatorQuery: typeof browser.locatorQuery === 'function',",
           "  hasLocatorAction: typeof browser.locatorAction === 'function',",
           "  hasLocatorWait: typeof browser.locatorWait === 'function',",
+          "  hasTabsFacade: typeof browser.tabs?.new === 'function',",
+          "  hasUserFacade: typeof browser.user?.claimTab === 'function',",
+          "  hasEventsFacade: typeof browser.events?.wait === 'function',",
+          "  hasDownloadsFacade: typeof browser.downloads?.waitFor === 'function',",
+          "  hasCapabilitiesFacade: typeof browser.capabilities?.has === 'function',",
           "  toolCount: browser.tools.length",
           "};"
         ].join("\n")
@@ -103,6 +108,11 @@ try {
   assert.equal(result.result.hasLocatorQuery, true);
   assert.equal(result.result.hasLocatorAction, true);
   assert.equal(result.result.hasLocatorWait, true);
+  assert.equal(result.result.hasTabsFacade, true);
+  assert.equal(result.result.hasUserFacade, true);
+  assert.equal(result.result.hasEventsFacade, true);
+  assert.equal(result.result.hasDownloadsFacade, true);
+  assert.equal(result.result.hasCapabilitiesFacade, true);
   assert.equal(result.result.toolCount > 0, true);
 
   result = toolJson(

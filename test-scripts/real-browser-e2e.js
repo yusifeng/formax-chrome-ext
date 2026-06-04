@@ -2,6 +2,7 @@
 
 import http from "node:http";
 import { fileURLToPath } from "node:url";
+import { createBrowserClient } from "../mcp-node-repl/browser-client.js";
 import {
   browserClearEvents,
   browserClick,
@@ -511,6 +512,30 @@ async function run() {
       })
     ).result;
     assert(url.matched === true, "submitted URL did not match", url);
+  });
+
+  await test("object facade: tabs, locator, waits, and evaluate", async () => {
+    const objectBrowser = createBrowserClient();
+    const tab = await objectBrowser.tabs.new(`${baseUrl}/`, { active: true });
+
+    try {
+      await tab.waitForLoadState("load");
+      await tab.locator("#name-input").fill("Facade User", { waitMs: 100 });
+      await tab.locator("#submit-button").click({ waitMs: 150 });
+      await tab.waitForUrl({ urlContains: "/submitted?name=Facade%20User", timeoutMs: 3000 });
+
+      const submitted = await tab.evaluate(
+        `document.getElementById("submit-result").textContent`
+      );
+      assert(submitted === "Submitted: Facade User", "facade submit result mismatch", {
+        submitted
+      });
+
+      await tab.locator("#count-button").click({ waitMs: 150 });
+      await tab.waitForText("Clicks: 1", { timeoutMs: 3000 });
+    } finally {
+      await objectBrowser.stop({ closeTabs: true });
+    }
   });
 
   await test("evaluate and raw CDP", async () => {
