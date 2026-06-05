@@ -6,6 +6,7 @@ const HOST_NAME = "com.example.agentbrowser";
 const CDP_VERSION = "1.3";
 const HEARTBEAT_ALARM = "agentbrowser-native-reconnect";
 const DEFAULT_CDP_TIMEOUT_MS = 10000;
+const BACKEND_REVISION = 2;
 const SUPPORTED_ACTIONS = [
     "health",
     "getEvents",
@@ -367,7 +368,8 @@ function health() {
         lastNativeError,
         sessions: sessionManager.serializeAll(),
         attachedTabs: debuggerManager.listAttachedTabs(),
-        supportedActions: SUPPORTED_ACTIONS
+        supportedActions: SUPPORTED_ACTIONS,
+        backendRevision: BACKEND_REVISION
     };
 }
 function getEvents(params = {}) {
@@ -842,7 +844,7 @@ async function locatorQuery(params = {}) {
     const kind = normalizeLocatorQueryKind(params.kind);
     await debuggerManager.attachTab(tabId);
     const evaluated = await cdp(tabId, "Runtime.evaluate", {
-        expression: locatorQueryExpression(locator.selector, kind, params.args),
+        expression: locatorQueryExpression(locator, kind, params.args),
         returnByValue: true,
         awaitPromise: true
     });
@@ -867,10 +869,11 @@ async function locatorAction(params = {}) {
     const waitMs = numberOrDefault(params.waitMs, 300);
     await debuggerManager.attachTab(tabId);
     if (kind === "click" || kind === "dblclick") {
+        const target = await resolveLocatorRef(tabId, locator, `locatorAction.${kind}`);
         return click({
             sessionId: session?.sessionId,
             tabId,
-            selector: locator.selector,
+            ref: target.ref,
             clickCount: kind === "dblclick" ? 2 : numberOrDefault(args.clickCount, 1),
             button: args.button,
             waitMs
@@ -878,10 +881,11 @@ async function locatorAction(params = {}) {
     }
     if (kind === "fill" || kind === "type") {
         const text = requireString(args.value ?? args.text, `locatorAction.${kind}.text`);
+        const target = await resolveLocatorRef(tabId, locator, `locatorAction.${kind}`);
         return typeText({
             sessionId: session?.sessionId,
             tabId,
-            selector: locator.selector,
+            ref: target.ref,
             text,
             clear: kind === "fill" ? args.clear !== false : args.clear === true,
             waitMs
@@ -889,7 +893,7 @@ async function locatorAction(params = {}) {
     }
     if (kind === "press") {
         const key = requireString(args.key, "locatorAction.press.key");
-        await focusLocator(tabId, locator.selector);
+        await focusLocator(tabId, locator);
         return pressKey({
             sessionId: session?.sessionId,
             tabId,
@@ -897,9 +901,29 @@ async function locatorAction(params = {}) {
             waitMs
         });
     }
+    if (kind === "clear" || kind === "focus" || kind === "hover") {
+        const target = await resolveLocatorRef(tabId, locator, `locatorAction.${kind}`);
+        if (kind === "focus" || kind === "clear") {
+            await focusAndMaybeClearElement(tabId, { ref: target.ref }, kind === "clear");
+        }
+        if (kind === "hover") {
+            await showCursor(tabId, target.x, target.y);
+            await cdp(tabId, "Input.dispatchMouseEvent", {
+                type: "mouseMoved",
+                x: target.x,
+                y: target.y,
+                button: "none"
+            });
+        }
+        await sleep(waitMs);
+        return observe({
+            sessionId: session?.sessionId,
+            tabId
+        });
+    }
     if (kind === "setChecked" || kind === "selectOption") {
         const evaluated = await cdp(tabId, "Runtime.evaluate", {
-            expression: locatorMutationExpression(locator.selector, kind, args),
+            expression: locatorMutationExpression(locator, kind, args),
             returnByValue: true,
             awaitPromise: true
         });
@@ -925,7 +949,7 @@ async function locatorWait(params = {}) {
     let lastMatch = null;
     await debuggerManager.attachTab(tabId);
     while (Date.now() - startedAt <= timeoutMs) {
-        const match = await selectorState(tabId, locator.selector);
+        const match = await locatorState(tabId, locator);
         lastMatch = match;
         if (selectorStateIsSatisfied(match, state)) {
             sessionManager.touchSession(session?.sessionId);
@@ -1139,58 +1163,28 @@ async function screenshot(params = {}) {
 }
 async function uploadFile(params = {}) {
     const { session, tabId } = sessionManager.resolveSessionAndTab(params);
-    const ref = requireString(params.ref, "uploadFile.params.ref");
     const filePath = requireString(params.filePath, "uploadFile.params.filePath");
+    const ref = typeof params.ref === "string" && params.ref.trim()
+        ? params.ref.trim()
+        : null;
+    const locator = params.locator
+        ? normalizeLocatorPlan(params.locator)
+        : typeof params.selector === "string" && params.selector.trim()
+            ? normalizeLocatorPlan({ kind: "css", selector: params.selector })
+            : null;
+    if (!ref && !locator) {
+        throw new Error("uploadFile.params requires ref, selector, or locator");
+    }
     await debuggerManager.attachTab(tabId);
     const marker = `agent-upload-${crypto.randomUUID()}`;
     const checked = await cdp(tabId, "Runtime.evaluate", {
-        expression: `(() => {
-  const ref = ${JSON.stringify(ref)};
-  const marker = ${JSON.stringify(marker)};
-  const store = window.__agentBrowserController?.elements || {};
-  const el = store[ref] || document.querySelector("[data-agent-browser-ref='" + CSS.escape(ref) + "']");
-
-  if (!el) {
-    return {
-      ok: false,
-      error: "Element ref not found: " + ref
-    };
-  }
-
-  if (el.tagName.toLowerCase() !== "input" || (el.getAttribute("type") || "").toLowerCase() !== "file") {
-    return {
-      ok: false,
-      error: "Element is not input[type=file]"
-    };
-  }
-
-  el.setAttribute("data-agent-upload-marker", marker);
-  el.scrollIntoView({
-    block: "center",
-    inline: "center",
-    behavior: "instant"
-  });
-
-  const rect = el.getBoundingClientRect();
-
-  return {
-    ok: true,
-    x: rect.left + rect.width / 2,
-    y: rect.top + rect.height / 2,
-    rect: {
-      x: rect.left,
-      y: rect.top,
-      width: rect.width,
-      height: rect.height
-    }
-  };
-})()`,
+        expression: uploadTargetExpression({ ref, locator, marker }),
         returnByValue: true,
         awaitPromise: true
     });
     const target = readRuntimeValue(checked);
     if (!target || target.ok !== true) {
-        throw new Error(target?.error || `Unable to locate file input ref: ${ref}`);
+        throw new Error(target?.error || "Unable to locate file input");
     }
     await showCursor(tabId, target.x, target.y);
     await showHighlight(tabId, target.rect);
@@ -1544,13 +1538,31 @@ function normalizeLocatorPlan(locator) {
     if (!locator || typeof locator !== "object") {
         throw new Error("locator params require a locator object");
     }
-    if (locator.kind !== "css") {
+    const kind = requireString(locator.kind, "locator.kind");
+    const allowed = ["css", "text", "role", "label", "placeholder", "testId"];
+    if (!allowed.includes(kind)) {
         throw new Error(`Unsupported locator kind: ${String(locator.kind)}`);
     }
-    const selector = requireString(locator.selector, "locator.selector");
+    const selector = kind === "css" ? requireString(locator.selector, "locator.selector") : undefined;
+    const text = kind === "text" || kind === "label" || kind === "placeholder"
+        ? requireString(locator.text ?? locator.name, `locator.${kind}.text`)
+        : typeof locator.text === "string"
+            ? locator.text
+            : undefined;
+    const role = kind === "role" ? requireString(locator.role, "locator.role") : undefined;
+    const name = kind === "role" && typeof locator.name === "string" ? locator.name : undefined;
+    const testId = kind === "testId" ? requireString(locator.testId ?? locator.text, "locator.testId") : undefined;
+    const index = locator.index == null ? 0 : Math.max(0, Math.floor(numberOrDefault(locator.index, 0)));
     return {
-        kind: "css",
-        selector
+        kind,
+        selector,
+        text,
+        role,
+        name,
+        testId,
+        exact: locator.exact === true,
+        index,
+        strict: locator.strict === true
     };
 }
 function normalizeLocatorQueryKind(kind) {
@@ -1578,6 +1590,9 @@ function normalizeLocatorActionKind(kind) {
         "fill",
         "type",
         "press",
+        "clear",
+        "focus",
+        "hover",
         "setChecked",
         "selectOption"
     ];
@@ -1586,16 +1601,34 @@ function normalizeLocatorActionKind(kind) {
     }
     return value;
 }
-async function focusLocator(tabId, selector) {
+async function resolveLocatorRef(tabId, locator, actionName) {
+    const evaluated = await cdp(tabId, "Runtime.evaluate", {
+        expression: locatorTargetExpression(locator, `agent-locator-${crypto.randomUUID()}`),
+        returnByValue: true,
+        awaitPromise: true
+    });
+    const value = readRuntimeValue(evaluated);
+    if (!value || value.ok !== true) {
+        throw new Error(value?.error || `Unable to resolve locator for ${actionName}: ${locator.selector}`);
+    }
+    return value;
+}
+async function focusLocator(tabId, locator) {
     const evaluated = await cdp(tabId, "Runtime.evaluate", {
         expression: `(() => {
-  const selector = ${JSON.stringify(selector)};
-  const el = document.querySelector(selector);
+  ${locatorResolverSource(locator)}
+  const resolved = resolveLocator();
 
+  if (!resolved.ok) {
+    return resolved;
+  }
+
+  const el = resolved.element;
   if (!el) {
     return {
       ok: false,
-      error: "Element target not found"
+      error: "Element target not found",
+      count: resolved.count
     };
   }
 
@@ -1613,14 +1646,249 @@ async function focusLocator(tabId, selector) {
     });
     const value = readRuntimeValue(evaluated);
     if (!value || value.ok !== true) {
-        throw new Error(value?.error || `Unable to focus locator: ${selector}`);
+        throw new Error(value?.error || `Unable to focus locator: ${locator.selector}`);
     }
 }
-function locatorQueryExpression(selector, kind, args) {
+function locatorTargetExpression(locator, ref) {
     return `(() => {
-  const selector = ${JSON.stringify(selector)};
+  ${locatorResolverSource(locator)}
+  const resolved = resolveLocator();
+
+  if (!resolved.ok) {
+    return resolved;
+  }
+
+  const el = resolved.element;
+  if (!el) {
+    return {
+      ok: false,
+      error: "Element target not found",
+      count: resolved.count
+    };
+  }
+
+  const ref = ${JSON.stringify(ref)};
+
+  window.__agentBrowserController = window.__agentBrowserController || {};
+  window.__agentBrowserController.elements = window.__agentBrowserController.elements || {};
+  window.__agentBrowserController.elements[ref] = el;
+  el.setAttribute("data-agent-browser-ref", ref);
+  el.scrollIntoView({
+    block: "center",
+    inline: "center",
+    behavior: "instant"
+  });
+
+  const rect = el.getBoundingClientRect();
+
+  return {
+    ok: true,
+    ref,
+    x: rect.left + rect.width / 2,
+    y: rect.top + rect.height / 2,
+    rect: {
+      x: rect.left,
+      y: rect.top,
+      width: rect.width,
+      height: rect.height
+    }
+  };
+})()`;
+}
+function uploadTargetExpression(options) {
+    const { ref, locator, marker } = options;
+    const locatorSource = locator ? locatorResolverSource(locator) : "";
+    return `(() => {
+  const ref = ${JSON.stringify(ref)};
+  const marker = ${JSON.stringify(marker)};
+  let el = null;
+
+  if (ref) {
+    const store = window.__agentBrowserController?.elements || {};
+    el = store[ref] || document.querySelector("[data-agent-browser-ref='" + CSS.escape(ref) + "']");
+  }
+
+  if (!el) {
+    ${locatorSource}
+    ${locator ? `
+    const resolved = resolveLocator();
+    if (!resolved.ok) return resolved;
+    el = resolved.element;
+    ` : ""}
+  }
+
+  if (!el) {
+    return {
+      ok: false,
+      error: "Element target not found"
+    };
+  }
+
+  if (el.tagName.toLowerCase() !== "input" || (el.getAttribute("type") || "").toLowerCase() !== "file") {
+    return {
+      ok: false,
+      error: "Element is not input[type=file]"
+    };
+  }
+
+  el.setAttribute("data-agent-upload-marker", marker);
+  el.scrollIntoView({
+    block: "center",
+    inline: "center",
+    behavior: "instant"
+  });
+
+  const rect = el.getBoundingClientRect();
+
+  return {
+    ok: true,
+    x: rect.left + rect.width / 2,
+    y: rect.top + rect.height / 2,
+    rect: {
+      x: rect.left,
+      y: rect.top,
+      width: rect.width,
+      height: rect.height
+    }
+  };
+})()`;
+}
+function locatorResolverSource(locator) {
+    return `
+  const locator = ${JSON.stringify(locator)};
+  const locatorKind = locator.kind;
+  const selector = ${JSON.stringify(locator.selector)};
+  const locatorText = ${JSON.stringify(locator.text ?? "")};
+  const locatorRole = ${JSON.stringify(locator.role ?? "")};
+  const locatorName = ${JSON.stringify(locator.name ?? "")};
+  const locatorTestId = ${JSON.stringify(locator.testId ?? "")};
+  const exact = ${locator.exact === true ? "true" : "false"};
+  const index = ${JSON.stringify(locator.index ?? 0)};
+  const strict = ${locator.strict === true ? "true" : "false"};
+  const locatorNormalizeText = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+  const locatorTextMatches = (actual, expected) => {
+    const a = locatorNormalizeText(actual);
+    const e = locatorNormalizeText(expected);
+    if (!e) return false;
+    return exact ? a === e : a.toLowerCase().includes(e.toLowerCase());
+  };
+  const locatorImplicitRole = (el) => {
+    const explicit = el.getAttribute("role");
+    if (explicit) return explicit;
+    const tag = el.tagName.toLowerCase();
+    const type = (el.getAttribute("type") || "").toLowerCase();
+    if (tag === "a" && el.hasAttribute("href")) return "link";
+    if (tag === "button") return "button";
+    if (tag === "select") return "combobox";
+    if (tag === "textarea") return "textbox";
+    if (tag === "input") {
+      if (["button", "submit", "reset"].includes(type)) return "button";
+      if (["checkbox"].includes(type)) return "checkbox";
+      if (["radio"].includes(type)) return "radio";
+      return "textbox";
+    }
+    return tag;
+  };
+  const locatorAccessibleName = (el) => {
+    const labelledBy = el.getAttribute("aria-labelledby");
+    if (labelledBy) {
+      const text = labelledBy
+        .split(/\\s+/)
+        .map((id) => document.getElementById(id)?.innerText || document.getElementById(id)?.textContent || "")
+        .join(" ");
+      if (locatorNormalizeText(text)) return text;
+    }
+    const attrs = ["aria-label", "placeholder", "title", "alt", "value", "name", "id"];
+    for (const attr of attrs) {
+      const value = el.getAttribute(attr);
+      if (locatorNormalizeText(value)) return value;
+    }
+    return el.innerText || el.textContent || "";
+  };
+  const locatorElementsForKind = () => {
+    if (locatorKind === "css") {
+      return Array.from(document.querySelectorAll(selector));
+    }
+
+    if (locatorKind === "testId") {
+      return Array.from(document.querySelectorAll("[data-testid]"))
+        .filter((el) => locatorTextMatches(el.getAttribute("data-testid"), locatorTestId));
+    }
+
+    if (locatorKind === "placeholder") {
+      return Array.from(document.querySelectorAll("input[placeholder], textarea[placeholder]"))
+        .filter((el) => locatorTextMatches(el.getAttribute("placeholder"), locatorText));
+    }
+
+    if (locatorKind === "label") {
+      const matches = [];
+      for (const label of Array.from(document.querySelectorAll("label"))) {
+        if (!locatorTextMatches(label.innerText || label.textContent || "", locatorText)) continue;
+        const control = label.control || (label.getAttribute("for") ? document.getElementById(label.getAttribute("for")) : null);
+        if (control) matches.push(control);
+      }
+      for (const el of Array.from(document.querySelectorAll("[aria-label], [aria-labelledby]"))) {
+        if (locatorTextMatches(locatorAccessibleName(el), locatorText)) matches.push(el);
+      }
+      return Array.from(new Set(matches));
+    }
+
+    if (locatorKind === "role") {
+      return Array.from(document.querySelectorAll("*"))
+        .filter((el) => locatorImplicitRole(el) === locatorRole)
+        .filter((el) => !locatorName || locatorTextMatches(locatorAccessibleName(el), locatorName));
+    }
+
+    if (locatorKind === "text") {
+      const candidates = Array.from(document.querySelectorAll("body *"))
+        .filter((el) => locatorTextMatches(el.innerText || el.textContent || "", locatorText));
+      return candidates.filter((el) => {
+        return !Array.from(el.children).some((child) => locatorTextMatches(child.innerText || child.textContent || "", locatorText));
+      });
+    }
+
+    return [];
+  };
+
+  const resolveLocator = () => {
+    let elements;
+
+    try {
+      elements = locatorElementsForKind();
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
+
+    if (strict && elements.length !== 1) {
+      return {
+        ok: false,
+        error: "Strict locator expected exactly one match, found " + elements.length,
+        count: elements.length,
+        elements
+      };
+    }
+
+    const safeIndex = Number.isFinite(index) && index >= 0 ? Math.floor(index) : 0;
+    const element = elements[safeIndex] || null;
+
+    return {
+      ok: true,
+      element,
+      elements,
+      count: elements.length,
+      index: safeIndex
+    };
+  };
+`;
+}
+function locatorQueryExpression(locator, kind, args) {
+    return `(() => {
   const kind = ${JSON.stringify(kind)};
   const args = ${JSON.stringify(args && typeof args === "object" ? args : {})};
+  ${locatorResolverSource(locator)}
   const normalizeText = (value) => String(value || "").replace(/\\s+/g, " ").trim();
   const isVisible = (el) => {
     if (!el) return false;
@@ -1637,18 +1905,10 @@ function locatorQueryExpression(selector, kind, args) {
     return !el.disabled && el.getAttribute("aria-disabled") !== "true";
   };
 
-  let elements;
-
-  try {
-    elements = Array.from(document.querySelectorAll(selector));
-  } catch (error) {
-    return {
-      ok: false,
-      error: error instanceof Error ? error.message : String(error)
-    };
-  }
-
-  const first = elements[0] || null;
+  const resolved = resolveLocator();
+  if (!resolved.ok) return resolved;
+  const elements = resolved.elements;
+  const first = resolved.element;
   let value = null;
 
   if (kind === "count") {
@@ -1685,17 +1945,23 @@ function locatorQueryExpression(selector, kind, args) {
   };
 })()`;
 }
-function locatorMutationExpression(selector, kind, args) {
+function locatorMutationExpression(locator, kind, args) {
     return `(() => {
-  const selector = ${JSON.stringify(selector)};
   const kind = ${JSON.stringify(kind)};
   const args = ${JSON.stringify(args && typeof args === "object" ? args : {})};
-  const el = document.querySelector(selector);
+  ${locatorResolverSource(locator)}
+  const resolved = resolveLocator();
 
+  if (!resolved.ok) {
+    return resolved;
+  }
+
+  const el = resolved.element;
   if (!el) {
     return {
       ok: false,
-      error: "Element target not found"
+      error: "Element target not found",
+      count: resolved.count
     };
   }
 
@@ -2098,6 +2364,66 @@ async function selectorState(tabId, selector) {
     }
     return value;
 }
+async function locatorState(tabId, locator) {
+    const evaluated = await cdp(tabId, "Runtime.evaluate", {
+        expression: `(() => {
+  ${locatorResolverSource(locator)}
+  const resolved = resolveLocator();
+
+  if (!resolved.ok) {
+    return resolved;
+  }
+
+  const el = resolved.element;
+
+  if (!el) {
+    return {
+      ok: true,
+      attached: false,
+      visible: false,
+      count: resolved.count,
+      element: null
+    };
+  }
+
+  const style = getComputedStyle(el);
+  const rect = el.getBoundingClientRect();
+  const visible =
+    style.visibility !== "hidden" &&
+    style.display !== "none" &&
+    style.opacity !== "0" &&
+    rect.width > 0 &&
+    rect.height > 0;
+
+  return {
+    ok: true,
+    attached: true,
+    visible,
+    count: resolved.count,
+    index: resolved.index,
+    element: {
+      tagName: el.tagName.toLowerCase(),
+      id: el.id || undefined,
+      className: typeof el.className === "string" ? el.className : undefined,
+      text: String(el.innerText || el.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 300),
+      rect: {
+        x: Math.round(rect.left),
+        y: Math.round(rect.top),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height)
+      }
+    }
+  };
+})()`,
+        returnByValue: true,
+        awaitPromise: true
+    });
+    const value = readRuntimeValue(evaluated);
+    if (!value || value.ok !== true) {
+        throw new Error(value?.error || `Invalid locator: ${locator.selector}`);
+    }
+    return value;
+}
 async function textState(tabId, options) {
     const evaluated = await cdp(tabId, "Runtime.evaluate", {
         expression: `(() => {
@@ -2167,7 +2493,8 @@ function listCapabilities() {
         tabCapability("tab.domSnapshot", "Capture DOMSnapshot output through CDP.", true),
         tabCapability("tab.accessibility", "Read accessibility tree data through CDP.", true),
         tabCapability("tab.locator.css", "Use CSS selector based waits/actions.", true),
-        tabCapability("tab.locator.semantic", "Use role/label/text locator engine.", false, "not_implemented"),
+        tabCapability("tab.locator.semantic", "Use role/label/text/test-id locator engine.", true),
+        tabCapability("tab.upload.locator", "Upload files through selector or locator targets.", true),
         tabCapability("tab.frameLocator", "Target nested frames with locator chains.", false, "not_implemented"),
         tabCapability("native.connected", "Native host connection is available.", nativeAvailable, nativeAvailable ? undefined : "native_disconnected")
     ];

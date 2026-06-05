@@ -132,7 +132,7 @@ describe("browser-client object facade", () => {
       args: {
         sessionId: "session-a",
         tabId: 101,
-        locator: { kind: "css", selector: "#name-input" },
+        locator: { kind: "css", selector: "#name-input", index: 0, strict: false },
         kind: "fill",
         waitMs: 50,
         args: { value: "Alice" }
@@ -173,5 +173,66 @@ describe("browser-client object facade", () => {
     const tab = await browser.tabs.new();
 
     await expect(tab.evaluate("document.title")).resolves.toBe("evaluated");
+  });
+
+  it("maps indexed locator file upload to upload primitive", async () => {
+    const { browser, calls } = createMockBrowser();
+    const tab = await browser.tabs.new();
+
+    await tab.locator("input[type=file]").nth(2).setInputFiles("/tmp/example.png", {
+      waitMs: 25
+    });
+
+    expect(calls.at(-1)).toEqual({
+      name: "browser_upload_file",
+      args: {
+        sessionId: "session-a",
+        tabId: 101,
+        locator: {
+          kind: "css",
+          selector: "input[type=file]",
+          index: 2,
+          strict: false
+        },
+        filePath: "/tmp/example.png",
+        waitMs: 25
+      }
+    });
+  });
+
+  it("maps semantic locators to locator plans", async () => {
+    const { browser, calls } = createMockBrowser();
+    const tab = await browser.tabs.new();
+
+    await tab.getByRole("button", { name: "Submit", exact: true }).click();
+    await tab.getByPlaceholder("Type a test name").fill("Alice");
+
+    expect(calls.at(-2)).toMatchObject({
+      name: "browser_locator_action",
+      args: {
+        locator: {
+          kind: "role",
+          role: "button",
+          name: "Submit",
+          exact: true,
+          index: 0,
+          strict: false
+        },
+        kind: "click"
+      }
+    });
+    expect(calls.at(-1)).toMatchObject({
+      name: "browser_locator_action",
+      args: {
+        locator: {
+          kind: "placeholder",
+          text: "Type a test name",
+          exact: false,
+          index: 0,
+          strict: false
+        },
+        kind: "fill"
+      }
+    });
   });
 });

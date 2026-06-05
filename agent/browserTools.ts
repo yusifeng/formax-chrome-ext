@@ -592,10 +592,17 @@ export const browserToolSchemas = [
         locator: {
           type: "object",
           properties: {
-            kind: { type: "string", enum: ["css"] },
-            selector: { type: "string" }
+            kind: { type: "string", enum: ["css", "text", "role", "label", "placeholder", "testId"] },
+            selector: { type: "string" },
+            text: { type: "string" },
+            role: { type: "string" },
+            name: { type: "string" },
+            testId: { type: "string" },
+            exact: { type: "boolean" },
+            index: { type: "number" },
+            strict: { type: "boolean" }
           },
-          required: ["kind", "selector"],
+          required: ["kind"],
           additionalProperties: false
         },
         kind: {
@@ -632,15 +639,22 @@ export const browserToolSchemas = [
         locator: {
           type: "object",
           properties: {
-            kind: { type: "string", enum: ["css"] },
-            selector: { type: "string" }
+            kind: { type: "string", enum: ["css", "text", "role", "label", "placeholder", "testId"] },
+            selector: { type: "string" },
+            text: { type: "string" },
+            role: { type: "string" },
+            name: { type: "string" },
+            testId: { type: "string" },
+            exact: { type: "boolean" },
+            index: { type: "number" },
+            strict: { type: "boolean" }
           },
-          required: ["kind", "selector"],
+          required: ["kind"],
           additionalProperties: false
         },
         kind: {
           type: "string",
-          enum: ["click", "dblclick", "fill", "type", "press", "setChecked", "selectOption"]
+          enum: ["click", "dblclick", "fill", "type", "press", "clear", "focus", "hover", "setChecked", "selectOption"]
         },
         args: {
           type: "object",
@@ -664,10 +678,17 @@ export const browserToolSchemas = [
         locator: {
           type: "object",
           properties: {
-            kind: { type: "string", enum: ["css"] },
-            selector: { type: "string" }
+            kind: { type: "string", enum: ["css", "text", "role", "label", "placeholder", "testId"] },
+            selector: { type: "string" },
+            text: { type: "string" },
+            role: { type: "string" },
+            name: { type: "string" },
+            testId: { type: "string" },
+            exact: { type: "boolean" },
+            index: { type: "number" },
+            strict: { type: "boolean" }
           },
-          required: ["kind", "selector"],
+          required: ["kind"],
           additionalProperties: false
         },
         state: {
@@ -831,17 +852,34 @@ export const browserToolSchemas = [
   },
   {
     name: "browser_upload_file",
-    description: "Upload a local file through an observed input[type=file] element.",
+    description: "Upload a local file through an input[type=file] element by observation ref, selector, or locator.",
     parameters: {
       type: "object",
       properties: {
         sessionId: { type: "string" },
         tabId: { type: "number" },
         ref: { type: "string" },
+        selector: { type: "string" },
+        locator: {
+          type: "object",
+          properties: {
+            kind: { type: "string", enum: ["css", "text", "role", "label", "placeholder", "testId"] },
+            selector: { type: "string" },
+            text: { type: "string" },
+            role: { type: "string" },
+            name: { type: "string" },
+            testId: { type: "string" },
+            exact: { type: "boolean" },
+            index: { type: "number" },
+            strict: { type: "boolean" }
+          },
+          required: ["kind"],
+          additionalProperties: false
+        },
         filePath: { type: "string" },
         waitMs: { type: "number" }
       },
-      required: ["ref", "filePath"],
+      required: ["filePath"],
       additionalProperties: false
     }
   },

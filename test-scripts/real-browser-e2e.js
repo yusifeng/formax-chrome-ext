@@ -128,7 +128,7 @@ function appPage() {
           Name
           <input id="name-input" name="name" placeholder="Type a test name">
         </label>
-        <button id="submit-button" type="submit">Submit</button>
+        <button id="submit-button" type="submit" data-testid="submit-name">Submit</button>
       </form>
       <div id="submit-result">No submission yet</div>
     </section>
@@ -276,6 +276,7 @@ async function run() {
     );
     assert(
       Array.isArray(health.supportedActions) &&
+        health.backendRevision >= 2 &&
         health.supportedActions.includes("nameSession") &&
         health.supportedActions.includes("locatorQuery") &&
         health.supportedActions.includes("getDevLogs"),
@@ -283,6 +284,7 @@ async function run() {
       {
         extensionId: health.extensionId,
         version: health.version,
+        backendRevision: health.backendRevision,
         supportedActions: health.supportedActions
       }
     );
@@ -520,8 +522,8 @@ async function run() {
 
     try {
       await tab.waitForLoadState("load");
-      await tab.locator("#name-input").fill("Facade User", { waitMs: 100 });
-      await tab.locator("#submit-button").click({ waitMs: 150 });
+      await tab.getByPlaceholder("Type a test name").fill("Facade User", { waitMs: 100 });
+      await tab.getByRole("button", { name: "Submit" }).click({ waitMs: 150 });
       await tab.waitForUrl({ urlContains: "/submitted?name=Facade%20User", timeoutMs: 3000 });
 
       const submitted = await tab.evaluate(
@@ -531,8 +533,18 @@ async function run() {
         submitted
       });
 
-      await tab.locator("#count-button").click({ waitMs: 150 });
+      assert(await tab.getByTestId("submit-name").isVisible(), "getByTestId should locate submit button");
+
+      await tab.getByText("Count click", { exact: true }).click({ waitMs: 150 });
       await tab.waitForText("Clicks: 1", { timeoutMs: 3000 });
+
+      await tab.locator("#upload-input").setInputFiles(uploadFixturePath, { waitMs: 300 });
+      const uploadedName = await tab.evaluate(
+        `document.getElementById("upload-input").files[0]?.name || ""`
+      );
+      assert(uploadedName === "red-test.png", "facade locator upload mismatch", {
+        uploadedName
+      });
     } finally {
       await objectBrowser.stop({ closeTabs: true });
     }

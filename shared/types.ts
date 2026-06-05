@@ -175,6 +175,7 @@ export type HealthResult = {
   sessions: BrowserSession[];
   attachedTabs: number[];
   supportedActions?: BrowserAction[];
+  backendRevision?: number;
 };
 
 export type BrowserEvent = NativeEvent & {
@@ -390,8 +391,15 @@ export type ObserveParams = {
 };
 
 export type LocatorPlan = {
-  kind: "css";
-  selector: string;
+  kind: "css" | "text" | "role" | "label" | "placeholder" | "testId";
+  selector?: string;
+  text?: string;
+  role?: string;
+  name?: string;
+  testId?: string;
+  exact?: boolean;
+  index?: number;
+  strict?: boolean;
 };
 
 export type LocatorQueryKind =
@@ -427,6 +435,9 @@ export type LocatorActionKind =
   | "fill"
   | "type"
   | "press"
+  | "clear"
+  | "focus"
+  | "hover"
   | "setChecked"
   | "selectOption";
 
@@ -558,7 +569,9 @@ export type ScreenshotResult = {
 export type UploadFileParams = {
   sessionId?: string;
   tabId?: number;
-  ref: string;
+  ref?: string;
+  selector?: string;
+  locator?: LocatorPlan;
   filePath: string;
   waitMs?: number;
 };

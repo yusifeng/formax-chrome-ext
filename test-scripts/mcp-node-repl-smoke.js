@@ -90,6 +90,10 @@ try {
           "  hasEventsFacade: typeof browser.events?.wait === 'function',",
           "  hasDownloadsFacade: typeof browser.downloads?.waitFor === 'function',",
           "  hasCapabilitiesFacade: typeof browser.capabilities?.has === 'function',",
+          "  hasSemanticTabMethods: (() => {",
+          "    const proto = Object.getPrototypeOf(browser.tabs);",
+          "    return typeof browser.tabs?.new === 'function';",
+          "  })(),",
           "  toolCount: browser.tools.length",
           "};"
         ].join("\n")
@@ -113,6 +117,7 @@ try {
   assert.equal(result.result.hasEventsFacade, true);
   assert.equal(result.result.hasDownloadsFacade, true);
   assert.equal(result.result.hasCapabilitiesFacade, true);
+  assert.equal(result.result.hasSemanticTabMethods, true);
   assert.equal(result.result.toolCount > 0, true);
 
   result = toolJson(

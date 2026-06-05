@@ -100,6 +100,11 @@ export type TabHandle = {
   waitForText(textOrArgs: string | JsonObject, args?: JsonObject): Promise<unknown>;
   observe(args?: JsonObject): Promise<unknown>;
   locator(selector: string, args?: JsonObject): LocatorHandle;
+  getByText(text: string, args?: JsonObject): LocatorHandle;
+  getByRole(role: string, args?: JsonObject): LocatorHandle;
+  getByLabel(text: string, args?: JsonObject): LocatorHandle;
+  getByPlaceholder(text: string, args?: JsonObject): LocatorHandle;
+  getByTestId(testId: string, args?: JsonObject): LocatorHandle;
   frameLocator(selector: string): FrameLocatorHandle;
   click(targetOrArgs?: string | JsonObject, args?: JsonObject): Promise<unknown>;
   moveMouse(xOrArgs: number | JsonObject, y?: number, args?: JsonObject): Promise<unknown>;
@@ -122,6 +127,9 @@ export type LocatorHandle = {
   readonly selector: string;
   readonly plan: JsonObject;
   locator(childSelector: string, args?: JsonObject): LocatorHandle;
+  nth(index: number): LocatorHandle;
+  first(): LocatorHandle;
+  last(): Promise<LocatorHandle>;
   waitFor(args?: JsonObject): Promise<unknown>;
   count(args?: JsonObject): Promise<number>;
   allTextContents(args?: JsonObject): Promise<string[]>;
@@ -133,11 +141,15 @@ export type LocatorHandle = {
   boundingBox(args?: JsonObject): Promise<unknown>;
   click(args?: JsonObject): Promise<unknown>;
   dblclick(args?: JsonObject): Promise<unknown>;
+  hover(args?: JsonObject): Promise<unknown>;
+  focus(args?: JsonObject): Promise<unknown>;
+  clear(args?: JsonObject): Promise<unknown>;
   fill(value: string, args?: JsonObject): Promise<unknown>;
   type(value: string, args?: JsonObject): Promise<unknown>;
   press(key: string, args?: JsonObject): Promise<unknown>;
   setChecked(checked?: boolean, args?: JsonObject): Promise<unknown>;
   selectOption(value: string | string[], args?: JsonObject): Promise<unknown>;
+  setInputFiles(filePath: string, args?: JsonObject): Promise<unknown>;
   toJSON(): JsonObject;
 };
 
@@ -459,6 +471,51 @@ class TabHandleImpl implements TabHandle {
     return new LocatorHandleImpl(this.transport, this, requireNonEmptyString(selector, "locator.selector"), args);
   }
 
+  getByText(text: string, args: JsonObject = {}) {
+    this.assertOpen();
+    return new LocatorHandleImpl(this.transport, this, requireNonEmptyString(text, "getByText.text"), {
+      ...args,
+      plan: { kind: "text", text, exact: args.exact === true }
+    });
+  }
+
+  getByRole(role: string, args: JsonObject = {}) {
+    this.assertOpen();
+    return new LocatorHandleImpl(this.transport, this, requireNonEmptyString(role, "getByRole.role"), {
+      ...args,
+      plan: {
+        kind: "role",
+        role,
+        name: typeof args.name === "string" ? args.name : undefined,
+        exact: args.exact === true
+      }
+    });
+  }
+
+  getByLabel(text: string, args: JsonObject = {}) {
+    this.assertOpen();
+    return new LocatorHandleImpl(this.transport, this, requireNonEmptyString(text, "getByLabel.text"), {
+      ...args,
+      plan: { kind: "label", text, exact: args.exact === true }
+    });
+  }
+
+  getByPlaceholder(text: string, args: JsonObject = {}) {
+    this.assertOpen();
+    return new LocatorHandleImpl(this.transport, this, requireNonEmptyString(text, "getByPlaceholder.text"), {
+      ...args,
+      plan: { kind: "placeholder", text, exact: args.exact === true }
+    });
+  }
+
+  getByTestId(testId: string, args: JsonObject = {}) {
+    this.assertOpen();
+    return new LocatorHandleImpl(this.transport, this, requireNonEmptyString(testId, "getByTestId.testId"), {
+      ...args,
+      plan: { kind: "testId", testId, exact: args.exact === true }
+    });
+  }
+
   frameLocator(selector: string) {
     this.assertOpen();
     return new UnsupportedFrameLocator(requireNonEmptyString(selector, "frameLocator.selector"));
@@ -581,24 +638,58 @@ class LocatorHandleImpl implements LocatorHandle {
   readonly selector: string;
   readonly plan: JsonObject;
   private readonly strict: boolean;
+  private readonly index: number;
   private readonly transport: BrowserTransport;
 
   constructor(transport: BrowserTransport, tab: TabHandle, selector: string, args: JsonObject = {}) {
     this.transport = transport;
     this.tab = tab;
+    const plan = objectArg(args.plan);
     this.selector = selector;
-    this.strict = args.strict === true;
-    this.plan = {
-      kind: "css",
-      selector
-    };
+    this.strict = args.strict === true || plan.strict === true;
+    this.index = Math.max(0, Math.floor(Number(args.index ?? plan.index ?? 0)));
+    this.plan = plan.kind
+      ? cleanObject({
+          ...plan,
+          index: this.index,
+          strict: this.strict
+        })
+      : {
+          kind: "css",
+          selector,
+          index: this.index,
+          strict: this.strict
+        };
   }
 
   locator(childSelector: string, args: JsonObject = {}) {
+    if (this.plan.kind !== "css") {
+      throw new Error("Locator chaining is currently only supported for CSS locators.");
+    }
     const child = requireNonEmptyString(childSelector, "locator.childSelector");
     return new LocatorHandleImpl(this.transport, this.tab, `${this.selector} ${child}`, {
       strict: args.strict ?? this.strict
     });
+  }
+
+  nth(index: number) {
+    return new LocatorHandleImpl(this.transport, this.tab, this.selector, {
+      strict: this.strict,
+      index,
+      plan: {
+        ...this.plan,
+        index
+      }
+    });
+  }
+
+  first() {
+    return this.nth(0);
+  }
+
+  async last() {
+    const count = await this.count();
+    return this.nth(Math.max(0, count - 1));
   }
 
   async waitFor(args: JsonObject = {}) {
@@ -659,12 +750,30 @@ class LocatorHandleImpl implements LocatorHandle {
     return this.action("dblclick", {}, args);
   }
 
+  hover(args: JsonObject = {}) {
+    return this.action("hover", {}, args);
+  }
+
+  focus(args: JsonObject = {}) {
+    return this.action("focus", {}, args);
+  }
+
+  clear(args: JsonObject = {}) {
+    return this.action("clear", {}, args);
+  }
+
   fill(value: string, args: JsonObject = {}) {
-    return this.action("fill", { value, clear: args.clear }, args);
+    return this.action("fill", {
+      value,
+      ...(args.clear !== undefined ? { clear: args.clear } : {})
+    }, args);
   }
 
   type(value: string, args: JsonObject = {}) {
-    return this.action("type", { value, clear: args.clear }, args);
+    return this.action("type", {
+      value,
+      ...(args.clear !== undefined ? { clear: args.clear } : {})
+    }, args);
   }
 
   press(key: string, args: JsonObject = {}) {
@@ -678,6 +787,16 @@ class LocatorHandleImpl implements LocatorHandle {
   selectOption(value: string | string[], args: JsonObject = {}) {
     const actionArgs = Array.isArray(value) ? { values: value } : { value };
     return this.action("selectOption", actionArgs, args);
+  }
+
+  setInputFiles(filePath: string, args: JsonObject = {}) {
+    return this.transport.result("browser_upload_file", {
+      ...args,
+      sessionId: this.tab.sessionId,
+      tabId: this.tab.tabId,
+      locator: this.plan,
+      filePath
+    });
   }
 
   toJSON() {
@@ -1200,6 +1319,16 @@ function withoutKeys(source: JsonObject, keys: string[]) {
   const result = { ...source };
   for (const key of keys) {
     delete result[key];
+  }
+  return result;
+}
+
+function cleanObject(source: JsonObject) {
+  const result: JsonObject = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (value !== undefined) {
+      result[key] = value;
+    }
   }
   return result;
 }

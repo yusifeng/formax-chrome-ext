@@ -713,7 +713,9 @@ Params:
   "tabId": 456,
   "locator": {
     "kind": "css",
-    "selector": "input[name=q]"
+    "selector": "input[name=q]",
+    "index": 0,
+    "strict": false
   },
   "kind": "isVisible",
   "args": {},
@@ -721,8 +723,10 @@ Params:
 }
 ```
 
-First-pass locator primitive for SDK facades. Currently only CSS locators in
-the top frame are supported. Supported query kinds are `count`,
+First-pass locator primitive for SDK facades. Currently top-frame locators are
+supported. Locator kinds are `css`, `text`, `role`, `label`, `placeholder`, and
+`testId`; frame targeting is not implemented. `index` selects a zero-based match
+for first-element queries; `strict: true` requires exactly one match. Supported query kinds are `count`,
 `allTextContents`, `textContent`, `innerText`, `getAttribute`, `isVisible`,
 `isEnabled`, and `boundingBox`.
 
@@ -748,7 +752,9 @@ Params:
   "tabId": 456,
   "locator": {
     "kind": "css",
-    "selector": "input[name=q]"
+    "selector": "input[name=q]",
+    "index": 0,
+    "strict": true
   },
   "kind": "fill",
   "args": {
@@ -758,9 +764,20 @@ Params:
 }
 ```
 
-First-pass CSS locator action primitive. Supported action kinds are `click`,
-`dblclick`, `fill`, `type`, `press`, `setChecked`, and `selectOption`. Actions
-resolve the CSS locator at action time instead of caching DOM nodes.
+First-pass locator action primitive. Supported action kinds are `click`,
+`dblclick`, `fill`, `type`, `press`, `clear`, `focus`, `hover`, `setChecked`,
+and `selectOption`. Actions resolve the CSS locator at action time instead of
+caching DOM nodes. `index` and `strict` use the same semantics as `locatorQuery`.
+
+Semantic locator examples:
+
+```json
+{ "kind": "text", "text": "Submit", "exact": true }
+{ "kind": "role", "role": "button", "name": "Submit", "exact": true }
+{ "kind": "label", "text": "Email" }
+{ "kind": "placeholder", "text": "Search" }
+{ "kind": "testId", "testId": "submit-name" }
+```
 
 Result payload: `BrowserObservation`
 
@@ -774,7 +791,9 @@ Params:
   "tabId": 456,
   "locator": {
     "kind": "css",
-    "selector": "button[type=submit]"
+    "selector": "button[type=submit]",
+    "index": 0,
+    "strict": false
   },
   "state": "visible",
   "timeoutMs": 15000,
@@ -782,7 +801,8 @@ Params:
 }
 ```
 
-Supported states are `attached`, `visible`, `hidden`, and `detached`.
+Supported states are `attached`, `visible`, `hidden`, and `detached`. `index`
+and `strict` use the same semantics as `locatorQuery`.
 
 Result payload:
 
@@ -996,14 +1016,22 @@ Params:
   "sessionId": "uuid",
   "tabId": 456,
   "ref": "e2",
+  "selector": "input[type=file]",
+  "locator": {
+    "kind": "css",
+    "selector": "input[type=file]",
+    "index": 0,
+    "strict": true
+  },
   "filePath": "/absolute/path/to/image.png",
   "waitMs": 1000
 }
 ```
 
-The referenced element must be an `input[type=file]` from the latest
-observation. The native host should validate local file existence before the
-extension calls CDP.
+Target the file input with either `ref`, `selector`, or `locator`. `ref` still
+refers to an `input[type=file]` from the latest observation; `selector` and
+`locator` resolve the input at action time. The native host should validate
+local file existence before the extension calls CDP.
 
 Result payload: `BrowserObservation`
 

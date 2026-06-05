@@ -202,6 +202,46 @@ class TabHandleImpl {
         this.assertOpen();
         return new LocatorHandleImpl(this.transport, this, requireNonEmptyString(selector, "locator.selector"), args);
     }
+    getByText(text, args = {}) {
+        this.assertOpen();
+        return new LocatorHandleImpl(this.transport, this, requireNonEmptyString(text, "getByText.text"), {
+            ...args,
+            plan: { kind: "text", text, exact: args.exact === true }
+        });
+    }
+    getByRole(role, args = {}) {
+        this.assertOpen();
+        return new LocatorHandleImpl(this.transport, this, requireNonEmptyString(role, "getByRole.role"), {
+            ...args,
+            plan: {
+                kind: "role",
+                role,
+                name: typeof args.name === "string" ? args.name : undefined,
+                exact: args.exact === true
+            }
+        });
+    }
+    getByLabel(text, args = {}) {
+        this.assertOpen();
+        return new LocatorHandleImpl(this.transport, this, requireNonEmptyString(text, "getByLabel.text"), {
+            ...args,
+            plan: { kind: "label", text, exact: args.exact === true }
+        });
+    }
+    getByPlaceholder(text, args = {}) {
+        this.assertOpen();
+        return new LocatorHandleImpl(this.transport, this, requireNonEmptyString(text, "getByPlaceholder.text"), {
+            ...args,
+            plan: { kind: "placeholder", text, exact: args.exact === true }
+        });
+    }
+    getByTestId(testId, args = {}) {
+        this.assertOpen();
+        return new LocatorHandleImpl(this.transport, this, requireNonEmptyString(testId, "getByTestId.testId"), {
+            ...args,
+            plan: { kind: "testId", testId, exact: args.exact === true }
+        });
+    }
     frameLocator(selector) {
         this.assertOpen();
         return new UnsupportedFrameLocator(requireNonEmptyString(selector, "frameLocator.selector"));
@@ -294,22 +334,53 @@ class LocatorHandleImpl {
     selector;
     plan;
     strict;
+    index;
     transport;
     constructor(transport, tab, selector, args = {}) {
         this.transport = transport;
         this.tab = tab;
+        const plan = objectArg(args.plan);
         this.selector = selector;
-        this.strict = args.strict === true;
-        this.plan = {
-            kind: "css",
-            selector
-        };
+        this.strict = args.strict === true || plan.strict === true;
+        this.index = Math.max(0, Math.floor(Number(args.index ?? plan.index ?? 0)));
+        this.plan = plan.kind
+            ? cleanObject({
+                ...plan,
+                index: this.index,
+                strict: this.strict
+            })
+            : {
+                kind: "css",
+                selector,
+                index: this.index,
+                strict: this.strict
+            };
     }
     locator(childSelector, args = {}) {
+        if (this.plan.kind !== "css") {
+            throw new Error("Locator chaining is currently only supported for CSS locators.");
+        }
         const child = requireNonEmptyString(childSelector, "locator.childSelector");
         return new LocatorHandleImpl(this.transport, this.tab, `${this.selector} ${child}`, {
             strict: args.strict ?? this.strict
         });
+    }
+    nth(index) {
+        return new LocatorHandleImpl(this.transport, this.tab, this.selector, {
+            strict: this.strict,
+            index,
+            plan: {
+                ...this.plan,
+                index
+            }
+        });
+    }
+    first() {
+        return this.nth(0);
+    }
+    async last() {
+        const count = await this.count();
+        return this.nth(Math.max(0, count - 1));
     }
     async waitFor(args = {}) {
         const result = await this.transport.result("browser_locator_wait", this.targetArgs(stripClientOptions(args)));
@@ -355,11 +426,26 @@ class LocatorHandleImpl {
     dblclick(args = {}) {
         return this.action("dblclick", {}, args);
     }
+    hover(args = {}) {
+        return this.action("hover", {}, args);
+    }
+    focus(args = {}) {
+        return this.action("focus", {}, args);
+    }
+    clear(args = {}) {
+        return this.action("clear", {}, args);
+    }
     fill(value, args = {}) {
-        return this.action("fill", { value, clear: args.clear }, args);
+        return this.action("fill", {
+            value,
+            ...(args.clear !== undefined ? { clear: args.clear } : {})
+        }, args);
     }
     type(value, args = {}) {
-        return this.action("type", { value, clear: args.clear }, args);
+        return this.action("type", {
+            value,
+            ...(args.clear !== undefined ? { clear: args.clear } : {})
+        }, args);
     }
     press(key, args = {}) {
         return this.action("press", { key }, args);
@@ -370,6 +456,15 @@ class LocatorHandleImpl {
     selectOption(value, args = {}) {
         const actionArgs = Array.isArray(value) ? { values: value } : { value };
         return this.action("selectOption", actionArgs, args);
+    }
+    setInputFiles(filePath, args = {}) {
+        return this.transport.result("browser_upload_file", {
+            ...args,
+            sessionId: this.tab.sessionId,
+            tabId: this.tab.tabId,
+            locator: this.plan,
+            filePath
+        });
     }
     toJSON() {
         return {
@@ -775,6 +870,15 @@ function withoutKeys(source, keys) {
     const result = { ...source };
     for (const key of keys) {
         delete result[key];
+    }
+    return result;
+}
+function cleanObject(source) {
+    const result = {};
+    for (const [key, value] of Object.entries(source)) {
+        if (value !== undefined) {
+            result[key] = value;
+        }
     }
     return result;
 }
