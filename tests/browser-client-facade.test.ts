@@ -25,26 +25,28 @@ function envelope(action: string, result: unknown, sessionId: string | null = nu
 
 function createMockBrowser() {
   const calls: Call[] = [];
+  let nextTabId = 100;
   const browser = createBrowserClient({
     callTool: async (name, args = {}) => {
       calls.push({ name, args });
 
       if (name === "browser_create_tab") {
+        nextTabId += 1;
         return envelope(name, {
           session: {
             sessionId: "session-a",
-            activeTabId: 101,
-            tabIds: [101]
+            activeTabId: nextTabId,
+            tabIds: [nextTabId]
           },
           tab: {
-            id: 101,
+            id: nextTabId,
             windowId: 1,
             active: true,
             groupId: 1,
             sessionId: "session-a",
             controlled: true
           }
-        }, "session-a", 101);
+        }, "session-a", nextTabId);
       }
 
       if (name === "browser_open_url") {
@@ -62,12 +64,15 @@ function createMockBrowser() {
       }
 
       if (name === "browser_locator_query") {
+        const count = args.kind === "count" && (args.locator as any)?.selector === ".many"
+          ? 3
+          : 1;
         return envelope(name, {
           sessionId: args.sessionId,
           tabId: args.tabId,
           kind: args.kind,
-          value: args.kind === "count" ? 1 : true,
-          count: 1
+          value: args.kind === "count" ? count : true,
+          count
         }, args.sessionId as string, args.tabId as number);
       }
 
@@ -86,6 +91,13 @@ function createMockBrowser() {
         return envelope(name, {
           value: "evaluated"
         }, args.sessionId as string, args.tabId as number);
+      }
+
+      if (name === "browser_reload_extension") {
+        return envelope(name, {
+          reloading: true,
+          backendRevision: 3
+        }, null, null);
       }
 
       return envelope(name, {
@@ -117,6 +129,32 @@ describe("browser-client object facade", () => {
       url: "https://example.test",
       active: true,
       timeoutMs: 123
+    });
+  });
+
+  it("keeps two tab handles isolated from mutable browser state", async () => {
+    const { browser, calls } = createMockBrowser();
+    const tabA = await browser.tabs.new("https://a.example");
+    const tabB = await browser.tabs.new("https://b.example");
+
+    await tabA.locator("#only-a").click();
+    await tabB.locator("#only-b").click();
+
+    expect(tabA.tabId).toBe(101);
+    expect(tabB.tabId).toBe(102);
+    expect(calls.at(-2)).toMatchObject({
+      name: "browser_locator_action",
+      args: {
+        tabId: 101,
+        locator: { selector: "#only-a" }
+      }
+    });
+    expect(calls.at(-1)).toMatchObject({
+      name: "browser_locator_action",
+      args: {
+        tabId: 102,
+        locator: { selector: "#only-b" }
+      }
     });
   });
 
@@ -200,6 +238,34 @@ describe("browser-client object facade", () => {
     });
   });
 
+  it("maps last locator to count-derived index", async () => {
+    const { browser, calls } = createMockBrowser();
+    const tab = await browser.tabs.new();
+    const last = await tab.locator(".many").last();
+
+    await last.click();
+
+    expect(calls.at(-2)).toMatchObject({
+      name: "browser_locator_query",
+      args: {
+        kind: "count",
+        locator: {
+          selector: ".many",
+          index: 0
+        }
+      }
+    });
+    expect(calls.at(-1)).toMatchObject({
+      name: "browser_locator_action",
+      args: {
+        locator: {
+          selector: ".many",
+          index: 2
+        }
+      }
+    });
+  });
+
   it("maps semantic locators to locator plans", async () => {
     const { browser, calls } = createMockBrowser();
     const tab = await browser.tabs.new();
@@ -233,6 +299,24 @@ describe("browser-client object facade", () => {
         },
         kind: "fill"
       }
+    });
+  });
+
+  it("exposes reloadExtension and unsupported frame locator explicitly", async () => {
+    const { browser, calls } = createMockBrowser();
+    const tab = await browser.tabs.new();
+
+    await expect(browser.reloadExtension()).resolves.toMatchObject({
+      reloading: true,
+      backendRevision: 3
+    });
+    expect(tab.frameLocator("iframe").toJSON()).toMatchObject({
+      type: "FrameLocator",
+      selector: "iframe",
+      supported: false
+    });
+    expect(calls.at(-1)).toMatchObject({
+      name: "browser_reload_extension"
     });
   });
 });

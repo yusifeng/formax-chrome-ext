@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { pathToFileURL } from "node:url";
+import { inspect } from "node:util";
 import vm from "node:vm";
 
 type RequestMessage = {
@@ -22,6 +23,38 @@ const moduleDirs = new Set(
 let responseMeta: Record<string, unknown> = {};
 let output = "";
 
+function formatConsoleArgs(args: unknown[]) {
+  return args
+    .map((arg) => typeof arg === "string" ? arg : inspect(arg, { depth: 6, colors: false }))
+    .join(" ");
+}
+
+const sandboxConsole = {
+  assert: (condition: unknown, ...args: unknown[]) => {
+    if (!condition) {
+      output += `Assertion failed${args.length ? `: ${formatConsoleArgs(args)}` : ""}\n`;
+    }
+  },
+  debug: (...args: unknown[]) => {
+    output += `${formatConsoleArgs(args)}\n`;
+  },
+  error: (...args: unknown[]) => {
+    output += `${formatConsoleArgs(args)}\n`;
+  },
+  info: (...args: unknown[]) => {
+    output += `${formatConsoleArgs(args)}\n`;
+  },
+  log: (...args: unknown[]) => {
+    output += `${formatConsoleArgs(args)}\n`;
+  },
+  table: (...args: unknown[]) => {
+    output += `${formatConsoleArgs(args)}\n`;
+  },
+  warn: (...args: unknown[]) => {
+    output += `${formatConsoleArgs(args)}\n`;
+  }
+};
+
 const sandbox: Record<string, unknown> = {
   AbortController,
   AbortSignal,
@@ -32,7 +65,7 @@ const sandbox: Record<string, unknown> = {
   clearImmediate,
   clearInterval,
   clearTimeout,
-  console,
+  console: sandboxConsole,
   crypto,
   fetch,
   FormData,

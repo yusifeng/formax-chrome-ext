@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { pathToFileURL } from "node:url";
+import { inspect } from "node:util";
 import vm from "node:vm";
 const moduleDirs = new Set((process.env.NODE_REPL_NODE_MODULE_DIRS || "")
     .split(path.delimiter)
@@ -11,6 +12,36 @@ const moduleDirs = new Set((process.env.NODE_REPL_NODE_MODULE_DIRS || "")
     .map((item) => path.resolve(item)));
 let responseMeta = {};
 let output = "";
+function formatConsoleArgs(args) {
+    return args
+        .map((arg) => typeof arg === "string" ? arg : inspect(arg, { depth: 6, colors: false }))
+        .join(" ");
+}
+const sandboxConsole = {
+    assert: (condition, ...args) => {
+        if (!condition) {
+            output += `Assertion failed${args.length ? `: ${formatConsoleArgs(args)}` : ""}\n`;
+        }
+    },
+    debug: (...args) => {
+        output += `${formatConsoleArgs(args)}\n`;
+    },
+    error: (...args) => {
+        output += `${formatConsoleArgs(args)}\n`;
+    },
+    info: (...args) => {
+        output += `${formatConsoleArgs(args)}\n`;
+    },
+    log: (...args) => {
+        output += `${formatConsoleArgs(args)}\n`;
+    },
+    table: (...args) => {
+        output += `${formatConsoleArgs(args)}\n`;
+    },
+    warn: (...args) => {
+        output += `${formatConsoleArgs(args)}\n`;
+    }
+};
 const sandbox = {
     AbortController,
     AbortSignal,
@@ -21,7 +52,7 @@ const sandbox = {
     clearImmediate,
     clearInterval,
     clearTimeout,
-    console,
+    console: sandboxConsole,
     crypto,
     fetch,
     FormData,

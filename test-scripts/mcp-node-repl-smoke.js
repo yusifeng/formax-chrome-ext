@@ -58,6 +58,17 @@ try {
     await client.callTool({
       name: "js",
       arguments: {
+        code: "console.log('hello from console'); return 'ok'"
+      }
+    })
+  );
+  assert.equal(result.result, "ok");
+  assert.equal(result.output, "hello from console\n");
+
+  result = toolJson(
+    await client.callTool({
+      name: "js",
+      arguments: {
         code: "const os = await import('node:os'); return os.platform()"
       }
     })

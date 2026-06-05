@@ -164,14 +164,17 @@ function appPage() {
     <section>
       <button id="count-button" type="button">Count click</button>
       <span id="count-result">Clicks: 0</span>
+      <button class="multi-button" type="button" data-button-index="0">First multi</button>
+      <button class="multi-button" type="button" data-button-index="1">Second multi</button>
+      <span id="multi-result">Multi: none</span>
     </section>
 
     <section>
       <form id="search-form">
-        <label>
+        <label for="name-input">
           Name
-          <input id="name-input" name="name" placeholder="Type a test name">
         </label>
+        <input id="name-input" name="name" placeholder="Type a test name">
         <button id="submit-button" type="submit" data-testid="submit-name">Submit</button>
       </form>
       <div id="submit-result">No submission yet</div>
@@ -198,6 +201,13 @@ function appPage() {
         window.testState.clicks += 1;
         document.getElementById("count-result").textContent =
           "Clicks: " + window.testState.clicks;
+      });
+
+      document.querySelectorAll(".multi-button").forEach((button) => {
+        button.addEventListener("click", () => {
+          document.getElementById("multi-result").textContent =
+            "Multi: " + button.getAttribute("data-button-index");
+        });
       });
 
       document.getElementById("search-form").addEventListener("submit", (event) => {
@@ -590,6 +600,58 @@ async function run() {
       );
       assert(uploadedName === "red-test.png", "facade locator upload mismatch", {
         uploadedName
+      });
+    } finally {
+      await objectBrowser.stop({ closeTabs: true });
+    }
+  });
+
+  await test("object facade edge cases: tab isolation, labels, indexes, and soft waits", async () => {
+    const objectBrowser = createBrowserClient();
+    const tabA = await objectBrowser.tabs.new(`${baseUrl}/`, { active: true });
+    const tabB = await objectBrowser.tabs.new(`${baseUrl}/second`, { active: true });
+
+    try {
+      await tabA.getByLabel("Name", { exact: true }).fill("Label User", { waitMs: 100 });
+      const labelValue = await tabA.evaluate(
+        `document.getElementById("name-input").value`
+      );
+      assert(labelValue === "Label User", "getByLabel fill mismatch", {
+        labelValue
+      });
+
+      await tabA.locator(".multi-button").nth(1).click({ waitMs: 100 });
+      await tabA.waitForText("Multi: 1", { timeoutMs: 3000 });
+
+      const lastMulti = await tabA.locator(".multi-button").last();
+      await lastMulti.click({ waitMs: 100 });
+      await tabA.waitForText("Multi: 1", { timeoutMs: 3000 });
+
+      let threw = false;
+      try {
+        await tabA.waitForSelector("#definitely-missing", { timeoutMs: 300 });
+      } catch {
+        threw = true;
+      }
+      assert(threw, "missing selector should throw by default");
+
+      const softWait = await tabA.waitForSelector("#definitely-missing", {
+        timeoutMs: 300,
+        soft: true
+      });
+      assert(
+        softWait.matched === false && softWait.timedOut === true,
+        "soft wait should return timeout payload",
+        softWait
+      );
+
+      const tabBTitle = await tabB.evaluate("document.title");
+      assert(tabBTitle === "Formax Second Fixture", "tabB identity was polluted", {
+        tabBTitle
+      });
+      const tabBUrl = await tabB.evaluate("location.href");
+      assert(String(tabBUrl).includes("/second"), "tabB URL mismatch", {
+        tabBUrl
       });
     } finally {
       await objectBrowser.stop({ closeTabs: true });

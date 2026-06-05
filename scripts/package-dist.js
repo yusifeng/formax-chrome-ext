@@ -1,0 +1,132 @@
+#!/usr/bin/env node
+
+import fs from "node:fs/promises";
+import path from "node:path";
+
+const root = process.cwd();
+const dist = path.join(root, "dist");
+
+const copyEntries = [
+  ["README.md", "README.md"],
+  ["config", "config"],
+  ["skill", "skill"],
+  ["extension-host", "extension-host"],
+  ["mcp-node-repl", "mcp-node-repl"],
+  ["agent/browserTools.js", "agent/browserTools.js"],
+  ["shared", "shared"],
+  ["extension", "extension"],
+  ["native-host/host.js", "native-host/host.js"],
+  ["native-host/host-launcher.sh", "native-host/host-launcher.sh"],
+  ["native-host/host.cmd", "native-host/host.cmd"],
+  ["native-host/com.example.agentbrowser.json.example", "native-host/com.example.agentbrowser.json.example"],
+  ["native-host/install-linux.sh", "native-host/install-linux.sh"],
+  ["native-host/install-macos.sh", "native-host/install-macos.sh"],
+  ["native-host/install-windows.reg", "native-host/install-windows.reg"],
+  ["test-scripts/llm-node-repl-chat.js", "test-scripts/llm-node-repl-chat.js"],
+  ["test-scripts/mcp-node-repl-smoke.js", "test-scripts/mcp-node-repl-smoke.js"],
+  ["prompt.md", "prompt.md"]
+];
+
+const ignoredExtensions = new Set([".ts", ".map"]);
+const ignoredNames = new Set(["com.example.agentbrowser.json"]);
+
+async function exists(filePath) {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function copyFiltered(src, dest) {
+  const stat = await fs.stat(src);
+
+  if (stat.isDirectory()) {
+    await fs.mkdir(dest, { recursive: true });
+    const entries = await fs.readdir(src, { withFileTypes: true });
+
+    for (const entry of entries) {
+      if (ignoredNames.has(entry.name) || ignoredExtensions.has(path.extname(entry.name))) {
+        continue;
+      }
+
+      await copyFiltered(path.join(src, entry.name), path.join(dest, entry.name));
+    }
+    return;
+  }
+
+  if (ignoredNames.has(path.basename(src)) || ignoredExtensions.has(path.extname(src))) {
+    return;
+  }
+
+  await fs.mkdir(path.dirname(dest), { recursive: true });
+  await fs.copyFile(src, dest);
+}
+
+async function writeJson(filePath, value) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+async function main() {
+  const rootPackage = JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8"));
+  await fs.rm(dist, { recursive: true, force: true });
+  await fs.mkdir(dist, { recursive: true });
+
+  const copied = [];
+  const missing = [];
+
+  for (const [from, to] of copyEntries) {
+    const src = path.join(root, from);
+    const dest = path.join(dist, to);
+
+    if (!(await exists(src))) {
+      missing.push(from);
+      continue;
+    }
+
+    await copyFiltered(src, dest);
+    copied.push(to);
+  }
+
+  await writeJson(path.join(dist, "package.json"), {
+    name: "formax-browser-agent-dist",
+    version: rootPackage.version,
+    private: true,
+    type: "module",
+    scripts: {
+      "mcp:node-repl": "node mcp-node-repl/server.js",
+      "chat:node-repl": "node test-scripts/llm-node-repl-chat.js",
+      "test:mcp-node-repl": "node test-scripts/mcp-node-repl-smoke.js"
+    },
+    dependencies: rootPackage.dependencies || {}
+  });
+
+  await writeJson(path.join(dist, "DIST-MANIFEST.json"), {
+    generatedAt: new Date().toISOString(),
+    sourcePackage: {
+      name: rootPackage.name,
+      version: rootPackage.version
+    },
+    products: {
+      mcpServer: "mcp-node-repl/server.js",
+      chromeExtension: "extension/manifest.json",
+      nativeHost: "extension-host/<platform>/<arch>/extension-host",
+      nativeHostFallback: "native-host/host.js",
+      browserClientSdk: "mcp-node-repl/browser-client.js",
+      skill: "skill/SKILL.md",
+      debugHarness: "test-scripts/llm-node-repl-chat.js"
+    },
+    copied,
+    missing
+  });
+
+  if (missing.length > 0) {
+    console.warn(`WARN missing optional package entries: ${missing.join(", ")}`);
+  }
+
+  console.log(`Packaged Formax browser agent into ${dist}`);
+}
+
+await main();

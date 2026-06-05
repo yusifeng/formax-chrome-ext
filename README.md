@@ -85,6 +85,22 @@ await browser.openUrl("https://www.baidu.com");
 ```
 
 Use `/bootstrap` in the chat to inject the browser runtime manually.
+Use `/cleanup` to close controlled Agent browser sessions and tabs. Each chat
+run writes a JSONL log under `logs/`; use `/log` to print the active log path.
+The browser skill for this chat lives at `skill/SKILL.md`. Override it with
+`LLM_NODE_REPL_SKILL=/absolute/path/to/SKILL.md`.
+
+Package the MCP server, Chrome extension, native host, browser client SDK,
+skill, and debug harness into `dist/`:
+
+```bash
+npm run package:dist
+```
+
+The package includes a current-platform native host binary under
+`extension-host/<platform>/<arch>/extension-host`. Native host installers use
+that binary when present, and fall back to `native-host/host-launcher.sh` during
+development.
 
 Run the Codex-like MCP `node_repl` server:
 
@@ -117,18 +133,22 @@ be added later through a browser client injected into this runtime.
 2. Enable Developer mode.
 3. Click **Load unpacked**.
 4. Select this folder's `extension/` directory.
-5. Copy the extension ID.
-6. Install the native host manifest:
+5. Install the native host manifest:
 
 ```bash
-bash native-host/install-macos.sh <extension-id>
+bash native-host/install-macos.sh
 ```
 
-The current local extension ID is:
+The extension ID used by the native host installer is configured in
+`config/extension-id.json`. For local development it is currently:
 
 ```text
 hooonkcoopaigliifkabcdjfmjjffmbm
 ```
+
+When the Chrome Web Store extension is published, replace only that configured
+ID with the Web Store ID. For temporary development overrides, use
+`FORMAX_EXTENSION_ID=... bash native-host/install-macos.sh`.
 
 After installing the native host, reload the extension in `chrome://extensions`.
 The popup should show `Connected`.

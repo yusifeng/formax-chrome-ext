@@ -7,6 +7,8 @@
     "build": "npm run build:runtime && npm run build:extension",
     "build:runtime": "tsc -p tsconfig.build.json",
     "build:extension": "tsc -p tsconfig.extension.json",
+    "build:extension-host": "npm run build:runtime && node scripts/build-extension-host-binary.js",
+    "package:dist": "npm run build && node scripts/build-extension-host-binary.js && node scripts/package-dist.js",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.extension.json --noEmit",
     "chat:llm": "node test-scripts/llm-browser-chat.js",
     "chat:node-repl": "node test-scripts/llm-node-repl-chat.js",
@@ -20,6 +22,7 @@
   "devDependencies": {
     "@types/chrome": "^0.0.320",
     "@types/node": "^24.0.0",
+    "postject": "^1.0.0-alpha.6",
     "typescript": "^5.8.3",
     "vitest": "^3.2.0"
   },
