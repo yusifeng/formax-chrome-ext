@@ -19,9 +19,9 @@ const copyEntries = [
   ["native-host/install-linux.sh", "native-host/install-linux.sh"],
   ["native-host/install-macos.sh", "native-host/install-macos.sh"],
   ["native-host/install-windows.reg", "native-host/install-windows.reg"],
-  ["test-scripts/llm-node-repl-chat.js", "test-scripts/llm-node-repl-chat.js"],
-  ["test-scripts/mcp-node-repl-smoke.js", "test-scripts/mcp-node-repl-smoke.js"],
-  ["prompt.md", "prompt.md"]
+  ["tests/scripts/llm-node-repl-chat.js", "tests/scripts/llm-node-repl-chat.js"],
+  ["tests/scripts/mcp-node-repl-smoke.js", "tests/scripts/mcp-node-repl-smoke.js"],
+  ["docs/prompts/handoff.md", "docs/prompts/handoff.md"]
 ];
 
 const ignoredExtensions = new Set([".ts", ".map"]);
@@ -94,8 +94,8 @@ async function main() {
     type: "module",
     scripts: {
       "mcp:node-repl": "node mcp-node-repl/server.js",
-      "chat:node-repl": "node test-scripts/llm-node-repl-chat.js",
-      "test:mcp-node-repl": "node test-scripts/mcp-node-repl-smoke.js"
+      "chat:node-repl": "node tests/scripts/llm-node-repl-chat.js",
+      "test:mcp-node-repl": "node tests/scripts/mcp-node-repl-smoke.js"
     },
     dependencies: rootPackage.dependencies || {}
   });
@@ -112,7 +112,7 @@ async function main() {
       nativeHost: "extension-host/<platform>/<arch>/extension-host",
       browserClientSdk: "mcp-node-repl/browser-client.js",
       skill: "skill/SKILL.md",
-      debugHarness: "test-scripts/llm-node-repl-chat.js"
+      debugHarness: "tests/scripts/llm-node-repl-chat.js"
     },
     copied,
     missing

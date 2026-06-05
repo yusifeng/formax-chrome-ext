@@ -32,7 +32,7 @@ function findUploadTrigger(elements: BrowserElement[]): BrowserElement | undefin
   });
 }
 
-const filePath = path.resolve(process.env.IMAGE_PATH || "fixtures/red-test.png");
+const filePath = path.resolve(process.env.IMAGE_PATH || "tests/fixtures/red-test.png");
 
 const sessionEnvelope = await browserStartSession({
   active: true

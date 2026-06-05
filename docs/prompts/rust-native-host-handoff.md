@@ -240,7 +240,7 @@ On stdin EOF:
 
 ## Native Frame Requirements
 
-Implement the Chrome Native Messaging frame codec inside Rust, even if `prompts/rust-native-frame-handoff.md` also exists.
+Implement the Chrome Native Messaging frame codec inside Rust, even if `docs/prompts/rust-native-frame-handoff.md` also exists.
 
 Frame format:
 

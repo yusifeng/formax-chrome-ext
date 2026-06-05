@@ -11,14 +11,14 @@ skill/SKILL.md
 To test another prompt:
 
 ```bash
-LLM_NODE_REPL_SYSTEM_PROMPT=/absolute/path/to/prompt.md npm run chat:node-repl
+LLM_NODE_REPL_SYSTEM_PROMPT=/absolute/path/to/docs/prompts/handoff.md npm run chat:node-repl
 ```
 
 Rust migration handoff prompts:
 
 ```text
-prompts/rust-native-host-handoff.md
-prompts/rust-native-frame-handoff.md
+docs/prompts/rust-native-host-handoff.md
+docs/prompts/rust-native-frame-handoff.md
 ```
 
 Prefer `rust-native-host-handoff.md` when the goal is to replace the current Node/SEA native host binary with a smaller Rust binary. Use `rust-native-frame-handoff.md` only for the narrower protocol-codec warmup task.
