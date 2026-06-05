@@ -15,9 +15,6 @@ const copyEntries = [
   ["agent/browserTools.js", "agent/browserTools.js"],
   ["shared", "shared"],
   ["extension", "extension"],
-  ["native-host/host.js", "native-host/host.js"],
-  ["native-host/host-launcher.sh", "native-host/host-launcher.sh"],
-  ["native-host/host.cmd", "native-host/host.cmd"],
   ["native-host/com.example.agentbrowser.json.example", "native-host/com.example.agentbrowser.json.example"],
   ["native-host/install-linux.sh", "native-host/install-linux.sh"],
   ["native-host/install-macos.sh", "native-host/install-macos.sh"],
@@ -113,7 +110,6 @@ async function main() {
       mcpServer: "mcp-node-repl/server.js",
       chromeExtension: "extension/manifest.json",
       nativeHost: "extension-host/<platform>/<arch>/extension-host",
-      nativeHostFallback: "native-host/host.js",
       browserClientSdk: "mcp-node-repl/browser-client.js",
       skill: "skill/SKILL.md",
       debugHarness: "test-scripts/llm-node-repl-chat.js"

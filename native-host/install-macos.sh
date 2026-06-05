@@ -10,7 +10,7 @@ TARGET_FILE="$TARGET_DIR/$HOST_NAME.json"
 
 read_config_value() {
   local key="$1"
-  node -e "const fs=require('fs'); const config=JSON.parse(fs.readFileSync(process.argv[1], 'utf8')); console.log(config[process.argv[2]] || '')" "$CONFIG_FILE" "$key"
+  sed -nE 's/^[[:space:]]*"'"$key"'"[[:space:]]*:[[:space:]]*"([^"]*)".*$/\1/p' "$CONFIG_FILE" | head -n 1
 }
 
 if [[ ! -f "$CONFIG_FILE" ]]; then
@@ -21,8 +21,6 @@ fi
 EXTENSION_ID="${FORMAX_EXTENSION_ID:-${1:-$(read_config_value extensionId)}}"
 HOST_NAME="${FORMAX_EXTENSION_HOST_NAME:-$(read_config_value extensionHostName)}"
 TARGET_FILE="$TARGET_DIR/$HOST_NAME.json"
-NODE_PATH="$(command -v node)"
-HOST_PATH="$ROOT_DIR/host-launcher.sh"
 ARCH="$(uname -m)"
 case "$ARCH" in
   x86_64) ARCH="x64" ;;
@@ -37,24 +35,17 @@ fi
 
 mkdir -p "$TARGET_DIR"
 
-if [[ -x "$BUNDLED_HOST_PATH" ]]; then
-  HOST_PATH="$BUNDLED_HOST_PATH"
-else
-  cat > "$HOST_PATH" <<SH
-#!/usr/bin/env bash
-set -euo pipefail
-
-exec "$NODE_PATH" "$ROOT_DIR/host.js"
-SH
-
-  chmod +x "$HOST_PATH"
+if [[ ! -x "$BUNDLED_HOST_PATH" ]]; then
+  echo "Missing Rust native host binary: $BUNDLED_HOST_PATH" >&2
+  echo "Run npm run build:rust-native-host or npm run package:dist first." >&2
+  exit 1
 fi
 
 cat > "$TARGET_FILE" <<JSON
 {
   "name": "$HOST_NAME",
   "description": "Agent Browser Controller Native Host",
-  "path": "$HOST_PATH",
+  "path": "$BUNDLED_HOST_PATH",
   "type": "stdio",
   "allowed_origins": [
     "chrome-extension://$EXTENSION_ID/"

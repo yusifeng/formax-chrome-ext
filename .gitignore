@@ -22,6 +22,12 @@ build/
 extension-host/
 .vite/
 
+# Rust build artifacts
+rust/**/target/
+
+# Local AI tool config
+.formax/
+
 # OS/editor noise
 .DS_Store
 Thumbs.db

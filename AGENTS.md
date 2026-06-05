@@ -1,0 +1,62 @@
+# Agent Notes
+
+## Chrome Extension ID
+
+The Chrome Web Store extension ID for this project is:
+
+```text
+dchkbbjmkheilkmencpckilhmmcppdne
+```
+
+Keep this value in sync with:
+
+- `config/extension-id.json`
+- `native-host/com.example.agentbrowser.json.example`
+- generated native messaging manifests created by `native-host/install-macos.sh` or `native-host/install-linux.sh`
+
+The native messaging host manifest must include:
+
+```text
+chrome-extension://dchkbbjmkheilkmencpckilhmmcppdne/
+```
+
+## Web Store vs Local Unpacked Builds
+
+Chrome Web Store builds and local unpacked builds do not necessarily share the same extension ID.
+
+The project configuration now targets the Web Store ID above. This is the right value for published installs and for distributable packages that users install after installing the Chrome Web Store version.
+
+When testing a local unpacked extension, Chrome may assign a different extension ID. If the local unpacked extension cannot connect to the native host, do not assume the native host is broken. Check the extension ID in `chrome://extensions` and either:
+
+- install the Web Store build and use the Web Store ID, or
+- run the native host installer with the local unpacked extension ID as an override for local testing.
+
+On macOS, the published/Web Store flow is:
+
+```bash
+cd /Users/david/Documents/github/formax-extension/dist
+bash native-host/install-macos.sh
+```
+
+For a local unpacked extension with a different ID:
+
+```bash
+cd /Users/david/Documents/github/formax-extension/dist
+bash native-host/install-macos.sh <local-unpacked-extension-id>
+```
+
+After changing the native host manifest or reloading/reinstalling the extension, reload the extension in Chrome or restart Chrome before testing native messaging again.
+
+## Packaging
+
+Use:
+
+```bash
+npm run package:dist
+```
+
+This rebuilds the runtime, extension JavaScript, Rust native host binary, and `dist/`.
+
+The Chrome Web Store upload package is extension-only and should not include the MCP server, native host, skill, or debug scripts.
+
+The full product distribution package contains the extension, native host, MCP node_repl server, browser client SDK, shared protocol files, skill, and debug scripts.

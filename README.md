@@ -98,9 +98,8 @@ npm run package:dist
 ```
 
 The package includes a current-platform native host binary under
-`extension-host/<platform>/<arch>/extension-host`. Native host installers use
-that binary when present, and fall back to `native-host/host-launcher.sh` during
-development.
+`extension-host/<platform>/<arch>/extension-host`. Native host installers require
+that Rust binary; the older Node native host fallback has been removed.
 
 Run the Codex-like MCP `node_repl` server:
 
@@ -143,7 +142,7 @@ The extension ID used by the native host installer is configured in
 `config/extension-id.json`. For local development it is currently:
 
 ```text
-hooonkcoopaigliifkabcdjfmjjffmbm
+dchkbbjmkheilkmencpckilhmmcppdne
 ```
 
 When the Chrome Web Store extension is published, replace only that configured
@@ -182,7 +181,7 @@ CLOSE_TABS=1 node agent/manual-test.js
 ```text
 Agent tools
   -> HTTP RPC at 127.0.0.1:8765/rpc
-  -> native-host/host.ts
+  -> rust/native-host extension-host
   -> Chrome Native Messaging
   -> extension/background.ts
   -> chrome.debugger / CDP
