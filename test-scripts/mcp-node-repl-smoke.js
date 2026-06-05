@@ -76,6 +76,7 @@ try {
           "  browsers: agent.browsers.list(),",
           "  sameBrowser: extensionBrowser === browser,",
           "  hasOpenUrl: typeof browser.openUrl === 'function',",
+          "  hasReloadExtension: typeof browser.reloadExtension === 'function',",
           "  hasRawCdp: typeof browser.rawCdp === 'function',",
           "  hasListTabs: typeof browser.listTabs === 'function',",
           "  hasGetTab: typeof browser.getTab === 'function',",
@@ -103,6 +104,7 @@ try {
   assert.deepEqual(result.result.browsers, ["extension"]);
   assert.equal(result.result.sameBrowser, true);
   assert.equal(result.result.hasOpenUrl, true);
+  assert.equal(result.result.hasReloadExtension, true);
   assert.equal(result.result.hasRawCdp, true);
   assert.equal(result.result.hasListTabs, true);
   assert.equal(result.result.hasGetTab, true);

@@ -1,5 +1,6 @@
 export type BrowserAction =
   | "health"
+  | "reloadExtension"
   | "getEvents"
   | "clearEvents"
   | "waitForEvent"
@@ -176,6 +177,11 @@ export type HealthResult = {
   attachedTabs: number[];
   supportedActions?: BrowserAction[];
   backendRevision?: number;
+};
+
+export type ReloadExtensionResult = {
+  reloading: true;
+  backendRevision: number;
 };
 
 export type BrowserEvent = NativeEvent & {

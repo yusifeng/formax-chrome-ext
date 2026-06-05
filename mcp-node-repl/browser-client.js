@@ -79,6 +79,7 @@ export function createBrowserClient(options = {}) {
         dev,
         tool: transport.run,
         health: () => result("browser_health"),
+        reloadExtension: () => result("browser_reload_extension"),
         name: (name, args = {}) => result("browser_name_session", withCurrentSession(state, { ...args, name })),
         currentTab: () => tabs.current(),
         finalize: (args = {}) => result("browser_finalize_session", finalizeArgs(state, args)),

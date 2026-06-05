@@ -49,6 +49,7 @@ import type {
   ObserveParams,
   PressKeyParams,
   ReloadParams,
+  ReloadExtensionResult,
   ScrollParams,
   ScreenshotParams,
   ScreenshotResult,
@@ -113,6 +114,10 @@ async function browserRpc<T = unknown>(
 
 export async function browserHealth() {
   return browserRpc<HealthResult>("health");
+}
+
+export async function browserReloadExtension() {
+  return browserRpc<ReloadExtensionResult>("reloadExtension");
 }
 
 export async function browserGetEvents(args: GetEventsParams = {}) {
@@ -290,6 +295,15 @@ export const browserToolSchemas = [
   {
     name: "browser_health",
     description: "Check whether the browser extension and native host are connected.",
+    parameters: {
+      type: "object",
+      properties: {},
+      additionalProperties: false
+    }
+  },
+  {
+    name: "browser_reload_extension",
+    description: "Ask the extension background to reload itself after the current response returns.",
     parameters: {
       type: "object",
       properties: {},
@@ -1023,6 +1037,8 @@ export async function callBrowserTool(name: string, args: JsonObject) {
   switch (name) {
     case "browser_health":
       return browserHealth();
+    case "browser_reload_extension":
+      return browserReloadExtension();
     case "browser_get_events":
       return browserGetEvents(args as GetEventsParams);
     case "browser_clear_events":

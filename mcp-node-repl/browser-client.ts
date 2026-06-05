@@ -170,6 +170,7 @@ export type BrowserClient = {
   readonly dev: BrowserDevFacade;
   tool(name: BrowserToolName, args?: JsonObject): Promise<BrowserToolResult<unknown>>;
   health(): Promise<unknown>;
+  reloadExtension(): Promise<unknown>;
   name(name: string, args?: JsonObject): Promise<unknown>;
   currentTab(): Promise<TabHandle>;
   finalize(args?: JsonObject & { keep?: Array<TabHandle | number> }): Promise<unknown>;
@@ -306,6 +307,7 @@ export function createBrowserClient(options: CreateBrowserClientOptions = {}): B
     dev,
     tool: transport.run,
     health: () => result("browser_health"),
+    reloadExtension: () => result("browser_reload_extension"),
     name: (name, args = {}) => result("browser_name_session", withCurrentSession(state, { ...args, name })),
     currentTab: () => tabs.current(),
     finalize: (args = {}) => result("browser_finalize_session", finalizeArgs(state, args)),

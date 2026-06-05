@@ -217,12 +217,37 @@ Result:
   "ok": true,
   "extensionId": "chrome extension id",
   "version": "0.1.0",
+  "nativeConnected": true,
+  "lastNativeError": null,
   "sessions": [],
-  "attachedTabs": []
+  "attachedTabs": [],
+  "supportedActions": ["health", "reloadExtension"],
+  "backendRevision": 3
 }
 ```
 
 Envelope metadata for `health` uses `sessionId: null` and `tabId: null`.
+
+### reloadExtension
+
+Params:
+
+```json
+{}
+```
+
+Schedules `chrome.runtime.reload()` after the response is sent. This is intended
+for local development and tests that detect a stale unpacked extension after
+`npm run build`.
+
+Result:
+
+```json
+{
+  "reloading": true,
+  "backendRevision": 3
+}
+```
 
 ### getEvents
 

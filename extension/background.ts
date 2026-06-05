@@ -10,9 +10,10 @@ const HOST_NAME = "com.example.agentbrowser";
 const CDP_VERSION = "1.3";
 const HEARTBEAT_ALARM = "agentbrowser-native-reconnect";
 const DEFAULT_CDP_TIMEOUT_MS = 10000;
-const BACKEND_REVISION = 2;
+const BACKEND_REVISION = 3;
 const SUPPORTED_ACTIONS = [
   "health",
+  "reloadExtension",
   "getEvents",
   "clearEvents",
   "waitForEvent",
@@ -272,6 +273,9 @@ async function dispatchActionRaw(action: string, params: ActionParams) {
     case "health":
       return health();
 
+    case "reloadExtension":
+      return reloadExtension();
+
     case "getEvents":
       return getEvents(params);
 
@@ -451,6 +455,17 @@ function health() {
     sessions: sessionManager.serializeAll(),
     attachedTabs: debuggerManager.listAttachedTabs(),
     supportedActions: SUPPORTED_ACTIONS,
+    backendRevision: BACKEND_REVISION
+  };
+}
+
+function reloadExtension() {
+  setTimeout(() => {
+    chrome.runtime.reload();
+  }, 50);
+
+  return {
+    reloading: true,
     backendRevision: BACKEND_REVISION
   };
 }

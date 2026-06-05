@@ -26,6 +26,7 @@ import {
   browserOpenUrl,
   browserPressKey,
   browserReload,
+  browserReloadExtension,
   browserScreenshot,
   browserScroll,
   browserStartSession,
@@ -88,6 +89,49 @@ async function test(name, fn) {
 
 function isUnknownActionFailure(action) {
   return results.at(-1)?.error === `Unknown action: ${action}`;
+}
+
+function healthIsCurrent(health) {
+  return (
+    health?.ok === true &&
+    health.nativeConnected === true &&
+    Array.isArray(health.supportedActions) &&
+    health.backendRevision >= 3 &&
+    health.supportedActions.includes("reloadExtension") &&
+    health.supportedActions.includes("nameSession") &&
+    health.supportedActions.includes("locatorQuery") &&
+    health.supportedActions.includes("getDevLogs")
+  );
+}
+
+async function readHealthOrNull() {
+  try {
+    return (await browserHealth()).result;
+  } catch {
+    return null;
+  }
+}
+
+async function reloadExtensionAndWaitForCurrentHealth() {
+  try {
+    await browserReloadExtension();
+  } catch (error) {
+    console.error("WARN automatic extension reload failed:", error);
+    return null;
+  }
+
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < 8000) {
+    await delay(300);
+    const health = await readHealthOrNull();
+
+    if (healthIsCurrent(health)) {
+      return health;
+    }
+  }
+
+  return await readHealthOrNull();
 }
 
 function appPage() {
@@ -267,19 +311,21 @@ async function run() {
   console.log(`Fixture server: ${baseUrl}`);
 
   const hasCurrentExtension = await test("native host health and extension action registry", async () => {
-    const health = (await browserHealth()).result;
-    assert(health.ok === true, "health.ok should be true", health);
+    let health = (await browserHealth()).result;
+
+    if (!healthIsCurrent(health) && health.supportedActions?.includes("reloadExtension")) {
+      console.error("Extension background is stale; attempting automatic reload...");
+      health = await reloadExtensionAndWaitForCurrentHealth();
+    }
+
+    assert(health && health.ok === true, "health.ok should be true", health);
     assert(
       health.nativeConnected === true,
       "extension must be connected to native host",
       health
     );
     assert(
-      Array.isArray(health.supportedActions) &&
-        health.backendRevision >= 2 &&
-        health.supportedActions.includes("nameSession") &&
-        health.supportedActions.includes("locatorQuery") &&
-        health.supportedActions.includes("getDevLogs"),
+      healthIsCurrent(health),
       "extension background is stale; reload the unpacked extension in chrome://extensions",
       {
         extensionId: health.extensionId,

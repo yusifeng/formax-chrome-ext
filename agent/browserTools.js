@@ -25,6 +25,9 @@ async function browserRpc(action, params = {}, timeoutMs = 30000) {
 export async function browserHealth() {
     return browserRpc("health");
 }
+export async function browserReloadExtension() {
+    return browserRpc("reloadExtension");
+}
 export async function browserGetEvents(args = {}) {
     return browserRpc("getEvents", args);
 }
@@ -146,6 +149,15 @@ export const browserToolSchemas = [
     {
         name: "browser_health",
         description: "Check whether the browser extension and native host are connected.",
+        parameters: {
+            type: "object",
+            properties: {},
+            additionalProperties: false
+        }
+    },
+    {
+        name: "browser_reload_extension",
+        description: "Ask the extension background to reload itself after the current response returns.",
         parameters: {
             type: "object",
             properties: {},
@@ -878,6 +890,8 @@ export async function callBrowserTool(name, args) {
     switch (name) {
         case "browser_health":
             return browserHealth();
+        case "browser_reload_extension":
+            return browserReloadExtension();
         case "browser_get_events":
             return browserGetEvents(args);
         case "browser_clear_events":
