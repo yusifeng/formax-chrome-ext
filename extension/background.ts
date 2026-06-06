@@ -10,7 +10,7 @@ const HOST_NAME = "com.example.agentbrowser";
 const CDP_VERSION = "1.3";
 const HEARTBEAT_ALARM = "agentbrowser-native-reconnect";
 const DEFAULT_CDP_TIMEOUT_MS = 10000;
-const BACKEND_REVISION = 3;
+const BACKEND_REVISION = 4;
 const SUPPORTED_ACTIONS = [
   "health",
   "reloadExtension",
@@ -59,6 +59,23 @@ let nativePort = null;
 let lastNativeError: string | null = null;
 
 type ActionParams = Record<string, any>;
+type CursorPhase = "idle" | "active" | "thinking";
+type CursorOverlayState = {
+  arrivedMoveSequence?: number;
+  moveSequence: number;
+  phase: CursorPhase;
+  sessionId: string | null;
+  turnId: string | null;
+  updatedAt: number;
+  visible: boolean;
+  x: number;
+  y: number;
+};
+type ActionContext = {
+  action: string;
+  actionId: string;
+};
+
 const debuggerManager = new DebuggerManager({
   cdpVersion: CDP_VERSION,
   defaultTimeoutMs: DEFAULT_CDP_TIMEOUT_MS
@@ -67,6 +84,9 @@ const eventBuffer = new EventBuffer({
   maxEvents: 500
 });
 const sessionManager = new SessionManager();
+const cursorOverlayStateByTab = new Map<number, CursorOverlayState>();
+let activeActionContext: ActionContext | null = null;
+let nextCursorMoveSequence = 0;
 
 registerTopLevelListeners();
 connectNativeHost();
@@ -95,6 +115,49 @@ function registerTopLevelListeners() {
         ok: nativePort != null,
         health: health()
       });
+      return true;
+    }
+
+    if (message?.type === "GET_AGENT_CURSOR_STATE") {
+      const tabId = sender.tab?.id;
+      sendResponse({
+        ok: true,
+        state:
+          typeof tabId === "number"
+            ? cursorOverlayStateByTab.get(tabId) ?? null
+            : null
+      });
+      return true;
+    }
+
+    if (message?.type === "AGENT_CURSOR_ARRIVED") {
+      const tabId = sender.tab?.id;
+      const moveSequence = Number(message.moveSequence);
+      const sessionId =
+        typeof message.sessionId === "string" ? message.sessionId : null;
+      const turnId = typeof message.turnId === "string" ? message.turnId : null;
+      const state =
+        typeof tabId === "number" ? cursorOverlayStateByTab.get(tabId) : null;
+
+      if (
+        state &&
+        Number.isFinite(moveSequence) &&
+        state.moveSequence === moveSequence &&
+        state.sessionId === sessionId &&
+        state.turnId === turnId
+      ) {
+        state.arrivedMoveSequence = moveSequence;
+        state.updatedAt = Date.now();
+        safePostEvent({
+          name: "cursorArrived",
+          sessionId: state.sessionId,
+          tabId,
+          moveSequence,
+          turnId: state.turnId
+        });
+      }
+
+      sendResponse({ ok: true });
       return true;
     }
 
@@ -136,6 +199,7 @@ function registerTopLevelListeners() {
     });
     debuggerManager.markTabRemoved(tabId);
     sessionManager.onTabRemoved(tabId);
+    cursorOverlayStateByTab.delete(tabId);
   });
 
   chrome.downloads.onCreated.addListener((downloadItem) => {
@@ -249,23 +313,30 @@ async function dispatchAction(
   actionId: string
 ) {
   const startedAt = Date.now();
-  const result = await dispatchActionRaw(action, params);
-  const endedAt = Date.now();
-  const meta = extractResultMetadata(result);
+  const previousContext = activeActionContext;
+  activeActionContext = { action, actionId };
 
-  return {
-    actionId,
-    action,
-    ok: true,
-    sessionId: meta.sessionId,
-    tabId: meta.tabId,
-    timing: {
-      startedAt,
-      endedAt,
-      durationMs: endedAt - startedAt
-    },
-    result
-  };
+  try {
+    const result = await dispatchActionRaw(action, params);
+    const endedAt = Date.now();
+    const meta = extractResultMetadata(result);
+
+    return {
+      actionId,
+      action,
+      ok: true,
+      sessionId: meta.sessionId,
+      tabId: meta.tabId,
+      timing: {
+        startedAt,
+        endedAt,
+        durationMs: endedAt - startedAt
+      },
+      result
+    };
+  } finally {
+    activeActionContext = previousContext;
+  }
 }
 
 async function dispatchActionRaw(action: string, params: ActionParams) {
@@ -697,6 +768,7 @@ async function waitForUrl(params: ActionParams = {}) {
   let lastPage = null;
 
   await debuggerManager.attachTab(tabId);
+  await showCursorActivity(tabId, "thinking");
 
   while (Date.now() - startedAt <= timeoutMs) {
     const page = await currentPageLocation(tabId);
@@ -738,6 +810,7 @@ async function waitForLoadState(params: ActionParams = {}) {
   const timeoutMs = numberOrDefault(params.timeoutMs, 15000);
 
   await debuggerManager.attachTab(tabId);
+  await showCursorActivity(tabId, "thinking");
 
   if (await loadStateIsSatisfied(tabId, state)) {
     sessionManager.touchSession(session?.sessionId);
@@ -773,6 +846,7 @@ async function waitForSelector(params: ActionParams = {}) {
   let lastMatch = null;
 
   await debuggerManager.attachTab(tabId);
+  await showCursorActivity(tabId, "thinking");
 
   while (Date.now() - startedAt <= timeoutMs) {
     const match = await selectorState(tabId, selector);
@@ -820,6 +894,7 @@ async function waitForText(params: ActionParams = {}) {
   let lastMatch = null;
 
   await debuggerManager.attachTab(tabId);
+  await showCursorActivity(tabId, "thinking");
 
   while (Date.now() - startedAt <= timeoutMs) {
     const match = await textState(tabId, {
@@ -868,6 +943,7 @@ async function waitForText(params: ActionParams = {}) {
 async function observe(params: ActionParams = {}) {
   const { session, tabId } = sessionManager.resolveSessionAndTab(params);
   await debuggerManager.attachTab(tabId);
+  await showCursorActivity(tabId, "thinking");
 
   const expression = `(() => {
   const MAX_TEXT_LENGTH = 5000;
@@ -1009,15 +1085,34 @@ async function observe(params: ActionParams = {}) {
     ...value
   };
 
+  const maxAccessibilityNodes = numberOrDefault(params.maxAccessibilityNodes, 200);
+  let accessibilityTree: ActionParams[] = [];
+  let accessibilityError: string | undefined;
+
+  if (params.includeAccessibility !== false) {
+    try {
+      accessibilityTree = await getAccessibilityTree(tabId, maxAccessibilityNodes);
+    } catch (error) {
+      accessibilityError = stringifyError(error);
+    }
+  }
+  const semanticNodes = summarizeAccessibilityNodes(accessibilityTree, 80);
+
+  observation.semanticTree = {
+    source: "accessibility",
+    nodeCount: accessibilityTree.length,
+    nodes: semanticNodes,
+    error: accessibilityError
+  };
+
   if (params.includeAccessibility === true) {
-    observation.accessibilityTree = await getAccessibilityTree(
-      tabId,
-      numberOrDefault(params.maxAccessibilityNodes, 200)
-    );
+    observation.accessibilityTree = accessibilityTree;
   }
 
   if (params.includeDomSnapshot === true) {
-    observation.domSnapshot = await getDomSnapshot(tabId);
+    const domSnapshot = await getDomSnapshot(tabId);
+    observation.domSnapshot = domSnapshot;
+    observation.domSnapshotSummary = summarizeDomSnapshot(domSnapshot);
   }
 
   sessionManager.touchSession(session?.sessionId);
@@ -1202,6 +1297,7 @@ async function click(params: ActionParams = {}) {
   await showCursor(tabId, target.x, target.y);
   await showHighlight(tabId, target.rect);
   await dispatchMouseClick(tabId, target.x, target.y, params);
+  await showCursorClick(tabId, target.x, target.y);
 
   await sleep(numberOrDefault(params.waitMs, 500));
 
@@ -1306,6 +1402,8 @@ async function evaluate(params: ActionParams = {}) {
   const { session, tabId } = sessionManager.resolveSessionAndTab(params);
   const script = requireString(params.script, "evaluate.params.script");
   const timeoutMs = numberOrDefault(params.timeoutMs, DEFAULT_CDP_TIMEOUT_MS);
+
+  await showCursorActivity(tabId, "thinking");
 
   const evaluated = await cdp(
     tabId,
@@ -1671,6 +1769,7 @@ async function finalizeSession(params: ActionParams = {}) {
 
   for (const tabId of tabIds) {
     await debuggerManager.detachTab(tabId);
+    cursorOverlayStateByTab.delete(tabId);
 
     if (keep.has(tabId) || !closeRest) {
       keptTabs.push(tabId);
@@ -1712,6 +1811,7 @@ async function stopSession(params: ActionParams = {}) {
 
   for (const tabId of tabIds) {
     await debuggerManager.detachTab(tabId);
+    cursorOverlayStateByTab.delete(tabId);
 
     if (params.closeTabs === true) {
       try {
@@ -2559,6 +2659,65 @@ async function getDomSnapshot(tabId: number) {
   });
 }
 
+function summarizeAccessibilityNodes(nodes: ActionParams[], maxNodes: number) {
+  return nodes
+    .filter((node) => node && node.ignored !== true)
+    .map((node) => ({
+      role: primitiveOrUndefined(node.role),
+      name: primitiveOrUndefined(node.name),
+      value: primitiveOrUndefined(node.value),
+      description: primitiveOrUndefined(node.description),
+      backendDOMNodeId:
+        typeof node.backendDOMNodeId === "number"
+          ? node.backendDOMNodeId
+          : undefined
+    }))
+    .filter((node) => node.role || node.name || node.value || node.description)
+    .slice(0, Math.max(1, Math.min(maxNodes, 200)));
+}
+
+function summarizeDomSnapshot(snapshot: any) {
+  const documents = Array.isArray(snapshot?.documents) ? snapshot.documents : [];
+  const strings = Array.isArray(snapshot?.strings) ? snapshot.strings : [];
+  const documentSummaries = documents.slice(0, 5).map((document) => {
+    const nodes = document?.nodes && typeof document.nodes === "object"
+      ? document.nodes
+      : {};
+    const layout = document?.layout && typeof document.layout === "object"
+      ? document.layout
+      : {};
+
+    return {
+      nodeCount: arrayLength(nodes.nodeName),
+      layoutNodeCount: arrayLength(layout.nodeIndex),
+      textValueCount: arrayLength(nodes.nodeValue),
+      attributeNameCount: arrayLength(nodes.attributes)
+    };
+  });
+
+  return {
+    documentCount: documents.length,
+    stringCount: strings.length,
+    documents: documentSummaries
+  };
+}
+
+function primitiveOrUndefined(value: unknown) {
+  if (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return value;
+  }
+
+  return undefined;
+}
+
+function arrayLength(value: unknown) {
+  return Array.isArray(value) ? value.length : 0;
+}
+
 async function viewportCenter(tabId: number) {
   const evaluated = await cdp(tabId, "Runtime.evaluate", {
     expression: `(() => ({
@@ -2586,7 +2745,42 @@ async function viewportCenter(tabId: number) {
   return value;
 }
 
-async function showCursor(tabId: number, x: number, y: number) {
+async function showCursor(
+  tabId: number,
+  x: number,
+  y: number,
+  options: {
+    animate?: boolean;
+    phase?: CursorPhase;
+    visible?: boolean;
+  } = {}
+) {
+  const sessionId = sessionIdForTab(tabId);
+  const turnId = activeActionContext?.actionId ?? null;
+  const moveSequence = ++nextCursorMoveSequence;
+  const state: CursorOverlayState = {
+    moveSequence,
+    phase: options.phase ?? "active",
+    sessionId,
+    turnId,
+    updatedAt: Date.now(),
+    visible: options.visible !== false,
+    x,
+    y
+  };
+  cursorOverlayStateByTab.set(tabId, state);
+
+  safePostEvent({
+    name: "cursorMove",
+    sessionId,
+    tabId,
+    moveSequence,
+    phase: state.phase,
+    turnId,
+    x,
+    y
+  });
+
   try {
     if (!(await prepareContentScript(tabId))) {
       return;
@@ -2594,12 +2788,31 @@ async function showCursor(tabId: number, x: number, y: number) {
 
     await chrome.tabs.sendMessage(tabId, {
       type: "AGENT_CURSOR",
+      animate: options.animate !== false,
+      moveSequence,
+      phase: state.phase,
+      sessionId,
+      turnId,
+      visible: state.visible,
       x,
       y
     });
   } catch {
     // Some pages cannot receive content scripts.
   }
+}
+
+async function showCursorActivity(tabId: number, phase: CursorPhase = "thinking") {
+  const previous = cursorOverlayStateByTab.get(tabId);
+  const point = previous
+    ? { x: previous.x, y: previous.y }
+    : await viewportCenter(tabId);
+
+  await showCursor(tabId, point.x, point.y, {
+    animate: false,
+    phase,
+    visible: true
+  });
 }
 
 async function showHighlight(tabId: number, rect: ActionParams) {
@@ -2611,6 +2824,22 @@ async function showHighlight(tabId: number, rect: ActionParams) {
     await chrome.tabs.sendMessage(tabId, {
       type: "AGENT_HIGHLIGHT",
       rect
+    });
+  } catch {
+    // Visual feedback is best effort.
+  }
+}
+
+async function showCursorClick(tabId: number, x: number, y: number) {
+  try {
+    if (!(await prepareContentScript(tabId))) {
+      return;
+    }
+
+    await chrome.tabs.sendMessage(tabId, {
+      type: "AGENT_CURSOR_CLICK",
+      x,
+      y
     });
   } catch {
     // Visual feedback is best effort.

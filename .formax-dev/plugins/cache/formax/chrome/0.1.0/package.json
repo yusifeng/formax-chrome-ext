@@ -1,0 +1,15 @@
+{
+  "name": "formax-browser-agent-dist",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "mcp:node-repl": "node mcp-node-repl/server.js",
+    "chat:node-repl": "node tests/scripts/llm-node-repl-chat.js",
+    "test:mcp-node-repl": "node tests/scripts/mcp-node-repl-smoke.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.4.3"
+  }
+}

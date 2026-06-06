@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Builds the Rust native host and copies it to extension-host/<platform>/<arch>/extension-host.
+ * Builds the Rust native host and copies it to build/extension-host/<platform>/<arch>/extension-host.
  *
  * Usage: node scripts/copy-rust-native-host.js
  *
@@ -51,7 +51,7 @@ async function main() {
     "release",
     "formax-native-host"
   );
-  const outDir = path.join(root, "extension-host", platform, arch);
+  const outDir = path.join(root, "build", "extension-host", platform, arch);
   const outPath = path.join(outDir, executable);
 
   // 1. Build the Rust binary
@@ -63,10 +63,12 @@ async function main() {
     manifestPath,
   ]);
 
-  // 2. Ensure output directory exists
+  // 2. Recreate output directory so stale build artifacts from older host
+  // implementations cannot leak into packaging.
+  await fs.rm(outDir, { recursive: true, force: true });
   await fs.mkdir(outDir, { recursive: true });
 
-  // 3. Copy binary to extension-host path
+  // 3. Copy binary to build/extension-host path
   await fs.copyFile(releaseBinary, outPath);
   await fs.chmod(outPath, 0o755);
 

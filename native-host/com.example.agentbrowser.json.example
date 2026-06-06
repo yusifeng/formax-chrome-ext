@@ -1,7 +1,7 @@
 {
   "name": "com.example.agentbrowser",
   "description": "Agent Browser Controller Native Host",
-  "path": "/ABSOLUTE/PATH/TO/formax-extension/extension-host/macos/arm64/extension-host",
+  "path": "/ABSOLUTE/PATH/TO/formax-browser-agent/extension-host/macos/arm64/extension-host",
   "type": "stdio",
   "allowed_origins": [
     "chrome-extension://dchkbbjmkheilkmencpckilhmmcppdne/"

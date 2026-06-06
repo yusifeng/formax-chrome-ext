@@ -8,6 +8,7 @@
     "build:runtime": "tsc -p tsconfig.build.json",
     "build:extension": "tsc -p tsconfig.extension.json",
     "build:rust-native-host": "node scripts/copy-rust-native-host.js",
+    "install:formax-runtime": "node scripts/install-formax-runtime.js",
     "package:dist": "npm run build && npm run build:rust-native-host && node scripts/package-dist.js",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.extension.json --noEmit",
     "chat:llm": "node tests/scripts/llm-browser-chat.js",

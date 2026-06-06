@@ -34,15 +34,16 @@ When testing a local unpacked extension, Chrome may assign a different extension
 On macOS, the published/Web Store flow is:
 
 ```bash
-cd /Users/david/Documents/github/formax-extension/dist
-bash native-host/install-macos.sh
+cd /Users/david/Documents/github/formax-extension
+npm run package:dist
+npm run install:formax-runtime
 ```
 
 For a local unpacked extension with a different ID:
 
 ```bash
-cd /Users/david/Documents/github/formax-extension/dist
-bash native-host/install-macos.sh <local-unpacked-extension-id>
+cd /Users/david/Documents/github/formax-extension
+npm run install:formax-runtime -- --extension-id <local-unpacked-extension-id>
 ```
 
 After changing the native host manifest or reloading/reinstalling the extension, reload the extension in Chrome or restart Chrome before testing native messaging again.
@@ -56,6 +57,15 @@ npm run package:dist
 ```
 
 This rebuilds the runtime, extension JavaScript, Rust native host binary, and `dist/`.
+
+Use:
+
+```bash
+npm run install:formax-runtime
+```
+
+to copy `dist/` into `~/.formax/plugins/cache/formax/chrome/<version>/`, update
+the `latest` symlink, and write Chrome's native messaging manifest.
 
 The Chrome Web Store upload package is extension-only and should not include the MCP server, native host, skill, or debug scripts.
 

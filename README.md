@@ -97,9 +97,25 @@ skill, and debug harness into `dist/`:
 npm run package:dist
 ```
 
-The package includes a current-platform native host binary under
-`extension-host/<platform>/<arch>/extension-host`. Native host installers require
-that Rust binary; the older Node native host fallback has been removed.
+The release package includes a current-platform native host binary under
+`extension-host/<platform>/<arch>/extension-host`. In the source tree, the same
+binary is built under `build/extension-host/<platform>/<arch>/extension-host`.
+Native host installers require that Rust binary; the older Node native host
+fallback has been removed.
+
+Install the packaged runtime into a Codex-like local cache under `~/.formax`
+and write the Chrome native messaging manifest:
+
+```bash
+npm run package:dist
+npm run install:formax-runtime
+```
+
+For a local unpacked Chrome extension whose ID differs from the Web Store ID:
+
+```bash
+npm run install:formax-runtime -- --extension-id <local-unpacked-extension-id>
+```
 
 Run the Codex-like MCP `node_repl` server:
 

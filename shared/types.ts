@@ -126,6 +126,8 @@ export type BrowserObservation = {
   elements: BrowserElement[];
   accessibilityTree?: BrowserAccessibilityNode[];
   domSnapshot?: unknown;
+  domSnapshotSummary?: BrowserDomSnapshotSummary;
+  semanticTree?: BrowserSemanticTree;
 };
 
 export type BrowserAccessibilityNode = {
@@ -137,6 +139,32 @@ export type BrowserAccessibilityNode = {
   description?: unknown;
   childIds?: string[];
   backendDOMNodeId?: number;
+};
+
+export type BrowserSemanticTree = {
+  error?: string;
+  source: "accessibility";
+  nodeCount: number;
+  nodes: BrowserSemanticNode[];
+};
+
+export type BrowserSemanticNode = {
+  role?: string | number | boolean;
+  name?: string | number | boolean;
+  value?: string | number | boolean;
+  description?: string | number | boolean;
+  backendDOMNodeId?: number;
+};
+
+export type BrowserDomSnapshotSummary = {
+  documentCount: number;
+  stringCount: number;
+  documents: {
+    nodeCount: number;
+    layoutNodeCount: number;
+    textValueCount: number;
+    attributeNameCount: number;
+  }[];
 };
 
 export type BrowserTiming = {

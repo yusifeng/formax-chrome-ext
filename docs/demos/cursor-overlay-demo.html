@@ -1,0 +1,963 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Formax Cursor Overlay Demo</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f7f8fb;
+        --panel: #ffffff;
+        --text: #111827;
+        --muted: #64748b;
+        --line: #d9dee8;
+        --accent: #10b981;
+        --accent-dark: #047857;
+        --blue: #2563eb;
+        --amber: #d97706;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0)),
+          var(--bg);
+        color: var(--text);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+      }
+
+      button,
+      input,
+      select {
+        font: inherit;
+      }
+
+      .app {
+        min-height: 100vh;
+        padding: 28px;
+      }
+
+      .shell {
+        display: grid;
+        grid-template-columns: 280px minmax(0, 1fr);
+        gap: 20px;
+        max-width: 1180px;
+        margin: 0 auto;
+      }
+
+      .sidebar,
+      .workspace {
+        background: rgba(255, 255, 255, 0.86);
+        border: 1px solid var(--line);
+        box-shadow: 0 18px 50px rgba(15, 23, 42, 0.08);
+      }
+
+      .sidebar {
+        align-self: start;
+        border-radius: 8px;
+        padding: 16px;
+        position: sticky;
+        top: 24px;
+      }
+
+      .workspace {
+        border-radius: 8px;
+        overflow: hidden;
+      }
+
+      .brand {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        margin-bottom: 18px;
+      }
+
+      .logo {
+        display: grid;
+        width: 34px;
+        height: 34px;
+        place-items: center;
+        border-radius: 8px;
+        background: #111827;
+        color: white;
+        font-weight: 750;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      h1 {
+        font-size: 15px;
+        line-height: 1.2;
+      }
+
+      .muted {
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.45;
+      }
+
+      .demo-actions {
+        display: grid;
+        gap: 8px;
+        margin-top: 16px;
+      }
+
+      .demo-actions button,
+      .primary,
+      .secondary,
+      .icon-button {
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: white;
+        color: var(--text);
+        cursor: pointer;
+        min-height: 36px;
+      }
+
+      .demo-actions button {
+        text-align: left;
+        padding: 9px 10px;
+      }
+
+      .demo-actions button:hover,
+      .secondary:hover,
+      .icon-button:hover {
+        border-color: #a8b3c5;
+        background: #f8fafc;
+      }
+
+      .primary {
+        border-color: var(--accent-dark);
+        background: var(--accent);
+        color: white;
+        padding: 0 14px;
+        font-weight: 650;
+      }
+
+      .secondary {
+        padding: 0 12px;
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-bottom: 1px solid var(--line);
+        padding: 14px 18px;
+      }
+
+      .tabs {
+        display: flex;
+        gap: 8px;
+      }
+
+      .tab {
+        border-radius: 999px;
+        padding: 6px 10px;
+        background: #eef2f7;
+        color: #334155;
+        font-size: 13px;
+      }
+
+      .tab.active {
+        background: #dcfce7;
+        color: #166534;
+      }
+
+      .toolbar {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+
+      .content {
+        padding: 22px;
+      }
+
+      .search-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto auto;
+        gap: 10px;
+        align-items: center;
+        margin-top: 18px;
+      }
+
+      .search {
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        height: 40px;
+        padding: 0 12px;
+        outline: none;
+        width: 100%;
+      }
+
+      .search:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.16);
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 18px;
+      }
+
+      .card {
+        min-height: 132px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: white;
+        padding: 14px;
+      }
+
+      .card h3 {
+        font-size: 14px;
+        margin-bottom: 8px;
+      }
+
+      .metric {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-top: 16px;
+        border-top: 1px solid #eef2f7;
+        padding-top: 12px;
+      }
+
+      .metric strong {
+        font-size: 20px;
+      }
+
+      .table {
+        margin-top: 18px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        overflow: hidden;
+      }
+
+      .row {
+        display: grid;
+        grid-template-columns: 1.2fr 0.7fr 0.7fr auto;
+        gap: 12px;
+        align-items: center;
+        min-height: 48px;
+        padding: 0 14px;
+        background: white;
+        border-top: 1px solid #eef2f7;
+      }
+
+      .row:first-child {
+        border-top: 0;
+        background: #f8fafc;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+        text-transform: uppercase;
+      }
+
+      .status {
+        width: max-content;
+        border-radius: 999px;
+        padding: 4px 8px;
+        background: #eef2ff;
+        color: #3730a3;
+        font-size: 12px;
+      }
+
+      .status.green {
+        background: #dcfce7;
+        color: #166534;
+      }
+
+      .status.amber {
+        background: #fef3c7;
+        color: #92400e;
+      }
+
+      .log {
+        min-height: 76px;
+        margin-top: 18px;
+        border-radius: 8px;
+        background: #111827;
+        color: #d1fae5;
+        font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+        padding: 12px;
+        white-space: pre-wrap;
+      }
+
+      .state-panel {
+        display: grid;
+        gap: 8px;
+        margin-top: 14px;
+        border-top: 1px solid var(--line);
+        padding-top: 14px;
+      }
+
+      .state-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .state-row strong {
+        max-width: 150px;
+        overflow: hidden;
+        color: var(--text);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-weight: 650;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .overlay-root {
+        position: fixed;
+        inset: 0;
+        overflow: hidden;
+        pointer-events: none;
+        z-index: 2147483647;
+      }
+
+      .highlight {
+        position: fixed;
+        left: 0;
+        top: 0;
+        border: 2px solid rgba(16, 185, 129, 0.95);
+        border-radius: 8px;
+        background: rgba(16, 185, 129, 0.08);
+        box-shadow:
+          0 0 0 4px rgba(16, 185, 129, 0.16),
+          0 12px 30px rgba(5, 150, 105, 0.2);
+        opacity: 0;
+        transform: translate3d(-9999px, -9999px, 0) scale(0.98);
+        transition:
+          opacity 140ms ease,
+          transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
+          width 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
+          height 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+        will-change: opacity, transform, width, height;
+      }
+
+      .agent-cursor {
+        position: fixed;
+        left: 0;
+        top: 0;
+        width: 28px;
+        height: 28px;
+        opacity: 0;
+        transform: translate3d(-9999px, -9999px, 0);
+        transform-origin: 7.2px 3.3px;
+        will-change: opacity, filter, transform;
+      }
+
+      .agent-cursor img {
+        display: block;
+        width: 28px;
+        height: 28px;
+        filter:
+          drop-shadow(0 0 7px rgba(16, 185, 129, 0.82))
+          drop-shadow(0 0 18px rgba(16, 185, 129, 0.42));
+        pointer-events: none;
+        user-select: none;
+      }
+
+      .agent-label {
+        position: fixed;
+        left: 0;
+        top: 0;
+        padding: 4px 8px;
+        border: 1px solid rgba(255, 255, 255, 0.72);
+        border-radius: 9999px;
+        background: rgba(15, 23, 42, 0.88);
+        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.22);
+        color: white;
+        font: 500 12px/1.2 system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+        opacity: 0;
+        white-space: nowrap;
+        transition: opacity 120ms ease;
+        will-change: opacity, transform;
+      }
+
+      @media (max-width: 850px) {
+        .app {
+          padding: 14px;
+        }
+
+        .shell {
+          grid-template-columns: 1fr;
+        }
+
+        .sidebar {
+          position: static;
+        }
+
+        .grid {
+          grid-template-columns: 1fr;
+        }
+
+        .row {
+          grid-template-columns: 1fr;
+          gap: 4px;
+          padding: 12px 14px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="app">
+      <div class="shell">
+        <aside class="sidebar">
+          <div class="brand">
+            <div class="logo">F</div>
+            <div>
+              <h1>Cursor Overlay Demo</h1>
+              <p class="muted">A local mock page for tuning the Formax browser agent cursor.</p>
+            </div>
+          </div>
+
+          <p class="muted">
+            Run a sequence or click anywhere on the page. The simulated agent cursor will move,
+            highlight targets, and emit click ripples.
+          </p>
+
+          <div class="demo-actions">
+            <button data-demo="tour">Run full tour</button>
+            <button data-demo="search">Search interaction</button>
+            <button data-demo="observe">Observe thinking state</button>
+            <button data-demo="evaluate">Evaluate active state</button>
+            <button data-demo="wait">Wait for load state</button>
+            <button data-demo="cards">Highlight cards</button>
+            <button data-demo="long">Long-distance movement</button>
+            <button data-demo="hide">Hide cursor</button>
+          </div>
+
+          <div class="state-panel" aria-label="Cursor state">
+            <div class="state-row"><span>phase</span><strong id="state-phase">idle</strong></div>
+            <div class="state-row"><span>sessionId</span><strong id="state-session">session-demo</strong></div>
+            <div class="state-row"><span>turnId</span><strong id="state-turn">turn-0</strong></div>
+            <div class="state-row"><span>moveSequence</span><strong id="state-sequence">0</strong></div>
+            <div class="state-row"><span>arrived</span><strong id="state-arrived">none</strong></div>
+          </div>
+        </aside>
+
+        <section class="workspace">
+          <div class="topbar">
+            <div class="tabs">
+              <div class="tab active">Agent 8bf3b5</div>
+              <div class="tab">Research</div>
+              <div class="tab">Checkout</div>
+            </div>
+            <div class="toolbar">
+              <button class="icon-button" data-target="refresh" title="Refresh">↻</button>
+              <button class="secondary" data-target="settings">Settings</button>
+              <button class="primary" data-target="deploy">Deploy</button>
+            </div>
+          </div>
+
+          <div class="content">
+            <h2>Browser Agent Workspace</h2>
+            <p class="muted">This page is intentionally ordinary: forms, buttons, cards, and rows.</p>
+
+            <div class="search-row">
+              <input class="search" data-target="search" placeholder="Search tasks, docs, or URLs" />
+              <button class="secondary" data-target="filter">Filter</button>
+              <button class="primary" data-target="searchButton">Search</button>
+            </div>
+
+            <div class="grid">
+              <article class="card" data-target="cardOne">
+                <h3>Navigation</h3>
+                <p class="muted">Open a page, wait for load state, observe visible DOM.</p>
+                <div class="metric"><span class="muted">Success</span><strong>98%</strong></div>
+              </article>
+              <article class="card" data-target="cardTwo">
+                <h3>Interaction</h3>
+                <p class="muted">Click, type, scroll, upload files, and handle dialogs.</p>
+                <div class="metric"><span class="muted">Latency</span><strong>120ms</strong></div>
+              </article>
+              <article class="card" data-target="cardThree">
+                <h3>Inspection</h3>
+                <p class="muted">Evaluate JavaScript, capture screenshots, read dev logs.</p>
+                <div class="metric"><span class="muted">Signals</span><strong>42</strong></div>
+              </article>
+            </div>
+
+            <div class="table">
+              <div class="row">
+                <span>Task</span>
+                <span>Status</span>
+                <span>Owner</span>
+                <span>Action</span>
+              </div>
+              <div class="row" data-target="rowOne">
+                <span>Publish Chrome extension</span>
+                <span class="status amber">Review</span>
+                <span>David</span>
+                <button class="secondary" data-target="review">Open</button>
+              </div>
+              <div class="row" data-target="rowTwo">
+                <span>Install native host runtime</span>
+                <span class="status green">Done</span>
+                <span>Formax</span>
+                <button class="secondary" data-target="runtime">Inspect</button>
+              </div>
+              <div class="row" data-target="rowThree">
+                <span>Improve cursor animation</span>
+                <span class="status">Active</span>
+                <span>Agent</span>
+                <button class="secondary" data-target="cursor">Tune</button>
+              </div>
+            </div>
+
+            <div class="log" id="log">ready</div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <div class="overlay-root" aria-hidden="true">
+      <div class="highlight" id="highlight"></div>
+      <div class="agent-cursor" id="cursor">
+        <img alt="" draggable="false" src="../../extension/images/agent-cursor.png" />
+      </div>
+      <div class="agent-label" id="label">Agent</div>
+    </div>
+
+    <script>
+      const cursor = document.getElementById("cursor");
+      const cursorImage = cursor.querySelector("img");
+      const label = document.getElementById("label");
+      const highlight = document.getElementById("highlight");
+      const log = document.getElementById("log");
+      const statePhase = document.getElementById("state-phase");
+      const stateSession = document.getElementById("state-session");
+      const stateTurn = document.getElementById("state-turn");
+      const stateSequence = document.getElementById("state-sequence");
+      const stateArrived = document.getElementById("state-arrived");
+
+      let current = {
+        x: Math.round(window.innerWidth * 0.58),
+        y: Math.round(window.innerHeight * 0.55)
+      };
+      let target = { ...current };
+      let velocity = { x: 0, y: 0 };
+      let visible = false;
+      let phase = "idle";
+      let sessionId = "session-demo";
+      let turnId = "turn-0";
+      let moveSequence = 0;
+      let pendingArrival = null;
+      let rafId = null;
+      let lastFrameAt = 0;
+      let highlightTimer = null;
+      const faviconBadgeId = "agent-browser-controller-demo-favicon";
+
+      function writeLog(line) {
+        const time = new Date().toLocaleTimeString();
+        log.textContent = `[${time}] ${line}\n${log.textContent}`.slice(0, 900);
+      }
+
+      function sleep(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+      }
+
+      function rectOf(targetName) {
+        const element = document.querySelector(`[data-target="${targetName}"]`);
+        if (!element) throw new Error(`Missing demo target: ${targetName}`);
+        return element.getBoundingClientRect();
+      }
+
+      function centerOf(targetName) {
+        const rect = rectOf(targetName);
+        return {
+          x: rect.left + rect.width / 2,
+          y: rect.top + rect.height / 2
+        };
+      }
+
+      function clampPoint(point) {
+        return {
+          x: Math.max(0, Math.min(window.innerWidth, point.x)),
+          y: Math.max(0, Math.min(window.innerHeight, point.y))
+        };
+      }
+
+      function updateCursorTransform() {
+        const speed = Math.hypot(velocity.x, velocity.y);
+        const scale = visible ? Math.min(1.04, 0.96 + speed / 9000) : 0.86;
+        const opacity = visible ? Math.max(0.72, Math.min(1, 0.92 + speed / 7000)) : 0;
+        const blur = visible ? 0 : 2;
+
+        cursor.style.opacity = `${opacity}`;
+        cursor.style.filter = `blur(${blur.toFixed(2)}px)`;
+        cursor.style.transform = [
+          `translate3d(${(current.x - 7.2).toFixed(2)}px, ${(current.y - 3.3).toFixed(2)}px, 0)`,
+          `scale(${scale.toFixed(3)})`
+        ].join(" ");
+
+        label.style.opacity = "0";
+        label.style.transform = `translate3d(${(current.x + 14).toFixed(2)}px, ${(current.y + 14).toFixed(2)}px, 0)`;
+      }
+
+      function updateStatePanel() {
+        statePhase.textContent = phase;
+        stateSession.textContent = sessionId;
+        stateTurn.textContent = turnId;
+        stateSequence.textContent = String(moveSequence);
+      }
+
+      function applyPhase(nextPhase) {
+        phase = ["active", "thinking", "idle"].includes(nextPhase) ? nextPhase : "active";
+
+        if (!visible || phase === "idle") {
+          removeFaviconBadge();
+          updateStatePanel();
+          return;
+        }
+
+        if (phase === "thinking") {
+          cursorImage.style.filter =
+            "drop-shadow(0 0 8px rgba(59, 130, 246, 0.82)) drop-shadow(0 0 24px rgba(16, 185, 129, 0.38))";
+        } else {
+          cursorImage.style.filter =
+            "drop-shadow(0 0 7px rgba(16, 185, 129, 0.82)) drop-shadow(0 0 18px rgba(16, 185, 129, 0.42))";
+        }
+
+        updateFaviconBadge(phase);
+        updateStatePanel();
+      }
+
+      function updateFaviconBadge(nextPhase) {
+        const color = nextPhase === "thinking" ? "#3b82f6" : "#10b981";
+        const svg = [
+          '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">',
+          '<rect width="32" height="32" rx="7" fill="#0f172a"/>',
+          `<circle cx="22" cy="10" r="6" fill="${color}" stroke="white" stroke-width="2"/>`,
+          '<path d="M8 22V8l10 10h-6l-4 4z" fill="white"/>',
+          "</svg>"
+        ].join("");
+        let link = document.getElementById(faviconBadgeId);
+
+        if (!link) {
+          link = document.createElement("link");
+          link.id = faviconBadgeId;
+          link.rel = "icon";
+          document.head.appendChild(link);
+        }
+
+        link.href = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+      }
+
+      function removeFaviconBadge() {
+        document.getElementById(faviconBadgeId)?.remove();
+      }
+
+      function nextTurn(name) {
+        turnId = `${name}-${String(Date.now()).slice(-5)}`;
+        updateStatePanel();
+      }
+
+      function beginMove(nextPhase) {
+        moveSequence += 1;
+        pendingArrival = {
+          moveSequence,
+          sessionId,
+          turnId
+        };
+        stateArrived.textContent = "pending";
+        applyPhase(nextPhase);
+        writeLog(
+          `cursorMove #${moveSequence} phase=${phase} sessionId=${sessionId} turnId=${turnId}`
+        );
+      }
+
+      function sendCursorArrived() {
+        if (!pendingArrival) return;
+
+        const arrival = pendingArrival;
+        pendingArrival = null;
+        stateArrived.textContent = `#${arrival.moveSequence}`;
+        writeLog(
+          `cursorArrived #${arrival.moveSequence} sessionId=${arrival.sessionId} turnId=${arrival.turnId}`
+        );
+      }
+
+      function animate(frameAt) {
+        const dt = Math.max(1 / 240, Math.min(1 / 30, (frameAt - lastFrameAt) / 1000 || 1 / 60));
+        lastFrameAt = frameAt;
+
+        const stiffness = 42;
+        const damping = 14;
+        const ax = (target.x - current.x) * stiffness - velocity.x * damping;
+        const ay = (target.y - current.y) * stiffness - velocity.y * damping;
+
+        velocity = {
+          x: velocity.x + ax * dt,
+          y: velocity.y + ay * dt
+        };
+        current = {
+          x: current.x + velocity.x * dt,
+          y: current.y + velocity.y * dt
+        };
+
+        updateCursorTransform();
+
+        const settled =
+          Math.hypot(target.x - current.x, target.y - current.y) < 0.35 &&
+          Math.hypot(velocity.x, velocity.y) < 6;
+
+        if (settled) {
+          current = { ...target };
+          velocity = { x: 0, y: 0 };
+          updateCursorTransform();
+          rafId = null;
+          sendCursorArrived();
+          return;
+        }
+
+        rafId = requestAnimationFrame(animate);
+      }
+
+      function ensureAnimation() {
+        if (rafId != null) return;
+        lastFrameAt = performance.now();
+        rafId = requestAnimationFrame(animate);
+      }
+
+      function setCursor(point, options = {}) {
+        const next = clampPoint(point);
+        const shouldAnimate = options.animate !== false;
+        visible = options.visible !== false;
+        beginMove(options.phase || phase || "active");
+
+        if (!shouldAnimate) {
+          target = next;
+          current = next;
+          velocity = { x: 0, y: 0 };
+          updateCursorTransform();
+          sendCursorArrived();
+          return;
+        }
+
+        target = next;
+        updateCursorTransform();
+        ensureAnimation();
+      }
+
+      function showClickRipple(point) {
+        const ripple = document.createElement("div");
+        Object.assign(ripple.style, {
+          position: "fixed",
+          left: `${point.x - 16}px`,
+          top: `${point.y - 16}px`,
+          width: "32px",
+          height: "32px",
+          border: "2px solid rgba(16, 185, 129, 0.95)",
+          borderRadius: "9999px",
+          boxShadow: "0 0 0 6px rgba(16, 185, 129, 0.14)",
+          opacity: "0.95",
+          pointerEvents: "none",
+          transform: "scale(0.45)",
+          transition: "opacity 360ms ease-out, transform 360ms cubic-bezier(.2,.8,.2,1)",
+          willChange: "opacity, transform"
+        });
+        document.querySelector(".overlay-root").appendChild(ripple);
+
+        requestAnimationFrame(() => {
+          ripple.style.opacity = "0";
+          ripple.style.transform = "scale(1.75)";
+        });
+
+        setTimeout(() => ripple.remove(), 420);
+      }
+
+      function showHighlightRect(rect) {
+        if (highlightTimer != null) {
+          clearTimeout(highlightTimer);
+          highlightTimer = null;
+        }
+
+        const margin = 3;
+        highlight.style.width = `${Math.max(0, rect.width + margin * 2)}px`;
+        highlight.style.height = `${Math.max(0, rect.height + margin * 2)}px`;
+        highlight.style.opacity = "1";
+        highlight.style.transform = `translate3d(${rect.x - margin}px, ${rect.y - margin}px, 0) scale(1)`;
+
+        highlightTimer = setTimeout(() => {
+          highlight.style.opacity = "0";
+          highlight.style.transform = `translate3d(${rect.x - margin}px, ${rect.y - margin}px, 0) scale(0.985)`;
+        }, 900);
+      }
+
+      async function moveToTarget(targetName, options = {}) {
+        const point = centerOf(targetName);
+        const rect = rectOf(targetName);
+        setCursor(point, {
+          animate: true,
+          phase: options.phase || "active",
+          visible: true
+        });
+        if (options.highlight !== false) showHighlightRect(rect);
+        writeLog(`move -> ${targetName}`);
+        await sleep(options.delay ?? 720);
+      }
+
+      async function clickTarget(targetName) {
+        const point = centerOf(targetName);
+        await moveToTarget(targetName);
+        showClickRipple(point);
+        writeLog(`click -> ${targetName}`);
+        await sleep(360);
+      }
+
+      async function runSearchDemo() {
+        nextTurn("search");
+        await clickTarget("search");
+        document.querySelector('[data-target="search"]').value = "browser agent cursor";
+        writeLog("type -> browser agent cursor");
+        await sleep(520);
+        await clickTarget("searchButton");
+      }
+
+      async function runCardsDemo() {
+        nextTurn("cards");
+        await moveToTarget("cardOne");
+        await moveToTarget("cardTwo");
+        await moveToTarget("cardThree");
+        await clickTarget("cursor");
+      }
+
+      async function runLongDemo() {
+        nextTurn("long");
+        setCursor({
+          x: 44,
+          y: window.innerHeight - 44
+        }, {
+          animate: true,
+          phase: "active",
+          visible: true
+        });
+        writeLog("long move -> bottom-left");
+        await sleep(850);
+        setCursor({
+          x: window.innerWidth - 54,
+          y: 56
+        }, {
+          animate: true,
+          phase: "active",
+          visible: true
+        });
+        writeLog("long move -> top-right");
+        await sleep(850);
+        await clickTarget("deploy");
+      }
+
+      async function runObserveDemo() {
+        nextTurn("observe");
+        await moveToTarget("cardThree", {
+          delay: 260,
+          highlight: false,
+          phase: "thinking"
+        });
+        writeLog("observe -> semanticTree nodes=18, elements=12");
+        await sleep(900);
+        await moveToTarget("cardThree", { phase: "active" });
+      }
+
+      async function runEvaluateDemo() {
+        nextTurn("evaluate");
+        await moveToTarget("settings", {
+          delay: 260,
+          highlight: false,
+          phase: "thinking"
+        });
+        writeLog("evaluate -> document.title");
+        await sleep(650);
+        await moveToTarget("settings", { phase: "active" });
+      }
+
+      async function runWaitDemo() {
+        nextTurn("wait");
+        await moveToTarget("refresh", {
+          delay: 260,
+          highlight: false,
+          phase: "thinking"
+        });
+        writeLog("waitForLoadState -> pending");
+        await sleep(1100);
+        writeLog("waitForLoadState -> load");
+        await moveToTarget("refresh", { phase: "active" });
+      }
+
+      async function runTour() {
+        nextTurn("tour");
+        await moveToTarget("settings");
+        await runObserveDemo();
+        await runSearchDemo();
+        await runEvaluateDemo();
+        await runCardsDemo();
+        await runWaitDemo();
+        await moveToTarget("rowOne");
+        await clickTarget("review");
+        await moveToTarget("rowTwo");
+        await clickTarget("runtime");
+        await runLongDemo();
+      }
+
+      document.querySelectorAll("[data-demo]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const demo = button.dataset.demo;
+          if (demo === "tour") await runTour();
+          if (demo === "search") await runSearchDemo();
+          if (demo === "observe") await runObserveDemo();
+          if (demo === "evaluate") await runEvaluateDemo();
+          if (demo === "wait") await runWaitDemo();
+          if (demo === "cards") await runCardsDemo();
+          if (demo === "long") await runLongDemo();
+          if (demo === "hide") {
+            visible = false;
+            phase = "idle";
+            pendingArrival = null;
+            stateArrived.textContent = "none";
+            applyPhase("idle");
+            updateCursorTransform();
+            writeLog("hide cursor");
+          }
+        });
+      });
+
+      document.addEventListener("click", (event) => {
+        if (event.target.closest("[data-demo]")) return;
+        const point = { x: event.clientX, y: event.clientY };
+        nextTurn("manual");
+        setCursor(point, { animate: true, phase: "active", visible: true });
+        showClickRipple(point);
+        writeLog(`manual click -> ${Math.round(point.x)}, ${Math.round(point.y)}`);
+      });
+
+      window.addEventListener("resize", () => {
+        current = clampPoint(current);
+        target = clampPoint(target);
+        updateCursorTransform();
+      });
+
+      updateStatePanel();
+      setCursor(current, { animate: false, phase: "idle", visible: false });
+      setTimeout(() => runTour(), 400);
+    </script>
+  </body>
+</html>

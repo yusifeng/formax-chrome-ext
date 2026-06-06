@@ -1,26 +1,28 @@
 # Rust Native Host Handoff
 
+Historical note: this handoff was used during the Rust migration. The current project now builds the Rust host into `build/extension-host/<platform>/<arch>/...`, and release packaging copies that into `dist/extension-host/<platform>/<arch>/...`.
+
 You are helping migrate the Formax Chrome Native Messaging host from TypeScript/Node to Rust.
 
 ## Goal
 
-Implement a Rust native host equivalent of:
+Implement a Rust native host equivalent of the former Node native host:
 
 ```text
 native-host/host.ts
 ```
 
-The Rust binary should eventually replace the current Node SEA binary under:
+The Rust binary was intended to replace the former Node SEA binary under:
 
 ```text
-extension-host/<platform>/<arch>/extension-host
+build/extension-host/<platform>/<arch>/extension-host
 ```
 
-This migration is valuable because the current Node SEA binary is about 105MB. A Rust binary should be much smaller and closer to Codex's native-host shape.
+This migration was valuable because the former Node SEA binary was about 105MB. A Rust binary is much smaller and closer to Codex's native-host shape.
 
 ## Current TypeScript Behavior
 
-`native-host/host.ts` currently does four things:
+The former `native-host/host.ts` did four things:
 
 1. Reads Chrome Native Messaging frames from stdin.
 2. Writes Chrome Native Messaging frames to stdout.
@@ -271,10 +273,10 @@ Do not silently truncate.
 Add a script that builds the Rust host and copies it to the existing product path:
 
 ```text
-extension-host/macos/arm64/extension-host
-extension-host/macos/x64/extension-host
-extension-host/linux/x64/extension-host
-extension-host/windows/x64/extension-host.exe
+build/extension-host/macos/arm64/extension-host
+build/extension-host/macos/x64/extension-host
+build/extension-host/linux/x64/extension-host
+build/extension-host/windows/x64/extension-host.exe
 ```
 
 For this task, building only the current local platform is acceptable.
@@ -297,10 +299,8 @@ It should:
 
 - detect `process.platform` and `process.arch`
 - find `rust/native-host/target/release/formax-native-host`
-- copy it to `extension-host/<platform>/<arch>/extension-host`
+- copy it to `build/extension-host/<platform>/<arch>/extension-host`
 - chmod `755` on Unix
-
-Keep the existing Node SEA script for now. Do not remove `scripts/build-extension-host-binary.js` unless explicitly asked.
 
 ## Installer Compatibility
 
@@ -310,15 +310,15 @@ The existing installers already prefer:
 extension-host/<platform>/<arch>/extension-host
 ```
 
-and fall back to:
+inside release packages, and:
 
 ```text
-native-host/host-launcher.sh
+build/extension-host/<platform>/<arch>/extension-host
 ```
 
-Do not break that behavior.
+inside the source tree.
 
-After Rust host is copied into `extension-host/...`, `bash native-host/install-macos.sh` should write a native host manifest whose `path` points at the Rust binary.
+After Rust host is copied into `build/extension-host/...`, `bash native-host/install-macos.sh` should write a native host manifest whose `path` points at the Rust binary.
 
 ## Tests
 
@@ -402,7 +402,7 @@ If clippy is not installed, report that and continue.
 
 ## Real Browser E2E Validation
 
-After the Rust binary is built and copied to `extension-host/...`:
+After the Rust binary is built and copied to `build/extension-host/...`:
 
 1. run the installer:
 
@@ -438,8 +438,6 @@ Do not:
 - rewrite `agent/browserTools.ts`
 - change the HTTP RPC URL or JSON envelope
 - change Chrome native message format
-- remove Node host fallback
-- remove Node SEA script
 - require Rust to run ordinary JS unit tests
 - commit `target/`
 - commit generated large binaries unless project policy says to do so
@@ -453,7 +451,7 @@ Do not:
 5. Implement stdin/stdout Chrome frame loop.
 6. Add build/copy script.
 7. Run Rust tests.
-8. Build Rust binary into `extension-host/...`.
+8. Build Rust binary into `build/extension-host/...`.
 9. Run JS tests.
 10. Run real browser E2E after reinstalling/reloading extension.
 

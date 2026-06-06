@@ -10,7 +10,7 @@ const copyEntries = [
   ["README.md", "README.md"],
   ["config", "config"],
   ["skill", "skill"],
-  ["extension-host", "extension-host"],
+  ["build/extension-host", "extension-host"],
   ["mcp-node-repl", "mcp-node-repl"],
   ["agent/browserTools.js", "agent/browserTools.js"],
   ["shared", "shared"],

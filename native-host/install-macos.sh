@@ -26,7 +26,8 @@ case "$ARCH" in
   x86_64) ARCH="x64" ;;
   aarch64) ARCH="arm64" ;;
 esac
-BUNDLED_HOST_PATH="$PROJECT_DIR/extension-host/macos/$ARCH/extension-host"
+DIST_HOST_PATH="$PROJECT_DIR/extension-host/macos/$ARCH/extension-host"
+BUILD_HOST_PATH="$PROJECT_DIR/build/extension-host/macos/$ARCH/extension-host"
 
 if [[ -z "$EXTENSION_ID" || -z "$HOST_NAME" ]]; then
   echo "Missing extensionId or extensionHostName in $CONFIG_FILE" >&2
@@ -35,8 +36,14 @@ fi
 
 mkdir -p "$TARGET_DIR"
 
-if [[ ! -x "$BUNDLED_HOST_PATH" ]]; then
-  echo "Missing Rust native host binary: $BUNDLED_HOST_PATH" >&2
+if [[ -x "$DIST_HOST_PATH" ]]; then
+  HOST_PATH="$DIST_HOST_PATH"
+elif [[ -x "$BUILD_HOST_PATH" ]]; then
+  HOST_PATH="$BUILD_HOST_PATH"
+else
+  echo "Missing Rust native host binary. Checked:" >&2
+  echo "  $DIST_HOST_PATH" >&2
+  echo "  $BUILD_HOST_PATH" >&2
   echo "Run npm run build:rust-native-host or npm run package:dist first." >&2
   exit 1
 fi
@@ -45,7 +52,7 @@ cat > "$TARGET_FILE" <<JSON
 {
   "name": "$HOST_NAME",
   "description": "Agent Browser Controller Native Host",
-  "path": "$BUNDLED_HOST_PATH",
+  "path": "$HOST_PATH",
   "type": "stdio",
   "allowed_origins": [
     "chrome-extension://$EXTENSION_ID/"
