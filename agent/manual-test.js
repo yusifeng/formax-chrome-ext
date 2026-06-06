@@ -6,6 +6,7 @@ function print(title, value) {
 const health = await browserHealth();
 print("health", health);
 const sessionEnvelope = await browserStartSession({
+    sessionId: `manual-${Date.now().toString(36)}`,
     active: true
 });
 const session = sessionEnvelope.result;

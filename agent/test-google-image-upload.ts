@@ -35,6 +35,7 @@ function findUploadTrigger(elements: BrowserElement[]): BrowserElement | undefin
 const filePath = path.resolve(process.env.IMAGE_PATH || "tests/fixtures/red-test.png");
 
 const sessionEnvelope = await browserStartSession({
+  sessionId: `google-image-upload-${Date.now().toString(36)}`,
   active: true
 });
 const session = sessionEnvelope.result;

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline/promises";
@@ -10,6 +11,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 loadDotEnv();
 
 const API_KEY = process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY;
+const SELF_CHECK = process.argv.includes("--self-check");
 const MODEL = process.env.LLM_NODE_REPL_MODEL || process.env.LLM_BROWSER_MODEL || "deepseek-v4-flash";
 const BASE_URL =
   process.env.LLM_NODE_REPL_BASE_URL ||
@@ -28,7 +30,7 @@ const SKILL_PATH = path.resolve(
     "skill/SKILL.md"
 );
 
-if (!API_KEY) {
+if (!API_KEY && !SELF_CHECK) {
   console.error("DEEPSEEK_API_KEY or OPENAI_API_KEY is required.");
   process.exit(2);
 }
@@ -215,6 +217,11 @@ function toolContent(result) {
     .join("\n");
 }
 
+function toolJson(result) {
+  const text = toolContent(result);
+  return JSON.parse(text);
+}
+
 async function executeToolCall(call) {
   const name = call.function?.name;
   const args = parseArguments(call);
@@ -364,6 +371,62 @@ function printHelp() {
 await mcpClient.connect(transport);
 const mcpTools = (await mcpClient.listTools()).tools;
 const tools = responseTools(mcpTools);
+
+async function runSelfCheck() {
+  assert.deepEqual(
+    mcpTools.map((tool) => tool.name),
+    ["js", "js_add_node_module_dir", "js_reset"]
+  );
+
+  const result = toolJson(
+    await mcpClient.callTool({
+      name: "js",
+      arguments: {
+        title: "LLM node_repl browser self-check",
+        code: [
+          "const runtime = await import('./mcp-node-repl/browser-client.js');",
+          "const { agent, browser } = await runtime.setupBrowserRuntime({ globals: globalThis });",
+          "const docs = await browser.documentation();",
+          "const tabDocs = await agent.documentation.get('tabs');",
+          "return {",
+          "  browserList: agent.browsers.list(),",
+          "  toolNames: browser.tools.map((tool) => tool.name),",
+          "  docsName: docs.name,",
+          "  tabDocsMentionOpenTabs: JSON.stringify(tabDocs).includes('browser.user.openTabs'),",
+          "  hasBrowserDocumentation: typeof browser.documentation === 'function',",
+          "  hasAgentDocumentation: typeof agent.documentation?.get === 'function',",
+          "  hasUserOpenTabs: typeof browser.user?.openTabs === 'function',",
+          "  hasUserClaim: typeof browser.user?.claim === 'function',",
+          "  hasUserClaimTab: typeof browser.user?.claimTab === 'function',",
+          "  hasOnlyThreeMcpTools: true",
+          "};"
+        ].join("\n")
+      }
+    })
+  );
+
+  assert.deepEqual(result.result.browserList, ["extension"]);
+  assert.equal(result.result.docsName, "Formax browser runtime");
+  assert.equal(result.result.tabDocsMentionOpenTabs, true);
+  assert.equal(result.result.hasBrowserDocumentation, true);
+  assert.equal(result.result.hasAgentDocumentation, true);
+  assert.equal(result.result.hasUserOpenTabs, true);
+  assert.equal(result.result.hasUserClaim, true);
+  assert.equal(result.result.hasUserClaimTab, true);
+  assert.equal(result.result.toolNames.includes("browser_user_open_tabs"), true);
+
+  console.log("LLM node_repl self-check passed.");
+}
+
+if (SELF_CHECK) {
+  try {
+    await runSelfCheck();
+  } finally {
+    await mcpClient.close();
+  }
+  process.exit(0);
+}
+
 const rl = readline.createInterface({ input, output });
 
 console.log(`LLM node_repl chat ready. model=${MODEL} base=${BASE_URL}`);

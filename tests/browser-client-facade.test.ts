@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createBrowserClient } from "../mcp-node-repl/browser-client.js";
+import { createBrowserClient, setupBrowserRuntime } from "../mcp-node-repl/browser-client.js";
 import type { BrowserToolResult, JsonObject } from "../shared/types.js";
 
 type Call = {
@@ -61,6 +61,38 @@ function createMockBrowser() {
           text: "",
           elements: []
         }, args.sessionId as string, args.tabId as number);
+      }
+
+      if (name === "browser_user_open_tabs") {
+        return envelope(name, {
+          tabs: [
+            {
+              id: 55,
+              windowId: 1,
+              active: true,
+              groupId: -1,
+              controlled: false,
+              title: "Claim me",
+              url: "https://example.test",
+              claimToken: "claim-token-55",
+              claimTokenExpiresAt: Date.now() + 300000
+            }
+          ]
+        }, null, null);
+      }
+
+      if (name === "browser_claim_tab") {
+        return envelope(name, {
+          sessionId: "session-claimed",
+          activeTabId: 55,
+          tabIds: [55]
+        }, "session-claimed", 55);
+      }
+
+      if (name === "browser_list_tabs") {
+        return envelope(name, {
+          tabs: []
+        }, args.sessionId as string | null, null);
       }
 
       if (name === "browser_locator_query") {
@@ -130,6 +162,91 @@ describe("browser-client object facade", () => {
       active: true,
       timeoutMs: 123
     });
+  });
+
+  it("uses an initial session id for the first created tab", async () => {
+    const calls: Call[] = [];
+    const browser = createBrowserClient({
+      initialSessionId: "chat-session-a",
+      callTool: async (name, args = {}) => {
+        calls.push({ name, args });
+        return envelope(name, {
+          session: {
+            sessionId: "chat-session-a",
+            activeTabId: 101,
+            tabIds: [101]
+          },
+          tab: {
+            id: 101,
+            sessionId: "chat-session-a"
+          }
+        }, "chat-session-a", 101);
+      }
+    });
+
+    await browser.tabs.new();
+
+    expect(calls[0]).toMatchObject({
+      name: "browser_create_tab",
+      args: {
+        sessionId: "chat-session-a"
+      }
+    });
+  });
+
+  it("generates a stable default session id for direct clients", async () => {
+    const { browser, calls } = createMockBrowser();
+
+    await browser.tabs.new();
+
+    expect(calls[0]).toMatchObject({
+      name: "browser_create_tab",
+      args: {
+        sessionId: expect.stringMatching(/^formax-/)
+      }
+    });
+  });
+
+  it("does not treat the preferred session id as an active session for tab listing", async () => {
+    const { browser, calls } = createMockBrowser();
+
+    await browser.tabs.list();
+
+    expect(calls[0]).toEqual({
+      name: "browser_list_tabs",
+      args: {}
+    });
+  });
+
+  it("uses the current session id when naming a session", async () => {
+    const { browser, calls } = createMockBrowser();
+
+    await browser.tabs.new();
+    await browser.nameSession("Readable session");
+
+    expect(calls.at(-1)).toEqual({
+      name: "browser_name_session",
+      args: {
+        sessionId: "session-a",
+        name: "Readable session"
+      }
+    });
+  });
+
+  it("keeps setupBrowserRuntime idempotent for one global runtime", async () => {
+    const globals = {};
+    const first = await setupBrowserRuntime({
+      globals,
+      defaultSessionId: "chat-session-a"
+    });
+    const second = await setupBrowserRuntime({
+      globals,
+      defaultSessionId: "chat-session-b"
+    });
+
+    expect(second.browser).toBe(first.browser);
+    expect(second.agent).toBe(first.agent);
+    expect((globals as { __formaxBrowserSessionId?: string }).__formaxBrowserSessionId).toBe("chat-session-a");
   });
 
   it("keeps two tab handles isolated from mutable browser state", async () => {
@@ -211,6 +328,42 @@ describe("browser-client object facade", () => {
     const tab = await browser.tabs.new();
 
     await expect(tab.evaluate("document.title")).resolves.toBe("evaluated");
+  });
+
+  it("exposes runtime documentation topics", async () => {
+    const { browser } = createMockBrowser();
+
+    await expect(browser.documentation()).resolves.toMatchObject({
+      name: "Formax browser runtime"
+    });
+    await expect(browser.documentation("tabs")).resolves.toMatchObject({
+      recommendedFlow: expect.arrayContaining([
+        expect.stringContaining("browser.user.openTabs()")
+      ])
+    });
+  });
+
+  it("claims user tabs through openTabs claim tokens", async () => {
+    const { browser, calls } = createMockBrowser();
+    const tabs = await browser.user.openTabs({ currentWindow: true });
+    const tab = await browser.user.claimTab({
+      ...(tabs[0] as JsonObject),
+      turnId: "turn-1"
+    });
+
+    expect(tab.sessionId).toBe("session-claimed");
+    expect(tab.tabId).toBe(55);
+    expect(calls.at(-2)).toMatchObject({
+      name: "browser_user_open_tabs",
+      args: { currentWindow: true }
+    });
+    expect(calls.at(-1)).toMatchObject({
+      name: "browser_claim_tab",
+      args: {
+        claimToken: "claim-token-55",
+        turnId: "turn-1"
+      }
+    });
   });
 
   it("maps indexed locator file upload to upload primitive", async () => {

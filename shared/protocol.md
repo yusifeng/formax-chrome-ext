@@ -220,6 +220,7 @@ Result:
   "nativeConnected": true,
   "lastNativeError": null,
   "sessions": [],
+  "extensionInstanceId": "local extension instance uuid",
   "attachedTabs": [],
   "supportedActions": ["health", "reloadExtension"],
   "backendRevision": 3
@@ -303,12 +304,16 @@ Params:
 
 ```json
 {
-  "sessionId": "optional stable id",
+  "sessionId": "stable id from the app/native runtime",
+  "turnId": "optional current turn id",
   "name": "optional session name",
   "active": true,
   "initialUrl": "about:blank"
 }
 ```
+
+`sessionId` is required. The extension does not create random browser sessions;
+the app/native runtime owns stable session identity.
 
 Result payload: `BrowserSession`
 
@@ -365,20 +370,56 @@ Result payload:
 }
 ```
 
+### openTabs
+
+Params:
+
+```json
+{
+  "currentWindow": true,
+  "includeControlled": false
+}
+```
+
+Lists user-visible Chrome tabs that can be claimed. Returned tabs include a
+short-lived `claimToken`; pass that token to `claimTab` instead of guessing raw
+Chrome tab IDs.
+
+Result payload:
+
+```json
+{
+  "tabs": [
+    {
+      "id": 456,
+      "title": "Example",
+      "url": "https://example.com/",
+      "active": true,
+      "controlled": false,
+      "claimToken": "token",
+      "claimTokenExpiresAt": 1780000000000
+    }
+  ]
+}
+```
+
 ### claimTab
 
 Params:
 
 ```json
 {
-  "sessionId": "optional existing session",
-  "tabId": 456,
+  "sessionId": "stable id from the app/native runtime",
+  "turnId": "optional current turn id",
+  "claimToken": "token returned from openTabs",
   "active": true
 }
 ```
 
-If `tabId` is omitted, the extension claims the current active tab. If
-`sessionId` is omitted, the extension creates a new session for the claimed tab.
+`sessionId` is required. Prefer `claimToken` from `openTabs`; raw `tabId` claims
+are only allowed when `allowUnsafeTabIdClaim` is true. Claiming creates or
+updates a tab lease with `origin: "user"` and does not force the tab into the
+managed Chrome group.
 
 Result payload: `BrowserSession`
 
@@ -388,14 +429,16 @@ Params:
 
 ```json
 {
-  "sessionId": "optional existing session",
+  "sessionId": "stable id from the app/native runtime",
+  "turnId": "optional current turn id",
   "url": "about:blank",
   "active": true
 }
 ```
 
-Creates a new tab and adds it to the session's tab group. If `sessionId` is
-omitted, the extension creates a new session for the new tab.
+`sessionId` is required. Creates a new agent-origin tab and adds it to the
+existing managed Chrome group for active/handoff agent leases in the same
+session. If no reusable managed group exists, a new one is created.
 
 Result payload:
 
@@ -427,8 +470,9 @@ Params:
 }
 ```
 
-Makes the tab active, updates the session's `activeTabId`, and attaches the
-debugger if needed.
+Makes an already-controlled tab active, updates the session's `activeTabId`, and
+attaches the debugger if needed. It does not claim arbitrary user tabs; use
+`openTabs` and `claimTab` for that.
 
 Result payload:
 
@@ -1261,15 +1305,17 @@ Params:
 ```json
 {
   "sessionId": "uuid",
-  "keepTabIds": [456],
+  "handoffTabIds": [456],
+  "deliverableTabIds": [654],
   "closeRest": true
 }
 ```
 
-Stops session tracking, detaches all debugger targets, keeps any listed tabs
-open for user handoff, and closes the rest when `closeRest` is not false. This
-is the cleanup path for agent-created browser work when some tabs are
-deliverables.
+Finalizes the current browser turn. `handoffTabIds` (or legacy `keepTabIds`) keep
+their tab leases so the next turn can resume the same session and Chrome group.
+`deliverableTabIds` stay open for the user but are released from agent control
+and removed from the managed group. Remaining agent-created tabs are closed when
+`closeRest` is not false; user-claimed tabs are released but not closed.
 
 Result payload:
 
@@ -1278,7 +1324,36 @@ Result payload:
   "finalized": true,
   "sessionId": "uuid",
   "closedTabs": [789],
-  "keptTabs": [456]
+  "keptTabs": [456, 654],
+  "handoffTabs": [456],
+  "deliverableTabs": [654],
+  "releasedTabs": [654]
+}
+```
+
+### endTurn
+
+Params:
+
+```json
+{
+  "sessionId": "uuid",
+  "turnId": "turn-1"
+}
+```
+
+Ends one browser-control turn and releases any active tab leases for that
+`turnId`. Call `finalizeSession` first for tabs that should be handed off to the
+next turn or delivered to the user.
+
+Result payload:
+
+```json
+{
+  "ended": true,
+  "sessionId": "uuid",
+  "turnId": "turn-1",
+  "releasedTabs": [456]
 }
 ```
 

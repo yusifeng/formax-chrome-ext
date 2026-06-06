@@ -12,6 +12,7 @@ function findSearchInput(elements) {
     return input;
 }
 const sessionEnvelope = await browserStartSession({
+    sessionId: `baidu-search-${Date.now().toString(36)}`,
     active: true
 });
 const session = sessionEnvelope.result;

@@ -19,6 +19,7 @@ const SUPPORTED_ACTIONS = [
   "waitForEvent",
   "startSession",
   "nameSession",
+  "openTabs",
   "claimTab",
   "createTab",
   "switchTab",
@@ -52,6 +53,7 @@ const SUPPORTED_ACTIONS = [
   "getCapabilities",
   "closeTab",
   "finalizeSession",
+  "endTurn",
   "stopSession"
 ];
 
@@ -75,6 +77,14 @@ type ActionContext = {
   action: string;
   actionId: string;
 };
+type ClaimTokenRecord = {
+  expiresAt: number;
+  tabId: number;
+};
+type CursorArrivalWaiter = {
+  resolve: () => void;
+  timeoutId: number;
+};
 
 const debuggerManager = new DebuggerManager({
   cdpVersion: CDP_VERSION,
@@ -85,6 +95,8 @@ const eventBuffer = new EventBuffer({
 });
 const sessionManager = new SessionManager();
 const cursorOverlayStateByTab = new Map<number, CursorOverlayState>();
+const claimTokens = new Map<string, ClaimTokenRecord>();
+const cursorArrivalWaiters = new Map<string, CursorArrivalWaiter>();
 let activeActionContext: ActionContext | null = null;
 let nextCursorMoveSequence = 0;
 
@@ -148,6 +160,7 @@ function registerTopLevelListeners() {
       ) {
         state.arrivedMoveSequence = moveSequence;
         state.updatedAt = Date.now();
+        resolveCursorArrivalWaiter(tabId, moveSequence);
         safePostEvent({
           name: "cursorArrived",
           sessionId: state.sessionId,
@@ -200,6 +213,7 @@ function registerTopLevelListeners() {
     debuggerManager.markTabRemoved(tabId);
     sessionManager.onTabRemoved(tabId);
     cursorOverlayStateByTab.delete(tabId);
+    clearCursorArrivalWaitersForTab(tabId);
   });
 
   chrome.downloads.onCreated.addListener((downloadItem) => {
@@ -317,6 +331,7 @@ async function dispatchAction(
   activeActionContext = { action, actionId };
 
   try {
+    await sessionManager.initialize();
     const result = await dispatchActionRaw(action, params);
     const endedAt = Date.now();
     const meta = extractResultMetadata(result);
@@ -361,6 +376,9 @@ async function dispatchActionRaw(action: string, params: ActionParams) {
 
     case "nameSession":
       return nameSession(params);
+
+    case "openTabs":
+      return openTabs(params);
 
     case "claimTab":
       return claimTab(params);
@@ -461,6 +479,9 @@ async function dispatchActionRaw(action: string, params: ActionParams) {
     case "finalizeSession":
       return finalizeSession(params);
 
+    case "endTurn":
+      return endTurn(params);
+
     case "stopSession":
       return stopSession(params);
 
@@ -524,6 +545,7 @@ function health() {
     nativeConnected: nativePort != null,
     lastNativeError,
     sessions: sessionManager.serializeAll(),
+    extensionInstanceId: sessionManager.getExtensionInstanceId(),
     attachedTabs: debuggerManager.listAttachedTabs(),
     supportedActions: SUPPORTED_ACTIONS,
     backendRevision: BACKEND_REVISION
@@ -608,7 +630,11 @@ async function nameSession(params: ActionParams = {}) {
 }
 
 async function claimTab(params: ActionParams = {}) {
-  const { session, tab } = await sessionManager.claimTab(params);
+  const claimParams = {
+    ...params,
+    tabId: resolveClaimedTabId(params)
+  };
+  const { session, tab } = await sessionManager.claimTab(claimParams);
   await debuggerManager.attachTab(tab.id);
 
   return sessionManager.serializeSession(session);
@@ -640,10 +666,19 @@ async function openUrl(params: ActionParams = {}) {
   const url = requireString(params.url, "openUrl.params.url");
   assertAllowedNavigationUrl(url);
 
-  let session = sessionManager.resolveOptionalSession(params);
+  let session = sessionManager.findOptionalSession(params);
 
   if (!session) {
+    if (typeof params.tabId === "number") {
+      throw new Error(
+        "Cannot open URL in an unclaimed tab. Use openTabs and claimTab before controlling an existing user tab."
+      );
+    }
+
     session = await sessionManager.startSession({
+      sessionId: params.sessionId,
+      turnId: params.turnId,
+      name: params.name,
       active: params.active === true
     });
   }
@@ -1295,7 +1330,6 @@ async function click(params: ActionParams = {}) {
 
   const target = await resolvePointerTarget(tabId, params, "click");
   await showCursor(tabId, target.x, target.y);
-  await showHighlight(tabId, target.rect);
   await dispatchMouseClick(tabId, target.x, target.y, params);
   await showCursorClick(tabId, target.x, target.y);
 
@@ -1313,7 +1347,9 @@ async function moveMouse(params: ActionParams = {}) {
   const y = requireFiniteNumber(params.y, "moveMouse.params.y");
 
   await debuggerManager.attachTab(tabId);
-  await showCursor(tabId, x, y);
+  await showCursor(tabId, x, y, {
+    waitForArrival: params.waitForArrival !== false
+  });
   await cdp(tabId, "Input.dispatchMouseEvent", {
     type: "mouseMoved",
     x,
@@ -1374,11 +1410,9 @@ async function typeText(params: ActionParams = {}) {
     if (params.clear === true) {
       const target = await focusAndMaybeClearElement(tabId, params, true);
       await showCursor(tabId, target.x, target.y);
-      await showHighlight(tabId, target.rect);
     } else {
       const target = await focusAndMaybeClearElement(tabId, params, false);
       await showCursor(tabId, target.x, target.y);
-      await showHighlight(tabId, target.rect);
     }
   } else if (hasCoordinates) {
     const target = await resolvePointerTarget(tabId, params, "typeText");
@@ -1547,7 +1581,6 @@ async function uploadFile(params: ActionParams = {}) {
   }
 
   await showCursor(tabId, target.x, target.y);
-  await showHighlight(tabId, target.rect);
 
   const doc = await cdp(tabId, "DOM.getDocument", {
     depth: -1,
@@ -1604,6 +1637,38 @@ async function listTabs(params: ActionParams = {}) {
 
   return {
     tabs: tabs.map(summarizeTab)
+  };
+}
+
+async function openTabs(params: ActionParams = {}) {
+  const query: chrome.tabs.QueryInfo = {};
+
+  if (params.currentWindow === true) {
+    query.currentWindow = true;
+  }
+
+  let tabs = await chrome.tabs.query(query);
+
+  if (params.includeControlled !== true) {
+    tabs = tabs.filter(
+      (tab) =>
+        typeof tab.id !== "number" ||
+        sessionManager.findSessionByTabId(tab.id) == null
+    );
+  }
+
+  return {
+    tabs: tabs
+      .filter((tab) => typeof tab.id === "number" && isClaimableTab(tab))
+      .map((tab) => {
+        const token = createClaimToken(tab.id as number);
+
+        return {
+          ...summarizeTab(tab),
+          claimToken: token,
+          claimTokenExpiresAt: claimTokens.get(token)?.expiresAt ?? Date.now()
+        };
+      })
   };
 }
 
@@ -1747,7 +1812,7 @@ async function finalizeSession(params: ActionParams = {}) {
     params.sessionId,
     "finalizeSession.params.sessionId"
   );
-  const session = await sessionManager.markSessionStopped(sessionId);
+  const session = sessionManager.getSession(sessionId);
 
   if (!session) {
     return {
@@ -1758,39 +1823,109 @@ async function finalizeSession(params: ActionParams = {}) {
     };
   }
 
-  const keepTabIds = Array.isArray(params.keepTabIds)
-    ? params.keepTabIds.filter((tabId) => Number.isInteger(tabId))
+  const handoffTabIds = Array.isArray(params.handoffTabIds)
+    ? params.handoffTabIds.filter((tabId) => Number.isInteger(tabId))
+    : Array.isArray(params.keepTabIds)
+      ? params.keepTabIds.filter((tabId) => Number.isInteger(tabId))
+      : [];
+  const deliverableTabIds = Array.isArray(params.deliverableTabIds)
+    ? params.deliverableTabIds.filter((tabId) => Number.isInteger(tabId))
     : [];
-  const keep = new Set(keepTabIds);
+  const handoff = new Set(handoffTabIds);
+  const deliverable = new Set(deliverableTabIds);
   const closeRest = params.closeRest !== false;
   const tabIds = [...session.tabIds];
   const closedTabs = [];
   const keptTabs = [];
+  const releasedTabs = [];
 
   for (const tabId of tabIds) {
+    const lease = sessionManager.getTabLease(tabId);
+
     await debuggerManager.detachTab(tabId);
     cursorOverlayStateByTab.delete(tabId);
 
-    if (keep.has(tabId) || !closeRest) {
+    if (handoff.has(tabId)) {
       keptTabs.push(tabId);
       continue;
     }
 
-    try {
-      await chrome.tabs.remove(tabId);
-      closedTabs.push(tabId);
-    } catch {
-      // The tab may have already been closed.
+    if (deliverable.has(tabId) || !closeRest || lease?.origin === "user") {
+      try {
+        await chrome.tabs.ungroup(tabId);
+      } catch {
+        // The tab may not be grouped anymore.
+      }
+
+      releasedTabs.push(...sessionManager.releaseTabs(sessionId, [tabId]));
+      keptTabs.push(tabId);
+      continue;
+    }
+
+    releasedTabs.push(...sessionManager.releaseTabs(sessionId, [tabId]));
+
+    if (lease?.origin === "agent" || !lease) {
+      try {
+        await chrome.tabs.remove(tabId);
+        closedTabs.push(tabId);
+      } catch {
+        // The tab may have already been closed.
+      }
     }
   }
 
-  sessionManager.deleteSession(sessionId);
+  const handedOffTabs = await sessionManager.handoffTabs(sessionId, handoffTabIds, {
+    activeTabId:
+      typeof params.activeTabId === "number" ? params.activeTabId : session.activeTabId,
+    turnId: params.turnId
+  });
+
+  if (handedOffTabs.length === 0) {
+    await sessionManager.markSessionStopped(sessionId);
+    sessionManager.deleteSession(sessionId);
+  }
 
   return {
     finalized: true,
     sessionId,
     closedTabs,
-    keptTabs
+    keptTabs,
+    handoffTabs: handedOffTabs,
+    deliverableTabs: deliverableTabIds,
+    releasedTabs
+  };
+}
+
+async function endTurn(params: ActionParams = {}) {
+  const sessionId = requireString(params.sessionId, "endTurn.params.sessionId");
+  const turnId = requireString(params.turnId, "endTurn.params.turnId");
+  const session = sessionManager.getSession(sessionId);
+
+  if (!session) {
+    return {
+      ended: false,
+      reason: "session_not_found",
+      releasedTabs: []
+    };
+  }
+
+  const releasedTabs = sessionManager.releaseActiveTurn(sessionId, turnId);
+
+  for (const tabId of releasedTabs) {
+    await debuggerManager.detachTab(tabId);
+    cursorOverlayStateByTab.delete(tabId);
+  }
+
+  if (session.tabIds.length === 0) {
+    await sessionManager.markSessionStopped(sessionId);
+    sessionManager.deleteSession(sessionId);
+  }
+
+  return {
+    ended: true,
+    sessionId,
+    turnId,
+    releasedTabs
   };
 }
 
@@ -2751,8 +2886,10 @@ async function showCursor(
   y: number,
   options: {
     animate?: boolean;
+    arrivalTimeoutMs?: number;
     phase?: CursorPhase;
     visible?: boolean;
+    waitForArrival?: boolean;
   } = {}
 ) {
   const sessionId = sessionIdForTab(tabId);
@@ -2786,19 +2923,104 @@ async function showCursor(
       return;
     }
 
-    await chrome.tabs.sendMessage(tabId, {
-      type: "AGENT_CURSOR",
-      animate: options.animate !== false,
-      moveSequence,
-      phase: state.phase,
-      sessionId,
-      turnId,
-      visible: state.visible,
-      x,
-      y
-    });
+    const shouldWaitForArrival =
+      options.waitForArrival !== false &&
+      options.animate !== false &&
+      state.visible;
+    const arrivalPromise = shouldWaitForArrival
+      ? waitForCursorArrival(tabId, moveSequence, options.arrivalTimeoutMs)
+      : null;
+
+    await withChromeMessageTimeout(
+      chrome.tabs.sendMessage(tabId, {
+        type: "AGENT_CURSOR",
+        animate: options.animate !== false,
+        moveSequence,
+        phase: state.phase,
+        sessionId,
+        turnId,
+        visible: state.visible,
+        x,
+        y
+      }),
+      250
+    );
+    await arrivalPromise;
   } catch {
+    cancelCursorArrivalWaiter(tabId, moveSequence);
     // Some pages cannot receive content scripts.
+  }
+}
+
+function cursorArrivalKey(tabId: number, moveSequence: number) {
+  return `${tabId}:${moveSequence}`;
+}
+
+function waitForCursorArrival(
+  tabId: number,
+  moveSequence: number,
+  timeoutMs = 900
+) {
+  return new Promise<void>((resolve) => {
+    const key = cursorArrivalKey(tabId, moveSequence);
+    const timeoutId = self.setTimeout(() => {
+      cursorArrivalWaiters.delete(key);
+      resolve();
+    }, Math.max(50, timeoutMs));
+
+    cursorArrivalWaiters.set(key, {
+      resolve: () => {
+        self.clearTimeout(timeoutId);
+        resolve();
+      },
+      timeoutId
+    });
+  });
+}
+
+function resolveCursorArrivalWaiter(
+  tabId: number | undefined,
+  moveSequence: number
+) {
+  if (typeof tabId !== "number") {
+    return;
+  }
+
+  const key = cursorArrivalKey(tabId, moveSequence);
+  const waiter = cursorArrivalWaiters.get(key);
+
+  if (!waiter) {
+    return;
+  }
+
+  cursorArrivalWaiters.delete(key);
+  waiter.resolve();
+}
+
+function cancelCursorArrivalWaiter(tabId: number, moveSequence: number) {
+  const key = cursorArrivalKey(tabId, moveSequence);
+  const waiter = cursorArrivalWaiters.get(key);
+
+  if (!waiter) {
+    return;
+  }
+
+  cursorArrivalWaiters.delete(key);
+  self.clearTimeout(waiter.timeoutId);
+  waiter.resolve();
+}
+
+function clearCursorArrivalWaitersForTab(tabId: number) {
+  const prefix = `${tabId}:`;
+
+  for (const [key, waiter] of cursorArrivalWaiters) {
+    if (!key.startsWith(prefix)) {
+      continue;
+    }
+
+    cursorArrivalWaiters.delete(key);
+    self.clearTimeout(waiter.timeoutId);
+    waiter.resolve();
   }
 }
 
@@ -2813,21 +3035,6 @@ async function showCursorActivity(tabId: number, phase: CursorPhase = "thinking"
     phase,
     visible: true
   });
-}
-
-async function showHighlight(tabId: number, rect: ActionParams) {
-  try {
-    if (!(await prepareContentScript(tabId))) {
-      return;
-    }
-
-    await chrome.tabs.sendMessage(tabId, {
-      type: "AGENT_HIGHLIGHT",
-      rect
-    });
-  } catch {
-    // Visual feedback is best effort.
-  }
 }
 
 async function showCursorClick(tabId: number, x: number, y: number) {
@@ -2868,14 +3075,39 @@ async function prepareContentScript(tabId: number): Promise<boolean> {
 
 async function pingContentScript(tabId: number): Promise<boolean> {
   try {
-    const response = await chrome.tabs.sendMessage(tabId, {
-      type: "CONTENT_PING"
-    });
+    const response = await withChromeMessageTimeout(
+      chrome.tabs.sendMessage(tabId, {
+        type: "CONTENT_PING"
+      }),
+      250
+    );
 
     return response?.ok === true;
   } catch {
     return false;
   }
+}
+
+function withChromeMessageTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeoutId = self.setTimeout(() => {
+      reject(new Error(`Timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    promise.then(
+      (value) => {
+        self.clearTimeout(timeoutId);
+        resolve(value);
+      },
+      (error) => {
+        self.clearTimeout(timeoutId);
+        reject(error);
+      }
+    );
+  });
 }
 
 async function cdp(
@@ -3168,7 +3400,8 @@ function listCapabilities() {
 
   return [
     browserCapability("browser.tabs", "List, create, select, and finalize controlled tabs.", true),
-    browserCapability("browser.user.claimTab", "Claim the current or specified user tab.", true),
+    browserCapability("browser.user.openTabs", "List user-visible claimable Chrome tabs with claim tokens.", true),
+    browserCapability("browser.user.claimTab", "Claim a user tab with a claim token or current-tab fallback.", true),
     browserCapability("browser.session.name", "Name the current browser automation session.", true),
     browserCapability("events.wait", "Wait for buffered browser events.", true),
     browserCapability("downloads", "List and wait for Chrome downloads.", true),
@@ -3497,6 +3730,66 @@ function sessionIdForTab(tabId: number | undefined) {
   }
 
   return sessionManager.findSessionByTabId(tabId)?.sessionId ?? null;
+}
+
+function createClaimToken(tabId: number) {
+  pruneClaimTokens();
+  const token = crypto.randomUUID();
+  claimTokens.set(token, {
+    expiresAt: Date.now() + 5 * 60 * 1000,
+    tabId
+  });
+  return token;
+}
+
+function resolveClaimedTabId(params: ActionParams = {}) {
+  if (typeof params.claimToken === "string" && params.claimToken.trim()) {
+    const token = params.claimToken.trim();
+    const record = claimTokens.get(token);
+
+    if (!record) {
+      throw new Error("claimTab.params.claimToken is invalid or expired");
+    }
+
+    if (record.expiresAt < Date.now()) {
+      claimTokens.delete(token);
+      throw new Error("claimTab.params.claimToken is expired");
+    }
+
+    claimTokens.delete(token);
+    return record.tabId;
+  }
+
+  if (typeof params.tabId === "number" && params.allowUnsafeTabIdClaim !== true) {
+    throw new Error(
+      "claimTab.params.tabId requires allowUnsafeTabIdClaim=true. Prefer browser.user.openTabs() and pass claimToken."
+    );
+  }
+
+  return params.tabId;
+}
+
+function pruneClaimTokens() {
+  const now = Date.now();
+
+  for (const [token, record] of claimTokens.entries()) {
+    if (record.expiresAt < now) {
+      claimTokens.delete(token);
+    }
+  }
+}
+
+function isClaimableTab(tab: chrome.tabs.Tab) {
+  try {
+    if (typeof tab.url !== "string" || !tab.url.trim()) {
+      return false;
+    }
+
+    assertAllowedNavigationUrl(tab.url);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function devLogFromEvent(event: ActionParams) {

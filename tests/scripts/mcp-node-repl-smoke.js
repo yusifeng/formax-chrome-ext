@@ -102,6 +102,10 @@ try {
           "  hasEventsFacade: typeof browser.events?.wait === 'function',",
           "  hasDownloadsFacade: typeof browser.downloads?.waitFor === 'function',",
           "  hasCapabilitiesFacade: typeof browser.capabilities?.has === 'function',",
+          "  hasDocumentation: typeof browser.documentation === 'function',",
+          "  hasAgentDocumentation: typeof agent.documentation?.get === 'function',",
+          "  hasUserOpenTabs: typeof browser.user?.openTabs === 'function',",
+          "  hasUserClaim: typeof browser.user?.claim === 'function',",
           "  hasSemanticTabMethods: (() => {",
           "    const proto = Object.getPrototypeOf(browser.tabs);",
           "    return typeof browser.tabs?.new === 'function';",
@@ -130,6 +134,10 @@ try {
   assert.equal(result.result.hasEventsFacade, true);
   assert.equal(result.result.hasDownloadsFacade, true);
   assert.equal(result.result.hasCapabilitiesFacade, true);
+  assert.equal(result.result.hasDocumentation, true);
+  assert.equal(result.result.hasAgentDocumentation, true);
+  assert.equal(result.result.hasUserOpenTabs, true);
+  assert.equal(result.result.hasUserClaim, true);
   assert.equal(result.result.hasSemanticTabMethods, true);
   assert.equal(result.result.toolCount > 0, true);
 

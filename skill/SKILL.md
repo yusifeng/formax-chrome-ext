@@ -27,11 +27,19 @@ if (!globalThis.browser) {
 const browser = await agent.browsers.get("extension");
 ```
 
+After bootstrap, use the runtime docs when unsure about current capabilities:
+
+```js
+await browser.documentation();
+await agent.documentation.get("tabs");
+```
+
 Prefer the object API:
 
 - `browser.health()`
 - `browser.tabs.new(url)`
-- `browser.tabs.claim()`
+- `browser.user.openTabs({ currentWindow: true })`
+- `browser.user.claimTab(tabDescriptorOrClaimTokenArgs)`
 - `browser.tabs.list({ all: true })`
 - `browser.tabs.get(tabId)`
 - `browser.nameSession(name)`
@@ -94,14 +102,48 @@ globalThis.__activeBrowserTab = first
 Reuse tabs aggressively.
 
 - If `globalThis.__activeBrowserTab` exists, use it.
-- If the user wants to work with an already-open Chrome page, use `browser.tabs.claim()` or list tabs and claim/get the matching tab.
+- If the user wants to work with an already-open Chrome page, first call `browser.user.openTabs()` and then claim one of the returned descriptors with `browser.user.claimTab(tab)`.
+- Do not guess tab IDs. Naked tabId claims are an unsafe debug fallback only.
+- Do not use `browser.tabs.switch(id)` to take ownership of a user tab. Switching only works for tabs already controlled by the current browser session.
 - Only call `browser.tabs.new(url)` for the first tab in a task, or when the user explicitly asks for multiple tabs.
 - Within one user request, do not create multiple new tabs for retries.
 - For retries, use the same tab and call `tab.goto(url)` again or retry the locator after inspecting the page.
 - After creating or claiming a tab, store it as `globalThis.__activeBrowserTab`.
 - If you accidentally create extra tabs during a task, close the extras before the final reply.
 
-Avoid producing many `Agent xxxx` tab groups. One ordinary single-page task should use one tab group at most.
+Avoid producing many Formax tab groups. One ordinary single-page task should use one tab group at most.
+
+Session/group ownership model:
+
+- The browser runtime keeps one stable `sessionId` in `globalThis.__formaxBrowserSessionId`.
+- Each agent turn may pass a `turnId`; `turnId` marks cleanup boundaries, not Chrome tab groups.
+- A Chrome group is only the UI container. Ownership is tracked by tab leases: `sessionId -> tab leases -> tabId -> current Chrome group`.
+- Tabs that should continue into the next turn must be finalized as handoff tabs. Tabs that should remain visible for the user but stop being controlled should be finalized as deliverables.
+
+Claiming an existing user tab:
+
+```js
+const openTabs = await browser.user.openTabs({ currentWindow: true });
+const candidate = openTabs.find((tab) => /github|baidu|docs/i.test(`${tab.title} ${tab.url}`));
+if (!candidate) throw new Error("No matching user tab is available to claim.");
+globalThis.__activeBrowserTab = await browser.user.claimTab(candidate);
+```
+
+Ending a turn without closing the useful page:
+
+```js
+await browser.user.finalize({ keep: [globalThis.__activeBrowserTab] });
+await browser.endTurn({ turnId: "turn-1" });
+```
+
+Leaving a result page for the user but releasing control:
+
+```js
+await browser.user.finalize({
+  deliverableTabIds: [globalThis.__activeBrowserTab.id],
+  closeRest: true
+});
+```
 
 ## Variable Reuse
 
@@ -392,6 +434,8 @@ if (tab) {
   globalThis.__activeBrowserTab = undefined;
 }
 ```
+
+Use `browser.user.finalize({ keep: [tab] })` when the current tab should be handed off to the next turn and reused later. Use `browser.user.finalize({ deliverableTabIds: [tab.id] })` when the tab should remain visible for the user but no longer be controlled by the agent. Use `browser.stop({ closeTabs: true })` for full cleanup.
 
 To clean all controlled Agent sessions:
 

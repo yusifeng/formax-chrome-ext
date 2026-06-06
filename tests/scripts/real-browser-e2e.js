@@ -355,7 +355,10 @@ async function run() {
   }
 
   await test("start session and open local fixture", async () => {
-    const session = (await browserStartSession({ active: true })).result;
+    const session = (await browserStartSession({
+      sessionId: `real-e2e-${Date.now().toString(36)}`,
+      active: true
+    })).result;
     sessionId = session.sessionId;
     assert(typeof sessionId === "string", "sessionId should be returned", session);
 

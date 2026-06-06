@@ -1,5 +1,66 @@
 # Agent Notes
 
+## Project Overview
+
+This repository contains a Chrome extension, Rust native messaging host, MCP
+`node_repl` server, browser client SDK, and agent/debug scripts for controlling
+real Chrome tabs through high-level browser tools.
+
+The main protocol contract lives in `shared/protocol.md` and `shared/types.ts`.
+Keep protocol changes synchronized across the extension, MCP/browser client,
+agent tool schemas, and tests.
+
+## Source Layout
+
+- `extension/`: Chrome MV3 extension sources. TypeScript compiles to adjacent
+  JavaScript files that the unpacked extension loads.
+- `mcp-node-repl/`: persistent Node-backed MCP server and browser-client bridge.
+- `agent/`: agent-facing browser tool wrappers plus manual and LLM smoke scripts.
+- `shared/`: shared schemas, types, policies, session store, and protocol docs.
+- `rust/` and `native-host/`: native messaging host implementation, manifest
+  templates, and platform installers.
+- `scripts/`: package, install, and environment validation helpers.
+- `tests/`: Vitest coverage and real-browser smoke/e2e scripts.
+
+## Common Commands
+
+Use:
+
+```bash
+npm run build
+```
+
+to build both runtime TypeScript and extension TypeScript.
+
+Use:
+
+```bash
+npm run typecheck
+npm test
+```
+
+for normal validation. `npm test` builds the runtime before running Vitest.
+
+Use:
+
+```bash
+npm run test:mcp-node-repl
+npm run check:extension-installed
+npm run check:native-host
+```
+
+for focused MCP and installed-runtime checks.
+
+Use:
+
+```bash
+npm run test:real
+```
+
+only after the extension and native host are installed and the extension popup
+shows `Connected`. Reload the unpacked extension in `chrome://extensions` after
+rebuilding extension files.
+
 ## Chrome Extension ID
 
 The Chrome Web Store extension ID for this project is:

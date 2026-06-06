@@ -19,6 +19,52 @@
     sessionId: string | null;
     turnId: string | null;
   };
+  type Spring = {
+    dampingFraction: number;
+    force: number;
+    response: number;
+    simulationTime: number;
+    scriptTime: number;
+    target: number;
+    value: number;
+    velocity: number;
+  };
+  type CursorMotion =
+    | {
+        axisDegrees: number;
+        end: Point;
+        mode: "scoot";
+        progressSpring: Spring;
+        rotationPeak: number;
+        start: Point;
+      }
+    | {
+        control1: Point;
+        control2: Point;
+        end: Point;
+        mode: "arc";
+        progressSpring: Spring;
+        start: Point;
+      };
+
+  const FIXED_STEP_SECONDS = 1 / 240;
+  const DEFAULT_FRAME_SECONDS = 1 / 60;
+  const SCOOT_THRESHOLD_PX = 196;
+  const ARRIVAL_DISTANCE_PX = 0.85;
+  const ARRIVAL_VELOCITY_PX = 12;
+  const SETTLED_EPSILON = 0.001 * 60;
+  const NEUTRAL_ROTATION_DEGREES = 0;
+  const FLOURISH_AMPLITUDE_DEGREES = 3;
+  const FLOURISH_DURATION_SECONDS = 0.72;
+  const FLOURISH_PERIOD_SECONDS = 0.66;
+  const POSITION_SPRING = { dampingFraction: 0.9, response: 0.19 };
+  const VISIBILITY_SPRING = { dampingFraction: 0.86, response: 0.42 };
+  const STRETCH_SPRING = { dampingFraction: 0.85, response: 0.2 };
+  const ROTATION_SPRING = { dampingFraction: 0.9, response: 0.12 };
+  const SCOOT_PROGRESS_SPRING = { dampingFraction: 0.94, response: 0.19 };
+  const ARC_PROGRESS_SPRING = { dampingFraction: 0.9, response: 0.42 };
+  const SCOOT_ROTATION_SPRING = { dampingFraction: 0.82, response: 0.055 };
+  const SCOOT_STRETCH_SPRING = { dampingFraction: 0.86, response: 0.12 };
 
   const root = document.createElement("div");
   root.id = "agent-browser-controller-overlay-root";
@@ -28,24 +74,6 @@
   root.style.overflow = "hidden";
   root.style.pointerEvents = "none";
   root.style.zIndex = "2147483647";
-
-  const highlight = document.createElement("div");
-  highlight.id = "agent-browser-controller-highlight";
-  highlight.style.all = "initial";
-  highlight.style.position = "fixed";
-  highlight.style.left = "0";
-  highlight.style.top = "0";
-  highlight.style.border = "2px solid rgba(16, 185, 129, 0.95)";
-  highlight.style.borderRadius = "8px";
-  highlight.style.background = "rgba(16, 185, 129, 0.08)";
-  highlight.style.boxShadow =
-    "0 0 0 4px rgba(16, 185, 129, 0.16), 0 12px 30px rgba(5, 150, 105, 0.20)";
-  highlight.style.opacity = "0";
-  highlight.style.pointerEvents = "none";
-  highlight.style.transform = "translate3d(-9999px, -9999px, 0) scale(0.98)";
-  highlight.style.transition =
-    "opacity 140ms ease, transform 180ms cubic-bezier(.2,.8,.2,1), width 180ms cubic-bezier(.2,.8,.2,1), height 180ms cubic-bezier(.2,.8,.2,1)";
-  highlight.style.willChange = "opacity, transform, width, height";
 
   const cursor = document.createElement("div");
   cursor.id = "agent-browser-controller-cursor";
@@ -97,7 +125,6 @@
   label.textContent = "Agent";
 
   cursor.appendChild(cursorImage);
-  root.appendChild(highlight);
   root.appendChild(cursor);
   root.appendChild(label);
 
@@ -105,14 +132,25 @@
     x: Math.round(window.innerWidth * 0.58),
     y: Math.round(window.innerHeight * 0.55)
   };
+  let lastFramePoint: Point = { ...current };
+  let motion: CursorMotion | null = null;
+  let positionXSpring = createSpring(current.x, current.x, POSITION_SPRING);
+  let positionYSpring = createSpring(current.y, current.y, POSITION_SPRING);
+  let rotationSpring = createSpring(0, 0, ROTATION_SPRING);
+  let scootAxisSpring = createSpring(0, 0, ROTATION_SPRING);
+  let scootRotationSpring = createSpring(0, 0, SCOOT_ROTATION_SPRING);
+  let scootStretchSpring = createSpring(1, 1, SCOOT_STRETCH_SPRING);
+  let stretchSpring = createSpring(1, 1, STRETCH_SPRING);
+  let visibilitySpring = createSpring(0, 0, VISIBILITY_SPRING);
   let target: Point = { ...current };
   let velocity: Point = { x: 0, y: 0 };
   let visible = false;
   let phase: CursorPhase = "idle";
+  let hasEverShownCursor = false;
+  let thinkStartedAt: number | null = null;
   let pendingArrival: CursorArrival | null = null;
   let rafId: number | null = null;
   let lastFrameAt = 0;
-  let highlightTimer: number | null = null;
   const faviconBadgeId = "agent-browser-controller-favicon-badge";
 
   function mount() {
@@ -136,16 +174,22 @@
   }
 
   function updateCursorTransform() {
-    const speed = Math.hypot(velocity.x, velocity.y);
-    const scale = visible ? Math.min(1.04, 0.96 + speed / 9000) : 0.86;
-    const opacity = visible ? Math.max(0.72, Math.min(1, 0.92 + speed / 7000)) : 0;
-    const blur = visible ? 0 : 2;
+    const visibility = clamp(visibilitySpring.value, 0, 1);
+    const visibilityScale = lerp(0.4, 1, visibility);
+    const opacity = visibility;
+    const blur = lerp(5, 0, visibility);
+    const scootStretch = clamp(scootStretchSpring.value, 0.15, 1);
+    const rotation = flourishRotation(rotationSpring.value, performance.now());
 
     cursor.style.opacity = `${opacity}`;
     cursor.style.filter = `blur(${blur.toFixed(2)}px)`;
     cursor.style.transform = [
       `translate3d(${(current.x - 7.2).toFixed(2)}px, ${(current.y - 3.3).toFixed(2)}px, 0)`,
-      `scale(${scale.toFixed(3)})`
+      `rotate(${scootAxisSpring.value.toFixed(2)}deg)`,
+      `scale(1, ${scootStretch.toFixed(3)})`,
+      `rotate(${(-scootAxisSpring.value).toFixed(2)}deg)`,
+      `rotate(${(rotation + scootRotationSpring.value).toFixed(2)}deg)`,
+      `scale(${(stretchSpring.value * visibilityScale).toFixed(3)}, ${visibilityScale.toFixed(3)})`
     ].join(" ");
 
     label.style.opacity = "0";
@@ -171,10 +215,18 @@
         "drop-shadow(0 0 7px rgba(16, 185, 129, 0.82)) drop-shadow(0 0 18px rgba(16, 185, 129, 0.42))";
     }
 
-    updateFaviconBadge(phase);
+    try {
+      updateFaviconBadge(phase);
+    } catch {
+      // Favicon badges are best-effort; cursor rendering should never fail because of page head/CSP quirks.
+    }
   }
 
   function updateFaviconBadge(nextPhase: CursorPhase) {
+    if (!document.head) {
+      return;
+    }
+
     const color = nextPhase === "thinking" ? "#3b82f6" : "#10b981";
     const svg = [
       '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">',
@@ -220,45 +272,496 @@
       });
   }
 
+  function clamp(value: number, min: number, max: number) {
+    return Math.max(min, Math.min(max, value));
+  }
+
+  function distanceBetween(a: Point, b: Point) {
+    return Math.hypot(b.x - a.x, b.y - a.y);
+  }
+
+  function lerp(a: number, b: number, progress: number) {
+    return a + (b - a) * progress;
+  }
+
+  function lerpPoint(a: Point, b: Point, progress: number): Point {
+    return {
+      x: lerp(a.x, b.x, progress),
+      y: lerp(a.y, b.y, progress)
+    };
+  }
+
+  function normalizeVector(point: Point) {
+    const length = Math.hypot(point.x, point.y);
+
+    if (length < 0.001) {
+      return { x: 1, y: 0 };
+    }
+
+    return {
+      x: point.x / length,
+      y: point.y / length
+    };
+  }
+
+  function cubicPoint(start: Point, control1: Point, control2: Point, end: Point, progress: number): Point {
+    const t = clamp(progress, 0, 1);
+    const inv = 1 - t;
+
+    return {
+      x:
+        inv * inv * inv * start.x +
+        3 * inv * inv * t * control1.x +
+        3 * inv * t * t * control2.x +
+        t * t * t * end.x,
+      y:
+        inv * inv * inv * start.y +
+        3 * inv * inv * t * control1.y +
+        3 * inv * t * t * control2.y +
+        t * t * t * end.y
+    };
+  }
+
+  function cubicTangent(start: Point, control1: Point, control2: Point, end: Point, progress: number): Point {
+    const t = clamp(progress, 0, 1);
+    const inv = 1 - t;
+
+    return {
+      x:
+        3 * inv * inv * (control1.x - start.x) +
+        6 * inv * t * (control2.x - control1.x) +
+        3 * t * t * (end.x - control2.x),
+      y:
+        3 * inv * inv * (control1.y - start.y) +
+        6 * inv * t * (control2.y - control1.y) +
+        3 * t * t * (end.y - control2.y)
+    };
+  }
+
+  function scoreArcPath(start: Point, control1: Point, control2: Point, end: Point, directDistance: number) {
+    let score = 0;
+    let previous = start;
+    let pathLength = 0;
+
+    for (let index = 1; index <= 10; index += 1) {
+      const point = cubicPoint(start, control1, control2, end, index / 10);
+      pathLength += distanceBetween(previous, point);
+      previous = point;
+
+      const edgeDistance = Math.min(
+        point.x,
+        point.y,
+        window.innerWidth - point.x,
+        window.innerHeight - point.y
+      );
+
+      if (edgeDistance < 0) {
+        score += 10000;
+      } else if (edgeDistance < 24) {
+        score += (24 - edgeDistance) * 18;
+      }
+    }
+
+    const idealLength = directDistance * 1.08;
+    score += Math.abs(pathLength - idealLength) * 0.42;
+    score += distanceBetween(start, control1) * 0.015;
+    score += distanceBetween(control2, end) * 0.015;
+
+    return score;
+  }
+
+  function tangentRotation(tangent: Point) {
+    if (Math.hypot(tangent.x, tangent.y) < 0.001) {
+      return 0;
+    }
+
+    const degrees = Math.atan2(tangent.y, tangent.x) * (180 / Math.PI);
+    return normalizeDegrees(degrees + 90);
+  }
+
+  function tangentForRotation(degrees: number): Point {
+    const radians = (degrees - 90) * (Math.PI / 180);
+
+    return {
+      x: Math.cos(radians),
+      y: Math.sin(radians)
+    };
+  }
+
+  function normalizeDegrees(degrees: number) {
+    let normalized = degrees % 360;
+
+    if (normalized < 0) {
+      normalized += 360;
+    }
+
+    return normalized;
+  }
+
+  function shortestAngleDelta(from: number, to: number) {
+    let delta = to - from;
+
+    while (delta > 180) {
+      delta -= 360;
+    }
+
+    while (delta < -180) {
+      delta += 360;
+    }
+
+    return delta;
+  }
+
+  function setRotationTarget(spring: Spring, degrees: number) {
+    spring.target = spring.value + shortestAngleDelta(spring.value, degrees);
+  }
+
+  function createSpring(
+    value: number,
+    target: number,
+    config: { dampingFraction: number; response: number }
+  ): Spring {
+    return {
+      dampingFraction: config.dampingFraction,
+      force: 0,
+      response: config.response,
+      simulationTime: 0,
+      scriptTime: 0,
+      target,
+      value,
+      velocity: 0
+    };
+  }
+
+  function resetSpring(spring: Spring, value: number) {
+    spring.force = 0;
+    spring.simulationTime = 0;
+    spring.scriptTime = 0;
+    spring.target = value;
+    spring.value = value;
+    spring.velocity = 0;
+  }
+
+  function stepSpring(spring: Spring, seconds: number) {
+    const response = Math.max(0.001, spring.response);
+    const maxAngularFrequency = 1 / (2 * FIXED_STEP_SECONDS ** 2);
+    const stiffness = Math.min((Math.PI * 2) ** 2 / response ** 2, maxAngularFrequency);
+    const damping = Math.sqrt(stiffness) * 2 * spring.dampingFraction;
+
+    spring.scriptTime += Math.max(0, seconds);
+
+    if (spring.scriptTime - spring.simulationTime > 1) {
+      spring.simulationTime = spring.scriptTime - DEFAULT_FRAME_SECONDS;
+    }
+
+    while (spring.simulationTime < spring.scriptTime) {
+      integrateSpring(spring, stiffness, damping);
+      spring.simulationTime += FIXED_STEP_SECONDS;
+    }
+
+    if (isSpringSettled(spring)) {
+      spring.value = spring.target;
+      spring.velocity = 0;
+      spring.force = 0;
+    }
+  }
+
+  function integrateSpring(spring: Spring, stiffness: number, damping: number) {
+    const halfStep = FIXED_STEP_SECONDS / 2;
+    const velocity = spring.velocity + spring.force * halfStep;
+
+    spring.value += velocity * FIXED_STEP_SECONDS;
+    spring.force = velocity * -damping + (spring.target - spring.value) * stiffness;
+    spring.velocity = velocity + spring.force * halfStep;
+  }
+
+  function isSpringSettled(spring: Spring) {
+    if (Math.max(spring.velocity * spring.velocity, spring.force * spring.force) > SETTLED_EPSILON ** 2) {
+      return false;
+    }
+
+    const tolerance = spring.target * 0.01;
+    const delta = spring.target - spring.value;
+
+    return tolerance === 0 || delta * delta <= tolerance * tolerance;
+  }
+
+  function flourishRotation(baseRotation: number, now: number) {
+    if (thinkStartedAt == null) {
+      return baseRotation;
+    }
+
+    const elapsed = (now - thinkStartedAt) / 1000;
+    const duration = FLOURISH_DURATION_SECONDS;
+    const fade = Math.min(1, elapsed / duration);
+
+    if (fade >= 1) {
+      thinkStartedAt = null;
+      return baseRotation;
+    }
+
+    return (
+      baseRotation +
+      Math.sin(elapsed / FLOURISH_PERIOD_SECONDS * Math.PI * 2) *
+        Math.sin(fade * Math.PI) *
+        FLOURISH_AMPLITUDE_DEGREES
+    );
+  }
+
+  function buildCursorMotion(start: Point, end: Point): CursorMotion | null {
+    const distance = distanceBetween(start, end);
+
+    if (distance < 2) {
+      return null;
+    }
+
+    const vector = {
+      x: end.x - start.x,
+      y: end.y - start.y
+    };
+    const direction = normalizeVector(vector);
+
+    if (distance <= SCOOT_THRESHOLD_PX) {
+      return {
+        axisDegrees: Math.atan2(direction.y, direction.x) * (180 / Math.PI),
+        end,
+        mode: "scoot",
+        progressSpring: createSpring(0, 1, SCOOT_PROGRESS_SPRING),
+        rotationPeak: clamp((direction.x * 0.75 - direction.y * 0.62) * 70, -70, 70),
+        start
+      };
+    }
+
+    const normal = {
+      x: -direction.y,
+      y: direction.x
+    };
+    const preferredSide = vector.x * -0.35 + vector.y * 0.65 >= 0 ? 1 : -1;
+    const endpointTangent = tangentForRotation(NEUTRAL_ROTATION_DEGREES);
+    let best:
+      | {
+          control1: Point;
+          control2: Point;
+          score: number;
+        }
+      | null = null;
+
+    for (let index = 0; index < 20; index += 1) {
+      const side = index % 2 === 0 ? preferredSide : -preferredSide;
+      const handleJitter = ((index * 7) % 11) / 10;
+      const arcJitter = ((index * 5 + 3) % 13) / 12;
+      const handle = clamp(distance * (0.24 + handleJitter * 0.16), 68, 300);
+      const endpointHandle = clamp(distance * (0.13 + handleJitter * 0.07), 48, 240);
+      const arc = clamp(distance * (0.12 + arcJitter * 0.16), 36, 230) * side;
+      const control1 = {
+        x: start.x + direction.x * handle + normal.x * arc * (0.18 + arcJitter * 0.16),
+        y: start.y + direction.y * handle + normal.y * arc * (0.18 + arcJitter * 0.16)
+      };
+      const control2 = {
+        x: end.x - endpointTangent.x * endpointHandle,
+        y: end.y - endpointTangent.y * endpointHandle
+      };
+      const candidate = {
+        control1,
+        control2,
+        score: scoreArcPath(start, control1, control2, end, distance)
+      };
+
+      if (!best || candidate.score < best.score) {
+        best = candidate;
+      }
+    }
+
+    const control1 = best
+      ? best.control1
+      : {
+          x: start.x + direction.x * clamp(distance * 0.32, 72, 280),
+          y: start.y + direction.y * clamp(distance * 0.32, 72, 280)
+        };
+    const control2 = best
+      ? best.control2
+      : {
+          x: end.x - endpointTangent.x * clamp(distance * 0.15, 48, 240),
+          y: end.y - endpointTangent.y * clamp(distance * 0.15, 48, 240)
+        };
+
+    return {
+      control1: {
+        x: clamp(control1.x, 16, window.innerWidth - 16),
+        y: clamp(control1.y, 16, window.innerHeight - 16)
+      },
+      control2: {
+        x: clamp(control2.x, 16, window.innerWidth - 16),
+        y: clamp(control2.y, 16, window.innerHeight - 16)
+      },
+      end,
+      mode: "arc",
+      progressSpring: createSpring(0, 1, ARC_PROGRESS_SPRING),
+      start
+    };
+  }
+
+  function resetScootPose() {
+    resetSpring(scootAxisSpring, 0);
+    resetSpring(scootRotationSpring, 0);
+    resetSpring(scootStretchSpring, 1);
+    resetSpring(stretchSpring, 1);
+  }
+
+  function resetMotionPose() {
+    resetSpring(rotationSpring, 0);
+    resetScootPose();
+  }
+
   function animate(frameAt: number) {
     const dt = Math.max(1 / 240, Math.min(1 / 30, (frameAt - lastFrameAt) / 1000 || 1 / 60));
     lastFrameAt = frameAt;
+    const activeMotion = motion;
 
-    const stiffness = 42;
-    const damping = 14;
-    const ax = (target.x - current.x) * stiffness - velocity.x * damping;
-    const ay = (target.y - current.y) * stiffness - velocity.y * damping;
+    if (activeMotion) {
+      thinkStartedAt = null;
+      stepSpring(activeMotion.progressSpring, dt);
+      const progress = clamp(activeMotion.progressSpring.value, 0, 1);
 
-    velocity = {
-      x: velocity.x + ax * dt,
-      y: velocity.y + ay * dt
-    };
-    current = {
-      x: current.x + velocity.x * dt,
-      y: current.y + velocity.y * dt
-    };
-    updateCursorTransform();
+      if (activeMotion.mode === "scoot") {
+        const shape = Math.sin(progress * Math.PI);
 
-    const settled =
-      Math.hypot(target.x - current.x, target.y - current.y) < 0.35 &&
-      Math.hypot(velocity.x, velocity.y) < 6;
+        positionXSpring.target = activeMotion.end.x;
+        positionYSpring.target = activeMotion.end.y;
+        setRotationTarget(rotationSpring, 0);
+        setRotationTarget(scootAxisSpring, activeMotion.axisDegrees);
+        scootRotationSpring.target = activeMotion.rotationPeak * shape;
+        scootStretchSpring.target = lerp(1, 0.85, shape);
+        stretchSpring.target = 1;
+      } else {
+        const pathPoint = cubicPoint(
+          activeMotion.start,
+          activeMotion.control1,
+          activeMotion.control2,
+          activeMotion.end,
+          progress
+        );
+        const tangent = cubicTangent(
+          activeMotion.start,
+          activeMotion.control1,
+          activeMotion.control2,
+          activeMotion.end,
+          progress
+        );
 
-    if (settled) {
-      current = { ...target };
-      velocity = { x: 0, y: 0 };
-      updateCursorTransform();
-      rafId = null;
-      sendCursorArrived();
-      return;
+        positionXSpring.target = pathPoint.x;
+        positionYSpring.target = pathPoint.y;
+        setRotationTarget(rotationSpring, tangentRotation(tangent));
+        setRotationTarget(scootAxisSpring, 0);
+        scootRotationSpring.target = 0;
+        scootStretchSpring.target = 1;
+        stretchSpring.target = clamp(1 - Math.hypot(velocity.x, velocity.y) / 9000, 0.93, 1);
+      }
+    } else {
+      positionXSpring.target = target.x;
+      positionYSpring.target = target.y;
+      scootRotationSpring.target = 0;
+      scootStretchSpring.target = 1;
+      stretchSpring.target = 1;
     }
 
-    rafId = requestAnimationFrame(animate);
+    stepSpring(positionXSpring, dt);
+    stepSpring(positionYSpring, dt);
+    stepSpring(rotationSpring, dt);
+    stepSpring(scootAxisSpring, dt);
+    stepSpring(scootRotationSpring, dt);
+    stepSpring(scootStretchSpring, dt);
+    stepSpring(stretchSpring, dt);
+    stepSpring(visibilitySpring, dt);
+
+    current = {
+      x: positionXSpring.value,
+      y: positionYSpring.value
+    };
+    velocity = {
+      x: positionXSpring.velocity,
+      y: positionYSpring.velocity
+    };
+    lastFramePoint = { ...current };
+    updateCursorTransform();
+
+    const arrived =
+      activeMotion &&
+      activeMotion.progressSpring.value >= 0.999 &&
+      Math.abs(activeMotion.progressSpring.velocity) < 0.01 &&
+      distanceBetween(current, target) <= ARRIVAL_DISTANCE_PX &&
+      Math.abs(positionXSpring.velocity) <= ARRIVAL_VELOCITY_PX &&
+      Math.abs(positionYSpring.velocity) <= ARRIVAL_VELOCITY_PX;
+
+    if (arrived) {
+      current = { ...target };
+      resetSpring(positionXSpring, target.x);
+      resetSpring(positionYSpring, target.y);
+      velocity = { x: 0, y: 0 };
+      lastFramePoint = { ...current };
+      if (activeMotion.mode === "arc") {
+        const finalTangent = cubicTangent(
+          activeMotion.start,
+          activeMotion.control1,
+          activeMotion.control2,
+          activeMotion.end,
+          1
+        );
+        resetSpring(rotationSpring, tangentRotation(finalTangent));
+      } else {
+        resetSpring(rotationSpring, 0);
+      }
+      motion = null;
+      resetScootPose();
+      thinkStartedAt = frameAt;
+      updateCursorTransform();
+      sendCursorArrived();
+    }
+
+    if (shouldContinueAnimating()) {
+      rafId = requestAnimationFrame(animate);
+    } else {
+      rafId = null;
+    }
   }
 
   function ensureAnimation() {
     if (rafId != null) return;
     lastFrameAt = performance.now();
+    lastFramePoint = { ...current };
     rafId = requestAnimationFrame(animate);
+  }
+
+  function shouldContinueAnimating() {
+    return (
+      motion != null ||
+      !isSpringSettled(positionXSpring) ||
+      !isSpringSettled(positionYSpring) ||
+      !isSpringSettled(rotationSpring) ||
+      !isSpringSettled(scootAxisSpring) ||
+      !isSpringSettled(scootRotationSpring) ||
+      !isSpringSettled(scootStretchSpring) ||
+      !isSpringSettled(stretchSpring) ||
+      !isSpringSettled(visibilitySpring) ||
+      thinkStartedAt != null
+    );
+  }
+
+  function snapTo(point: Point) {
+    target = point;
+    current = point;
+    lastFramePoint = point;
+    motion = null;
+    thinkStartedAt = null;
+    resetSpring(positionXSpring, point.x);
+    resetSpring(positionYSpring, point.y);
+    resetSpring(rotationSpring, 0);
+    resetSpring(scootAxisSpring, 0);
+    resetSpring(scootRotationSpring, 0);
+    resetSpring(scootStretchSpring, 1);
+    resetSpring(stretchSpring, 1);
+    velocity = { x: 0, y: 0 };
+    updateCursorTransform();
   }
 
   function setCursor(
@@ -272,20 +775,47 @@
   ) {
     const next = clampPoint(point);
     const shouldAnimate = options.animate !== false;
+    const wasEffectivelyHidden = visibilitySpring.value <= 0.001 || !hasEverShownCursor;
     visible = options.visible !== false;
+    visibilitySpring.target = visible ? 1 : 0;
     pendingArrival = options.arrival ?? null;
     applyPhase(options.phase ?? phase);
 
-    if (!shouldAnimate) {
+    if (!visible) {
       target = next;
-      current = next;
-      velocity = { x: 0, y: 0 };
-      updateCursorTransform();
+      motion = null;
+      thinkStartedAt = null;
+      resetMotionPose();
+      ensureAnimation();
       sendCursorArrived();
       return;
     }
 
+    hasEverShownCursor = true;
+
+    if (!shouldAnimate || wasEffectivelyHidden) {
+      snapTo(next);
+      visibilitySpring.target = visible ? 1 : 0;
+      ensureAnimation();
+      sendCursorArrived();
+      return;
+    }
+
+    const distance = Math.hypot(next.x - current.x, next.y - current.y);
     target = next;
+
+    if (distance < 0.5) {
+      snapTo(next);
+      visibilitySpring.target = visible ? 1 : 0;
+      ensureAnimation();
+      sendCursorArrived();
+      return;
+    }
+
+    motion = buildCursorMotion(current, next);
+    thinkStartedAt = null;
+    lastFrameAt = performance.now();
+    lastFramePoint = { ...current };
     updateCursorTransform();
     ensureAnimation();
   }
@@ -317,29 +847,6 @@
     window.setTimeout(() => {
       ripple.remove();
     }, 420);
-  }
-
-  function showHighlight(rect: {
-    height: number;
-    width: number;
-    x: number;
-    y: number;
-  }) {
-    if (highlightTimer != null) {
-      window.clearTimeout(highlightTimer);
-      highlightTimer = null;
-    }
-
-    const margin = 3;
-    highlight.style.width = `${Math.max(0, rect.width + margin * 2)}px`;
-    highlight.style.height = `${Math.max(0, rect.height + margin * 2)}px`;
-    highlight.style.opacity = "1";
-    highlight.style.transform = `translate3d(${rect.x - margin}px, ${rect.y - margin}px, 0) scale(1)`;
-
-    highlightTimer = window.setTimeout(() => {
-      highlight.style.opacity = "0";
-      highlight.style.transform = `translate3d(${rect.x - margin}px, ${rect.y - margin}px, 0) scale(0.985)`;
-    }, 900);
   }
 
   mount();
@@ -395,6 +902,7 @@
       const y = Number(message.y);
 
       if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        sendResponse({ ok: false, error: "Invalid cursor coordinates" });
         return;
       }
 
@@ -414,7 +922,8 @@
           visible: message.visible !== false
         }
       );
-      return;
+      sendResponse({ ok: true });
+      return true;
     }
 
     if (message.type === "AGENT_CURSOR_CLICK") {
@@ -422,28 +931,15 @@
       const y = Number(message.y);
 
       if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        sendResponse({ ok: false, error: "Invalid click coordinates" });
         return;
       }
 
       setCursor({ x, y }, { animate: true, phase: "active", visible: true });
       showClickRipple({ x, y });
-      return;
+      sendResponse({ ok: true });
+      return true;
     }
 
-    if (message.type === "AGENT_HIGHLIGHT") {
-      const rect = message.rect;
-
-      if (
-        !rect ||
-        !Number.isFinite(rect.x) ||
-        !Number.isFinite(rect.y) ||
-        !Number.isFinite(rect.width) ||
-        !Number.isFinite(rect.height)
-      ) {
-        return;
-      }
-
-      showHighlight(rect);
-    }
   });
 })();

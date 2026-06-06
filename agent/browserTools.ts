@@ -6,6 +6,8 @@ import type {
   CloseTabResult,
   EvaluateParams,
   EvaluateResult,
+  EndTurnParams,
+  EndTurnResult,
   FinalizeSessionParams,
   FinalizeSessionResult,
   GetCapabilitiesParams,
@@ -25,6 +27,8 @@ import type {
   BrowserSession,
   BrowserToolResult,
   ClaimTabParams,
+  UserOpenTabsParams,
+  UserOpenTabsResult,
   ClickParams,
   CreateTabParams,
   CreateTabResult,
@@ -73,6 +77,7 @@ import type {
   WaitForTextParams,
   WaitForTextResult
 } from "../shared/types.js";
+import { actionForToolName } from "../shared/action-registry.js";
 
 const RPC_URL = process.env.AGENT_BROWSER_RPC_URL || "http://127.0.0.1:8765/rpc";
 const RPC_TOKEN = process.env.AGENT_BROWSER_TOKEN || "";
@@ -132,7 +137,7 @@ export async function browserWaitForEvent(args: WaitForEventParams = {}) {
   return browserRpc<WaitForEventResult>("waitForEvent", args as JsonObject);
 }
 
-export async function browserStartSession(args: StartSessionParams = {}) {
+export async function browserStartSession(args: StartSessionParams) {
   return browserRpc<BrowserSession>("startSession", args as JsonObject);
 }
 
@@ -140,11 +145,15 @@ export async function browserNameSession(args: NameSessionParams) {
   return browserRpc<NameSessionResult>("nameSession", args as JsonObject);
 }
 
-export async function browserClaimTab(args: ClaimTabParams = {}) {
+export async function browserUserOpenTabs(args: UserOpenTabsParams = {}) {
+  return browserRpc<UserOpenTabsResult>("openTabs", args as JsonObject);
+}
+
+export async function browserClaimTab(args: ClaimTabParams) {
   return browserRpc<BrowserSession>("claimTab", args as JsonObject);
 }
 
-export async function browserCreateTab(args: CreateTabParams = {}) {
+export async function browserCreateTab(args: CreateTabParams) {
   return browserRpc<CreateTabResult>("createTab", args as JsonObject);
 }
 
@@ -287,6 +296,10 @@ export async function browserFinalizeSession(args: FinalizeSessionParams) {
   );
 }
 
+export async function browserEndTurn(args: EndTurnParams) {
+  return browserRpc<EndTurnResult>("endTurn", args as JsonObject);
+}
+
 export async function browserStopSession(args: StopSessionParams) {
   return browserRpc<StopSessionResult>("stopSession", args as JsonObject);
 }
@@ -362,10 +375,13 @@ export const browserToolSchemas = [
     parameters: {
       type: "object",
       properties: {
+        sessionId: { type: "string" },
+        turnId: { type: "string" },
         active: { type: "boolean" },
         initialUrl: { type: "string" },
         name: { type: "string" }
       },
+      required: ["sessionId"],
       additionalProperties: false
     }
   },
@@ -383,15 +399,31 @@ export const browserToolSchemas = [
     }
   },
   {
+    name: "browser_user_open_tabs",
+    description: "List user-visible Chrome tabs that can be claimed. Use the returned claimToken with browser_claim_tab instead of guessing tab IDs.",
+    parameters: {
+      type: "object",
+      properties: {
+        currentWindow: { type: "boolean" },
+        includeControlled: { type: "boolean" }
+      },
+      additionalProperties: false
+    }
+  },
+  {
     name: "browser_claim_tab",
-    description: "Claim the current or specified Chrome tab into a browser control session.",
+    description: "Claim a Chrome tab into a browser control session. Prefer passing claimToken from browser_user_open_tabs; naked tabId claims require allowUnsafeTabIdClaim.",
     parameters: {
       type: "object",
       properties: {
         sessionId: { type: "string" },
+        turnId: { type: "string" },
+        claimToken: { type: "string" },
         tabId: { type: "number" },
-        active: { type: "boolean" }
+        active: { type: "boolean" },
+        allowUnsafeTabIdClaim: { type: "boolean" }
       },
+      required: ["sessionId"],
       additionalProperties: false
     }
   },
@@ -402,9 +434,11 @@ export const browserToolSchemas = [
       type: "object",
       properties: {
         sessionId: { type: "string" },
+        turnId: { type: "string" },
         url: { type: "string" },
         active: { type: "boolean" }
       },
+      required: ["sessionId"],
       additionalProperties: false
     }
   },
@@ -748,6 +782,7 @@ export const browserToolSchemas = [
         tabId: { type: "number" },
         x: { type: "number" },
         y: { type: "number" },
+        waitForArrival: { type: "boolean" },
         waitMs: { type: "number" }
       },
       required: ["x", "y"],
@@ -1003,7 +1038,7 @@ export const browserToolSchemas = [
   },
   {
     name: "browser_finalize_session",
-    description: "End a browser control session, optionally keeping selected tabs open for the user.",
+    description: "Finalize a browser control session. Handoff tabs stay controlled for the next turn; deliverable tabs remain open but are released from agent control.",
     parameters: {
       type: "object",
       properties: {
@@ -1012,9 +1047,31 @@ export const browserToolSchemas = [
           type: "array",
           items: { type: "number" }
         },
+        handoffTabIds: {
+          type: "array",
+          items: { type: "number" }
+        },
+        deliverableTabIds: {
+          type: "array",
+          items: { type: "number" }
+        },
+        turnId: { type: "string" },
         closeRest: { type: "boolean" }
       },
       required: ["sessionId"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "browser_end_turn",
+    description: "End one browser-control turn and release active leases for that turn. Use browser_finalize_session first to hand off tabs that should remain controlled.",
+    parameters: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string" },
+        turnId: { type: "string" }
+      },
+      required: ["sessionId", "turnId"],
       additionalProperties: false
     }
   },
@@ -1034,6 +1091,10 @@ export const browserToolSchemas = [
 ] as const;
 
 export async function callBrowserTool(name: string, args: JsonObject) {
+  if (actionForToolName(name) == null) {
+    throw new Error(`Unknown browser tool: ${name}`);
+  }
+
   switch (name) {
     case "browser_health":
       return browserHealth();
@@ -1049,6 +1110,8 @@ export async function callBrowserTool(name: string, args: JsonObject) {
       return browserStartSession(args as StartSessionParams);
     case "browser_name_session":
       return browserNameSession(args as NameSessionParams);
+    case "browser_user_open_tabs":
+      return browserUserOpenTabs(args as UserOpenTabsParams);
     case "browser_claim_tab":
       return browserClaimTab(args as ClaimTabParams);
     case "browser_create_tab":
@@ -1115,6 +1178,8 @@ export async function callBrowserTool(name: string, args: JsonObject) {
       return browserCloseTab(args as CloseTabParams);
     case "browser_finalize_session":
       return browserFinalizeSession(args as unknown as FinalizeSessionParams);
+    case "browser_end_turn":
+      return browserEndTurn(args as EndTurnParams);
     case "browser_stop_session":
       return browserStopSession(args as StopSessionParams);
     default:

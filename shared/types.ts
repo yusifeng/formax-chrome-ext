@@ -6,6 +6,7 @@ export type BrowserAction =
   | "waitForEvent"
   | "startSession"
   | "nameSession"
+  | "openTabs"
   | "claimTab"
   | "createTab"
   | "switchTab"
@@ -39,6 +40,7 @@ export type BrowserAction =
   | "getCapabilities"
   | "closeTab"
   | "finalizeSession"
+  | "endTurn"
   | "stopSession";
 
 export type BrowserKey =
@@ -87,9 +89,11 @@ export type NativeEvent = {
 export type BrowserSession = {
   sessionId: string;
   name?: string;
-  groupId: number;
+  groupId: number | null;
   activeTabId: number | null;
   tabIds: number[];
+  leases?: BrowserTabLease[];
+  extensionInstanceId?: string | null;
   status: BrowserSessionStatus;
   createdAt: number;
   lastActiveAt: number;
@@ -98,6 +102,18 @@ export type BrowserSession = {
 };
 
 export type BrowserSessionStatus = "active" | "stopped" | "error";
+
+export type BrowserTabLease = {
+  tabId: number;
+  sessionId: string;
+  turnId: string | null;
+  origin: "agent" | "user";
+  state: "active" | "handoff";
+  claimedAt: number;
+  instanceId: string;
+  groupId?: number;
+  isActiveHandoff?: boolean;
+};
 
 export type BrowserElement = {
   ref: string;
@@ -202,6 +218,7 @@ export type HealthResult = {
   nativeConnected: boolean;
   lastNativeError: string | null;
   sessions: BrowserSession[];
+  extensionInstanceId?: string | null;
   attachedTabs: number[];
   supportedActions?: BrowserAction[];
   backendRevision?: number;
@@ -252,7 +269,8 @@ export type WaitForEventResult = {
 };
 
 export type StartSessionParams = {
-  sessionId?: string;
+  sessionId: string;
+  turnId?: string;
   name?: string;
   active?: boolean;
   initialUrl?: string;
@@ -293,13 +311,31 @@ export type NavigationResult = BrowserObservation & {
 };
 
 export type ClaimTabParams = {
-  sessionId?: string;
+  sessionId: string;
+  turnId?: string;
+  claimToken?: string;
   tabId?: number;
   active?: boolean;
+  allowUnsafeTabIdClaim?: boolean;
+};
+
+export type UserOpenTabsParams = {
+  currentWindow?: boolean;
+  includeControlled?: boolean;
+};
+
+export type ClaimableTabDescriptor = BrowserTabSummary & {
+  claimToken: string;
+  claimTokenExpiresAt: number;
+};
+
+export type UserOpenTabsResult = {
+  tabs: ClaimableTabDescriptor[];
 };
 
 export type CreateTabParams = {
-  sessionId?: string;
+  sessionId: string;
+  turnId?: string;
   url?: string;
   active?: boolean;
 };
@@ -521,6 +557,7 @@ export type MoveMouseParams = {
   tabId?: number;
   x: number;
   y: number;
+  waitForArrival?: boolean;
   waitMs?: number;
 };
 
@@ -687,7 +724,10 @@ export type CloseTabResult = {
 export type FinalizeSessionParams = {
   sessionId: string;
   keepTabIds?: number[];
+  handoffTabIds?: number[];
+  deliverableTabIds?: number[];
   closeRest?: boolean;
+  turnId?: string;
 };
 
 export type FinalizeSessionResult = {
@@ -696,6 +736,22 @@ export type FinalizeSessionResult = {
   reason?: "session_not_found";
   closedTabs: number[];
   keptTabs: number[];
+  handoffTabs?: number[];
+  deliverableTabs?: number[];
+  releasedTabs?: number[];
+};
+
+export type EndTurnParams = {
+  sessionId: string;
+  turnId: string;
+};
+
+export type EndTurnResult = {
+  ended: boolean;
+  sessionId?: string;
+  turnId?: string;
+  reason?: "session_not_found";
+  releasedTabs: number[];
 };
 
 export type StopSessionParams = {
@@ -773,6 +829,7 @@ export type BrowserActionParams =
   | WaitForEventParams
   | StartSessionParams
   | NameSessionParams
+  | UserOpenTabsParams
   | ClaimTabParams
   | CreateTabParams
   | SwitchTabParams
@@ -805,6 +862,7 @@ export type BrowserActionParams =
   | WaitForDownloadParams
   | CloseTabParams
   | FinalizeSessionParams
+  | EndTurnParams
   | StopSessionParams;
 
 export type BrowserRect = {

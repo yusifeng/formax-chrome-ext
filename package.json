@@ -16,7 +16,10 @@
     "mcp:node-repl": "node mcp-node-repl/server.js",
     "test": "npm run build:runtime && vitest run",
     "test:llm": "node tests/scripts/llm-browser-agent.js",
+    "test:llm-node-repl": "node tests/scripts/llm-node-repl-chat.js --self-check",
     "test:mcp-node-repl": "node tests/scripts/mcp-node-repl-smoke.js",
+    "check:extension-installed": "node scripts/check-extension-installed.js --json",
+    "check:native-host": "node scripts/check-native-host-manifest.js --json",
     "test:real": "node tests/scripts/real-browser-e2e.js",
     "test:watch": "vitest"
   },
