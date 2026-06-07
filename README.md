@@ -1,7 +1,7 @@
 # Formax
 
-Formax connects local AI agents to Chrome through a Chrome extension, a local
-runtime, an MCP `node_repl` server, and a browser-control skill.
+Formax connects local AI agents to Chrome through a Chrome extension and a
+local runtime.
 
 ## Install
 
@@ -13,21 +13,14 @@ Run the installer:
 curl -fsSL https://curl-scripts.vercel.app/formax/install.sh | bash
 ```
 
-The installer downloads the Formax runtime, installs it under `~/.formax`,
-writes the Chrome Native Messaging host manifest, and creates stable local
-entrypoints:
+The installer downloads the Formax runtime, installs it under `~/.formax`, and
+creates the local commands and skill file:
 
 ```text
 ~/.formax/bin/formax-browser-mcp
 ~/.formax/bin/formax-doctor
 ~/.formax/bin/formax-uninstall
 ~/.formax/skills/formax-browser/SKILL.md
-```
-
-For local development or isolated testing, install into a custom home:
-
-```bash
-FORMAX_HOME="$PWD/.formax-dev" curl -fsSL https://curl-scripts.vercel.app/formax/install.sh | bash
 ```
 
 ### 2. Install the Chrome extension
