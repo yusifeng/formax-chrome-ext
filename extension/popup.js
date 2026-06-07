@@ -1,18 +1,33 @@
 const statusEl = document.querySelector("#status");
-const outputEl = document.querySelector("#output");
-const buttonEl = document.querySelector("#health");
+const statusLabelEl = document.querySelector("#status-label");
+const refreshButtonEl = document.querySelector("#refresh");
+const versionEl = document.querySelector("#version");
+function setStatus(state, label) {
+    statusEl.dataset.state = state;
+    statusLabelEl.textContent = label;
+}
+function setVersion(version) {
+    const manifestVersion = chrome.runtime.getManifest().version;
+    versionEl.textContent = `Version v${version || manifestVersion}`;
+}
 async function checkHealth() {
+    setStatus("checking", "Checking...");
+    refreshButtonEl.disabled = true;
     try {
         const response = await chrome.runtime.sendMessage({
             type: "POPUP_HEALTH"
         });
-        statusEl.textContent = response?.ok ? "Connected" : "Disconnected";
-        outputEl.textContent = JSON.stringify(response, null, 2);
+        setStatus(response?.ok ? "connected" : "disconnected", response?.ok ? "Connected" : "Disconnected");
+        setVersion(response?.health?.version);
     }
     catch (error) {
-        statusEl.textContent = "Error";
-        outputEl.textContent = String(error);
+        setStatus("error", "Error");
+        setVersion();
+    }
+    finally {
+        refreshButtonEl.disabled = false;
     }
 }
-buttonEl.addEventListener("click", checkHealth);
-checkHealth();
+refreshButtonEl.addEventListener("click", checkHealth);
+setVersion();
+void checkHealth();
