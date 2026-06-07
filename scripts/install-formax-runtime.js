@@ -237,7 +237,7 @@ async function main() {
   const manifestPath = nativeHostManifestPath(hostName);
   const manifest = {
     name: hostName,
-    description: "Formax Browser Agent Native Host",
+    description: "Formax Native Host",
     path: latestHostPath,
     type: "stdio",
     allowed_origins: [`chrome-extension://${extensionId}/`],

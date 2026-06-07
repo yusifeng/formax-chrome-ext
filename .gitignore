@@ -3,6 +3,7 @@ node_modules/
 
 # Local native host install output
 native-host/com.example.agentbrowser.json
+native-host/com.formax.browserhost.json
 
 # Local environment
 .env
@@ -26,6 +27,7 @@ rust/**/target/
 
 # Local AI tool config
 .formax/
+.formax-dev/
 
 # OS/editor noise
 .DS_Store

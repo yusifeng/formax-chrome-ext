@@ -15,7 +15,7 @@ const copyEntries = [
   ["agent/browserTools.js", "agent/browserTools.js"],
   ["shared", "shared"],
   ["extension", "extension"],
-  ["native-host/com.example.agentbrowser.json.example", "native-host/com.example.agentbrowser.json.example"],
+  ["native-host/com.formax.browserhost.json.example", "native-host/com.formax.browserhost.json.example"],
   ["native-host/install-linux.sh", "native-host/install-linux.sh"],
   ["native-host/install-macos.sh", "native-host/install-macos.sh"],
   ["native-host/install-windows.reg", "native-host/install-windows.reg"],
@@ -25,7 +25,7 @@ const copyEntries = [
 ];
 
 const ignoredExtensions = new Set([".ts", ".map"]);
-const ignoredNames = new Set(["com.example.agentbrowser.json"]);
+const ignoredNames = new Set(["com.example.agentbrowser.json", "com.formax.browserhost.json"]);
 
 async function exists(filePath) {
   try {
@@ -88,7 +88,7 @@ async function main() {
   }
 
   await writeJson(path.join(dist, "package.json"), {
-    name: "formax-browser-agent-dist",
+    name: "formax-runtime-dist",
     version: rootPackage.version,
     private: true,
     type: "module",
@@ -122,7 +122,7 @@ async function main() {
     console.warn(`WARN missing optional package entries: ${missing.join(", ")}`);
   }
 
-  console.log(`Packaged Formax browser agent into ${dist}`);
+  console.log(`Packaged Formax runtime into ${dist}`);
 }
 
 await main();

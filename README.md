@@ -158,11 +158,11 @@ The extension ID used by the native host installer is configured in
 `config/extension-id.json`. For local development it is currently:
 
 ```text
-dchkbbjmkheilkmencpckilhmmcppdne
+hooonkcoopaigliifkabcdjfmjjffmbm
 ```
 
-When the Chrome Web Store extension is published, replace only that configured
-ID with the Web Store ID. For temporary development overrides, use
+When packaging for the Chrome Web Store extension, replace only that configured
+ID with the Web Store ID. For temporary overrides, use
 `FORMAX_EXTENSION_ID=... bash native-host/install-macos.sh`.
 
 After installing the native host, reload the extension in `chrome://extensions`.

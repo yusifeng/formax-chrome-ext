@@ -6,9 +6,9 @@ declare function importScripts(...urls: string[]): void;
 
 importScripts("debugger-manager.js", "event-buffer.js", "session-manager.js");
 
-const HOST_NAME = "com.example.agentbrowser";
+const HOST_NAME = "com.formax.browserhost";
 const CDP_VERSION = "1.3";
-const HEARTBEAT_ALARM = "agentbrowser-native-reconnect";
+const HEARTBEAT_ALARM = "formax-native-reconnect";
 const DEFAULT_CDP_TIMEOUT_MS = 10000;
 const BACKEND_REVISION = 4;
 const SUPPORTED_ACTIONS = [

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-HOST_NAME="com.example.agentbrowser"
+HOST_NAME="com.formax.browserhost"
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$ROOT_DIR/.." && pwd)"
 CONFIG_FILE="$PROJECT_DIR/config/extension-id.json"
@@ -51,7 +51,7 @@ fi
 cat > "$TARGET_FILE" <<JSON
 {
   "name": "$HOST_NAME",
-  "description": "Agent Browser Controller Native Host",
+  "description": "Formax Native Host",
   "path": "$HOST_PATH",
   "type": "stdio",
   "allowed_origins": [

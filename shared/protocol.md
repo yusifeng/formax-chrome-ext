@@ -1,4 +1,4 @@
-# Agent Browser Protocol
+# Formax Browser Protocol
 
 This file is the data contract between the Agent tool layer, the native host,
 and the Chrome extension background service worker.

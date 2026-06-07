@@ -1,14 +1,14 @@
-# Privacy Policy for Formax Browser Agent
+# Privacy Policy for Formax
 
 Effective date: June 6, 2026
 
-Formax Browser Agent is a Chrome extension that lets a user-controlled local AI agent operate Chrome tabs on the user's behalf through Chrome native messaging.
+Formax is a Chrome extension that lets a user-controlled local AI agent operate Chrome tabs on the user's behalf through Chrome native messaging.
 
 This policy explains what information the extension can access, how that information is used, and how it is handled.
 
 ## Single Purpose
 
-The single purpose of Formax Browser Agent is to connect Chrome to a local agent running on the user's own machine so that the agent can perform user-requested browser automation tasks.
+The single purpose of Formax is to connect Chrome to a local agent running on the user's own machine so that the agent can perform user-requested browser automation tasks.
 
 Examples of user-requested tasks include opening a tab, clicking visible page elements, typing text, scrolling, reading page state, waiting for navigation, taking screenshots, observing downloads, and reporting task results back to the local agent.
 
@@ -38,7 +38,7 @@ The extension does not use browser data for advertising, profiling, or unrelated
 
 ## Local Native Messaging
 
-Formax Browser Agent uses Chrome native messaging to communicate with a native host installed on the user's computer.
+Formax uses Chrome native messaging to communicate with a native host installed on the user's computer.
 
 The native host acts as a local bridge between the Chrome extension and the user's local agent environment. Communication between the extension and native host occurs on the user's machine.
 
@@ -46,9 +46,9 @@ The extension itself does not send browsing data to a Formax cloud service. If t
 
 ## Data Sharing
 
-Formax Browser Agent does not sell user data.
+Formax does not sell user data.
 
-Formax Browser Agent does not share user data with advertisers or data brokers.
+Formax does not share user data with advertisers or data brokers.
 
 The extension provides browser state and task results to the local native host so that the user's local agent can complete the user's requested browser automation task.
 

@@ -1,4 +1,4 @@
 Windows Registry Editor Version 5.00
 
-[HKEY_CURRENT_USER\Software\Google\Chrome\NativeMessagingHosts\com.example.agentbrowser]
-@="C:\\ABSOLUTE\\PATH\\TO\\formax-extension\\native-host\\com.example.agentbrowser.json"
+[HKEY_CURRENT_USER\Software\Google\Chrome\NativeMessagingHosts\com.formax.browserhost]
+@="C:\\ABSOLUTE\\PATH\\TO\\formax-extension\\native-host\\com.formax.browserhost.json"
