@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 
 import fs from "node:fs/promises";
+import { execFile } from "node:child_process";
 import path from "node:path";
+import { promisify } from "node:util";
 
 const root = process.cwd();
 const dist = path.join(root, "dist");
+const execFileAsync = promisify(execFile);
 
 const copyEntries = [
   ["README.md", "README.md"],
@@ -15,12 +18,16 @@ const copyEntries = [
   ["agent/browserTools.js", "agent/browserTools.js"],
   ["shared", "shared"],
   ["extension", "extension"],
+  ["scripts/install-formax-runtime.js", "install.js"],
   ["native-host/com.formax.browserhost.json.example", "native-host/com.formax.browserhost.json.example"],
   ["native-host/install-linux.sh", "native-host/install-linux.sh"],
   ["native-host/install-macos.sh", "native-host/install-macos.sh"],
   ["native-host/install-windows.reg", "native-host/install-windows.reg"],
+  ["scripts/check-extension-installed.js", "scripts/check-extension-installed.js"],
+  ["scripts/check-native-host-manifest.js", "scripts/check-native-host-manifest.js"],
   ["tests/scripts/llm-node-repl-chat.js", "tests/scripts/llm-node-repl-chat.js"],
   ["tests/scripts/mcp-node-repl-smoke.js", "tests/scripts/mcp-node-repl-smoke.js"],
+  ["docs/usage.zh-CN.md", "docs/usage.zh-CN.md"],
   ["docs/prompts/handoff.md", "docs/prompts/handoff.md"]
 ];
 
@@ -93,12 +100,20 @@ async function main() {
     private: true,
     type: "module",
     scripts: {
+      "install:formax-runtime": "node install.js",
       "mcp:node-repl": "node mcp-node-repl/server.js",
       "chat:node-repl": "node tests/scripts/llm-node-repl-chat.js",
       "test:mcp-node-repl": "node tests/scripts/mcp-node-repl-smoke.js"
     },
     dependencies: rootPackage.dependencies || {}
   });
+
+  console.log("Installing production dependencies into dist...");
+  await execFileAsync(
+    "npm",
+    ["install", "--omit=dev", "--ignore-scripts", "--package-lock=false", "--no-audit", "--no-fund"],
+    { cwd: dist }
+  );
 
   await writeJson(path.join(dist, "DIST-MANIFEST.json"), {
     generatedAt: new Date().toISOString(),
@@ -107,6 +122,7 @@ async function main() {
       version: rootPackage.version
     },
     products: {
+      installer: "install.js",
       mcpServer: "mcp-node-repl/server.js",
       chromeExtension: "extension/manifest.json",
       nativeHost: "extension-host/<platform>/<arch>/extension-host",

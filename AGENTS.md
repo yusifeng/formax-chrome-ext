@@ -69,29 +69,23 @@ The Chrome Web Store extension ID for this project is:
 dchkbbjmkheilkmencpckilhmmcppdne
 ```
 
-The local unpacked test extension ID currently used for development is:
-
-```text
-hooonkcoopaigliifkabcdjfmjjffmbm
-```
-
 Keep this value in sync with:
 
 - `config/extension-id.json`
 - `native-host/com.formax.browserhost.json.example`
 - generated native messaging manifests created by `native-host/install-macos.sh` or `native-host/install-linux.sh`
 
-For the current local test build, the native messaging host manifest must include:
+The native messaging host manifest must include:
 
 ```text
-chrome-extension://hooonkcoopaigliifkabcdjfmjjffmbm/
+chrome-extension://dchkbbjmkheilkmencpckilhmmcppdne/
 ```
 
 ## Web Store vs Local Unpacked Builds
 
 Chrome Web Store builds and local unpacked builds do not necessarily share the same extension ID.
 
-The project configuration currently targets the local unpacked test ID above. For published installs and distributable packages that users install after installing the Chrome Web Store version, use the Web Store ID above.
+The project configuration targets the Web Store ID above. This is the right value for published installs and for distributable packages that users install after installing the Chrome Web Store version.
 
 When testing a local unpacked extension, Chrome may assign a different extension ID. If the local unpacked extension cannot connect to the native host, do not assume the native host is broken. Check the extension ID in `chrome://extensions` and either:
 

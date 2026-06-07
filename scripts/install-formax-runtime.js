@@ -3,8 +3,11 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const root = process.cwd();
+const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+const defaultDist = path.basename(scriptDir) === "scripts" ? path.join(root, "dist") : scriptDir;
 const defaultInstallRoot = path.join(os.homedir(), ".formax", "plugins", "cache", "formax", "chrome");
 
 const platformMap = {
@@ -20,7 +23,7 @@ const archMap = {
 
 function parseArgs(argv) {
   const args = {
-    dist: path.join(root, "dist"),
+    dist: defaultDist,
     dryRun: false,
     extensionId: null,
     includeDebug: false,
@@ -60,7 +63,7 @@ function printUsage() {
   console.log(`Usage: node scripts/install-formax-runtime.js [options]
 
 Options:
-  --dist <path>          Dist directory to install. Default: ./dist
+  --dist <path>          Dist directory to install. Default: ./dist in the source repo, or the installer directory in a release package
   --install-root <path>  Versioned cache root. Default: ~/.formax/plugins/cache/formax/chrome
   --version <version>    Install version name. Default: package.json version from dist
   --extension-id <id>    Override Chrome extension ID, useful for local unpacked testing

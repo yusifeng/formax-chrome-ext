@@ -3,6 +3,8 @@
 Chrome extension + native host prototype for controlling real Chrome tabs from
 an agent through high-level browser tools.
 
+中文安装引导见 [docs/usage.zh-CN.md](docs/usage.zh-CN.md)。
+
 ## Development
 
 Install dependencies:
@@ -155,14 +157,13 @@ bash native-host/install-macos.sh
 ```
 
 The extension ID used by the native host installer is configured in
-`config/extension-id.json`. For local development it is currently:
+`config/extension-id.json`. For the published extension it is:
 
 ```text
-hooonkcoopaigliifkabcdjfmjjffmbm
+dchkbbjmkheilkmencpckilhmmcppdne
 ```
 
-When packaging for the Chrome Web Store extension, replace only that configured
-ID with the Web Store ID. For temporary overrides, use
+For temporary local-development overrides, use
 `FORMAX_EXTENSION_ID=... bash native-host/install-macos.sh`.
 
 After installing the native host, reload the extension in `chrome://extensions`.
