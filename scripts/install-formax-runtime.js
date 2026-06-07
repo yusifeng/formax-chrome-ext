@@ -79,6 +79,9 @@ const runtimeEntries = [
   ["mcp-node-repl", "mcp-node-repl"],
   ["agent/browserTools.js", "agent/browserTools.js"],
   ["shared", "shared"],
+  ["scripts/check-extension-installed.js", "scripts/check-extension-installed.js"],
+  ["scripts/check-native-host-manifest.js", "scripts/check-native-host-manifest.js"],
+  ["node_modules", "node_modules"],
   ["package.json", "package.json"],
 ];
 

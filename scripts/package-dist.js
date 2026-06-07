@@ -27,7 +27,6 @@ const copyEntries = [
   ["scripts/check-native-host-manifest.js", "scripts/check-native-host-manifest.js"],
   ["tests/scripts/llm-node-repl-chat.js", "tests/scripts/llm-node-repl-chat.js"],
   ["tests/scripts/mcp-node-repl-smoke.js", "tests/scripts/mcp-node-repl-smoke.js"],
-  ["docs/usage.zh-CN.md", "docs/usage.zh-CN.md"],
   ["docs/prompts/handoff.md", "docs/prompts/handoff.md"]
 ];
 
