@@ -94,10 +94,20 @@ Use explicit waits around navigation and dynamic UI:
 
 ```js
 await tab.goto("https://example.com");
+await tab.waitForLoadState("commit"); // waits for the next main-frame navigation commit
 await tab.waitForLoadState("load");
-await tab.waitForUrl({ contains: "example.com" });
+await tab.waitForUrl({ urlContains: "example.com", waitUntil: "load" });
 await tab.waitForText("Example Domain");
 await tab.waitForSelector("main");
+```
+
+For action-triggered navigations, start the watcher before the action:
+
+```js
+await tab.playwright.expectNavigation(
+  () => tab.getByRole("link", { name: "Continue" }).click(),
+  { urlContains: "/next", waitUntil: "load", timeoutMs: 10000 }
+);
 ```
 
 After a locator failure, modal change, reload, or unexpected mutation, take a
@@ -148,6 +158,42 @@ console.log(download.suggestedFilename(), download.path());
 ```
 
 Start waiting before clicking the download trigger when possible.
+
+For page media assets, use the locator helper so the extension can resolve the
+asset URL and apply origin policy before starting the download:
+
+```js
+const result = await tab.locator("img.hero").downloadMedia({
+  originApproved: true,
+  fallbackFetch: true,
+  waitForCompletion: true,
+});
+console.log(result.download?.suggestedFilename(), result.download?.path());
+```
+
+Ordinary image/video/audio downloads need origin approval but not confirmation.
+Runnable or installable files such as `.dmg`, `.pkg`, `.exe`, or `.sh` also
+require `confirmed: true`.
+Use `fallbackFetch: true` for session-bound media assets where direct Chrome
+download startup fails; the extension still re-checks policy for redirected
+final URLs and enforces a bounded response size.
+
+## File Choosers
+
+For upload controls that are opened by clicking a visible label or button-like
+wrapper:
+
+```js
+const chooserPromise = tab.playwright.waitForEvent("filechooser");
+await tab.locator('label[for="asset-upload"]').click();
+const chooser = await chooserPromise;
+await chooser.setFiles("/absolute/path/image.png", { confirmed: true });
+```
+
+The returned chooser supports `setFiles(paths)` and `isMultiple()`. The
+extension background owns the short-lived `file_chooser_id`, so `setFiles()`
+does not need to rediscover the DOM target. Setting files still uses the same
+native-host upload validation as `locator.setInputFiles(...)`.
 
 ## Unsupported Playwright Expectations
 

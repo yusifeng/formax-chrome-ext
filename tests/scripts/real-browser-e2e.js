@@ -2,12 +2,14 @@
 
 import http from "node:http";
 import { fileURLToPath } from "node:url";
+import { inflateSync } from "node:zlib";
 import { createBrowserClient } from "../mcp-node-repl/browser-client.js";
 import {
   browserClearEvents,
   browserClick,
   browserCdp,
   browserEvaluate,
+  browserDrag,
   browserGetCapabilities,
   browserGetDevLogs,
   browserGetEvents,
@@ -32,6 +34,7 @@ import {
   browserStartSession,
   browserStopSession,
   browserTypeText,
+  browserUpdatePolicy,
   browserUploadFile,
   browserWaitForDownload,
   browserWaitForEvent,
@@ -67,6 +70,147 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function decodePng(dataBase64) {
+  const bytes = Buffer.from(dataBase64, "base64");
+  assert(bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])), "invalid PNG signature");
+
+  let offset = 8;
+  let width = 0;
+  let height = 0;
+  let bitDepth = 0;
+  let colorType = 0;
+  const idatChunks = [];
+
+  while (offset + 12 <= bytes.length) {
+    const length = bytes.readUInt32BE(offset);
+    const type = bytes.toString("ascii", offset + 4, offset + 8);
+    const dataStart = offset + 8;
+    const dataEnd = dataStart + length;
+
+    if (dataEnd + 4 > bytes.length) {
+      throw new Error(`truncated PNG chunk ${type}`);
+    }
+
+    if (type === "IHDR") {
+      width = bytes.readUInt32BE(dataStart);
+      height = bytes.readUInt32BE(dataStart + 4);
+      bitDepth = bytes[dataStart + 8];
+      colorType = bytes[dataStart + 9];
+    } else if (type === "IDAT") {
+      idatChunks.push(bytes.subarray(dataStart, dataEnd));
+    } else if (type === "IEND") {
+      break;
+    }
+
+    offset = dataEnd + 4;
+  }
+
+  if (bitDepth !== 8 || (colorType !== 2 && colorType !== 6)) {
+    throw new Error(`unsupported PNG color format bitDepth=${bitDepth} colorType=${colorType}`);
+  }
+
+  const channels = colorType === 6 ? 4 : 3;
+  const rowBytes = width * channels;
+  const inflated = inflateSync(Buffer.concat(idatChunks));
+  const rgba = Buffer.alloc(width * height * 4);
+  let sourceOffset = 0;
+  let previous = Buffer.alloc(rowBytes);
+
+  for (let y = 0; y < height; y += 1) {
+    const filter = inflated[sourceOffset];
+    sourceOffset += 1;
+    const raw = Buffer.from(inflated.subarray(sourceOffset, sourceOffset + rowBytes));
+    sourceOffset += rowBytes;
+    const row = Buffer.alloc(rowBytes);
+
+    for (let x = 0; x < rowBytes; x += 1) {
+      const left = x >= channels ? row[x - channels] : 0;
+      const up = previous[x] ?? 0;
+      const upLeft = x >= channels ? previous[x - channels] ?? 0 : 0;
+
+      if (filter === 0) {
+        row[x] = raw[x];
+      } else if (filter === 1) {
+        row[x] = (raw[x] + left) & 0xff;
+      } else if (filter === 2) {
+        row[x] = (raw[x] + up) & 0xff;
+      } else if (filter === 3) {
+        row[x] = (raw[x] + Math.floor((left + up) / 2)) & 0xff;
+      } else if (filter === 4) {
+        row[x] = (raw[x] + paethPredictor(left, up, upLeft)) & 0xff;
+      } else {
+        throw new Error(`unsupported PNG filter ${filter}`);
+      }
+    }
+
+    for (let x = 0; x < width; x += 1) {
+      const source = x * channels;
+      const target = (y * width + x) * 4;
+      rgba[target] = row[source];
+      rgba[target + 1] = row[source + 1];
+      rgba[target + 2] = row[source + 2];
+      rgba[target + 3] = channels === 4 ? row[source + 3] : 255;
+    }
+
+    previous = row;
+  }
+
+  return { width, height, rgba };
+}
+
+function paethPredictor(left, up, upLeft) {
+  const estimate = left + up - upLeft;
+  const leftDistance = Math.abs(estimate - left);
+  const upDistance = Math.abs(estimate - up);
+  const upLeftDistance = Math.abs(estimate - upLeft);
+
+  if (leftDistance <= upDistance && leftDistance <= upLeftDistance) return left;
+  if (upDistance <= upLeftDistance) return up;
+  return upLeft;
+}
+
+function colorAt(png, x, y) {
+  const offset = (y * png.width + x) * 4;
+  return {
+    r: png.rgba[offset],
+    g: png.rgba[offset + 1],
+    b: png.rgba[offset + 2],
+    a: png.rgba[offset + 3]
+  };
+}
+
+function hasVisualVariation(png) {
+  const colors = new Set();
+  const xStep = Math.max(1, Math.floor(png.width / 20));
+  const yStep = Math.max(1, Math.floor(png.height / 20));
+
+  for (let y = 0; y < png.height; y += yStep) {
+    for (let x = 0; x < png.width; x += xStep) {
+      const color = colorAt(png, x, y);
+      colors.add(`${color.r >> 4},${color.g >> 4},${color.b >> 4},${color.a >> 4}`);
+      if (colors.size >= 4) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function countMatchingPixels(png, predicate, step = 4) {
+  let matches = 0;
+
+  for (let y = 0; y < png.height; y += step) {
+    for (let x = 0; x < png.width; x += step) {
+      if (predicate(colorAt(png, x, y))) {
+        matches += 1;
+      }
+    }
+  }
+
+  return matches;
+}
+
 async function test(name, fn) {
   const startedAt = Date.now();
 
@@ -92,6 +236,27 @@ async function test(name, fn) {
 
 function isUnknownActionFailure(action) {
   return results.at(-1)?.error === `Unknown action: ${action}`;
+}
+
+async function expectBrowserActionFailure(action, pattern) {
+  let message = "";
+
+  try {
+    await action();
+  } catch (error) {
+    message = String(error?.message || error);
+  }
+
+  assert(message && pattern.test(message), "browser action failed with unexpected error", {
+    message,
+    expected: String(pattern)
+  });
+  return message;
+}
+
+async function latestEventSequence(sessionId) {
+  const events = (await browserGetEvents({ sessionId, limit: 1 })).result.events;
+  return events.at(-1)?.sequence;
 }
 
 function healthIsCurrent(health) {
@@ -197,11 +362,66 @@ function appPage() {
         display: block;
         max-width: 320px;
       }
+
+      #drag-row {
+        display: flex;
+        align-items: center;
+        gap: 24px;
+      }
+
+      #drag-source,
+      #drag-dropzone {
+        align-items: center;
+        border: 2px solid #0f766e;
+        border-radius: 8px;
+        display: flex;
+        height: 72px;
+        justify-content: center;
+        user-select: none;
+        width: 144px;
+      }
+
+      #drag-source {
+        background: #ccfbf1;
+        cursor: grab;
+      }
+
+      #drag-dropzone {
+        background: #f0fdfa;
+        border-style: dashed;
+      }
+
+      #virtual-list {
+        border: 1px solid #64748b;
+        border-radius: 8px;
+        height: 168px;
+        overflow-y: auto;
+        position: relative;
+        width: 340px;
+      }
+
+      #virtual-list-spacer {
+        position: relative;
+      }
+
+      .virtual-row {
+        align-items: center;
+        border-bottom: 1px solid #e2e8f0;
+        box-sizing: border-box;
+        display: flex;
+        height: 42px;
+        justify-content: space-between;
+        left: 0;
+        padding: 0 10px;
+        position: absolute;
+        right: 0;
+      }
     </style>
   </head>
   <body>
     <h1>Formax Real Browser Fixture</h1>
     <p id="intro">Ready for browser tool verification.</p>
+    <p id="long-body-copy">${"Fixture exploratory body filler. ".repeat(160)}DO_NOT_RETURN_LARGE_BODY_SENTINEL</p>
 
     <section>
       <button id="count-button" type="button">Count click</button>
@@ -277,6 +497,7 @@ function appPage() {
 
     <section>
       <div id="shadow-host"></div>
+      <closed-widget id="closed-shadow-host" role="button" tabindex="0" aria-label="Closed shadow host"></closed-widget>
       <div id="shadow-result">Shadow: idle</div>
     </section>
 
@@ -288,6 +509,28 @@ function appPage() {
     <section>
       <canvas id="visual-canvas" width="240" height="120" aria-label="Visual canvas target"></canvas>
       <div id="canvas-result">Canvas: idle</div>
+    </section>
+
+    <section aria-label="Drag fixture">
+      <div id="drag-row">
+        <div id="drag-source" role="button" tabindex="0">Drag token</div>
+        <div id="drag-dropzone">Drop target</div>
+      </div>
+      <div id="drag-result">Drag: idle</div>
+    </section>
+
+    <section aria-label="Virtualized list fixture">
+      <div id="virtual-list" role="listbox" aria-label="Virtualized results">
+        <div id="virtual-list-spacer"></div>
+      </div>
+      <div id="virtual-result">Virtual: none</div>
+    </section>
+
+    <section aria-label="Risky action fixtures">
+      <button id="delete-account-button" type="button">Delete account</button>
+      <button id="allow-camera-button" type="button">Allow camera access</button>
+      <button id="captcha-button" type="button">Verify you are human</button>
+      <div id="risk-result">Risk: idle</div>
     </section>
 
     <section>
@@ -393,6 +636,14 @@ function appPage() {
         document.getElementById("shadow-result").textContent = "Shadow: clicked";
       });
 
+      customElements.define("closed-widget", class extends HTMLElement {
+        constructor() {
+          super();
+          const root = this.attachShadow({ mode: "closed" });
+          root.innerHTML = \`<button id="closed-shadow-button" type="button">Closed internals</button>\`;
+        }
+      });
+
       const fixtureFrame = document.getElementById("fixture-frame");
       fixtureFrame.srcdoc = \`
         <!doctype html>
@@ -442,6 +693,78 @@ function appPage() {
         }
       });
 
+      const dragSource = document.getElementById("drag-source");
+      const dragDropzone = document.getElementById("drag-dropzone");
+      let dragActive = false;
+      dragSource.addEventListener("mousedown", () => {
+        dragActive = true;
+        document.getElementById("drag-result").textContent = "Drag: started";
+      });
+      document.addEventListener("mousemove", (event) => {
+        if (!dragActive) return;
+        const rect = dragDropzone.getBoundingClientRect();
+        const overDropzone =
+          event.clientX >= rect.left &&
+          event.clientX <= rect.right &&
+          event.clientY >= rect.top &&
+          event.clientY <= rect.bottom;
+        if (overDropzone) {
+          document.getElementById("drag-result").textContent = "Drag: over dropzone";
+        }
+      });
+      document.addEventListener("mouseup", (event) => {
+        if (!dragActive) return;
+        dragActive = false;
+        const rect = dragDropzone.getBoundingClientRect();
+        const dropped =
+          event.clientX >= rect.left &&
+          event.clientX <= rect.right &&
+          event.clientY >= rect.top &&
+          event.clientY <= rect.bottom;
+        document.getElementById("drag-result").textContent = dropped ? "Drag: dropped" : "Drag: missed";
+      });
+
+      const virtualList = document.getElementById("virtual-list");
+      const virtualSpacer = document.getElementById("virtual-list-spacer");
+      const virtualRowHeight = 42;
+      const virtualItemCount = 100;
+      const virtualWindowSize = 8;
+      virtualSpacer.style.height = (virtualItemCount * virtualRowHeight) + "px";
+      const renderVirtualList = () => {
+        const first = Math.max(0, Math.min(
+          virtualItemCount - virtualWindowSize,
+          Math.floor(virtualList.scrollTop / virtualRowHeight)
+        ));
+        virtualSpacer.replaceChildren();
+
+        for (let offset = 0; offset < virtualWindowSize; offset += 1) {
+          const index = first + offset;
+          const row = document.createElement("button");
+          row.type = "button";
+          row.className = "virtual-row";
+          row.dataset.index = String(index);
+          row.style.top = (index * virtualRowHeight) + "px";
+          row.textContent = "Virtual item " + String(index).padStart(2, "0");
+          row.addEventListener("click", () => {
+            document.getElementById("virtual-result").textContent =
+              "Virtual: " + index;
+          });
+          virtualSpacer.appendChild(row);
+        }
+      };
+      virtualList.addEventListener("scroll", renderVirtualList);
+      renderVirtualList();
+
+      document.getElementById("delete-account-button").addEventListener("click", () => {
+        document.getElementById("risk-result").textContent = "Risk: deleted";
+      });
+      document.getElementById("allow-camera-button").addEventListener("click", () => {
+        document.getElementById("risk-result").textContent = "Risk: camera allowed";
+      });
+      document.getElementById("captcha-button").addEventListener("click", () => {
+        document.getElementById("risk-result").textContent = "Risk: captcha bypassed";
+      });
+
       document.getElementById("alert-button").addEventListener("click", () => {
         alert("Codex alert fixture");
       });
@@ -483,6 +806,9 @@ function appPage() {
         delayed.textContent = "Delayed fixture ready";
         document.getElementById("delayed-host").appendChild(delayed);
       }, 300);
+    </script>
+    <script id="__NEXT_DATA__" type="application/json">
+      {"props":{"pageProps":{"hydrationToken":"hidden-hydration-token-value","records":["${"hydration-record,".repeat(120)}"]}}}
     </script>
   </body>
 </html>`;
@@ -635,6 +961,12 @@ async function run() {
     sessionId = session.sessionId;
     assert(typeof sessionId === "string", "sessionId should be returned", session);
 
+    await browserUpdatePolicy({
+      sessionId,
+      decision: "allow",
+      url: `${baseUrl}/`
+    });
+
     const opened = (
       await browserOpenUrl({
         sessionId,
@@ -697,6 +1029,56 @@ async function run() {
   }
 
   await test("wait for load, selector, and text", async () => {
+    const urlCommitPromise = browserWaitForUrl({
+      sessionId,
+      urlContains: "/second",
+      waitUntil: "commit",
+      timeoutMs: 5000
+    });
+    const commitPromise = browserWaitForLoadState({
+      sessionId,
+      state: "commit",
+      timeoutMs: 5000
+    });
+    await browserOpenUrl({
+      sessionId,
+      url: `${baseUrl}/second`,
+      active: true,
+      timeoutMs: 15000
+    });
+    const urlCommit = (await urlCommitPromise).result;
+    assert(
+      urlCommit.matched === true &&
+        urlCommit.waitUntil === "commit" &&
+        urlCommit.loadReason === "url_matched",
+      "waitForUrl commit state did not observe navigation URL",
+      urlCommit
+    );
+    const commit = (await commitPromise).result;
+    assert(commit.reason === "Page.frameNavigated", "commit state did not observe navigation", commit);
+    await browserOpenUrl({
+      sessionId,
+      url: `${baseUrl}/`,
+      active: true,
+      timeoutMs: 15000
+    });
+    const rootUrl = (
+      await browserWaitForUrl({
+        sessionId,
+        url: `${baseUrl}/`,
+        waitUntil: "load",
+        timeoutMs: 5000
+      })
+    ).result;
+    assert(
+      rootUrl.matched === true &&
+        rootUrl.waitUntil === "load" &&
+        (rootUrl.loadReason === "already_satisfied" ||
+          rootUrl.loadReason === "Page.loadEventFired"),
+      "waitForUrl load state did not settle",
+      rootUrl
+    );
+
     const load = (await browserWaitForLoadState({ sessionId, state: "load" })).result;
     assert(
       load.reason === "already_satisfied" || load.reason === "Page.loadEventFired",
@@ -766,6 +1148,47 @@ async function run() {
       "accessibility tree missing"
     );
     assert(observation.domSnapshot && typeof observation.domSnapshot === "object", "DOM snapshot missing");
+    assert(observation.text.includes("Ready for browser tool verification"), "observation summary lost intro text", {
+      text: observation.text,
+      truncation: observation.truncation
+    });
+    assert(!observation.text.includes("DO_NOT_RETURN_LARGE_BODY_SENTINEL"), "large body.innerText leaked into observation summary", {
+      text: observation.text,
+      truncation: observation.truncation
+    });
+    assert(observation.truncation?.textSummarized === true, "large observation should report summarized text", observation.truncation);
+    assert(observation.truncation?.bodyTextLength > observation.text.length, "body text length metadata missing", observation.truncation);
+    const serializedObservation = JSON.stringify(observation);
+    assert(!serializedObservation.includes("super-secret-fixture-password"), "password value leaked in DOM snapshot observation");
+    assert(!serializedObservation.includes("hidden-token-fixture-value"), "hidden token leaked in DOM snapshot observation");
+    assert(!serializedObservation.includes("hidden-hydration-token-value"), "hydration token leaked in DOM snapshot observation");
+    assert(!serializedObservation.includes("hydration-record,hydration-record,hydration-record"), "large hydration JSON leaked in DOM snapshot observation");
+    assert(observation.frameTree?.source === "cdp", "CDP frame tree missing from observation", observation.frameTree);
+    assert(observation.frameTree?.frameCount >= 3, "CDP frame tree did not include nested fixture frames", observation.frameTree);
+    assert(
+      observation.frameTree?.root?.childFrames?.some((frame) =>
+        Array.isArray(frame.childFrames) && frame.childFrames.length > 0
+      ),
+      "CDP frame tree did not expose child frame hierarchy",
+      observation.frameTree
+    );
+
+    const frameInput = observation.elements.find((element) => element.selectorCandidates?.some(
+      (candidate) => candidate.selector === "#frame-input"
+    ));
+    const nestedButton = observation.elements.find((element) => element.selectorCandidates?.some(
+      (candidate) => candidate.selector === "#nested-button"
+    ));
+    assert(
+      JSON.stringify(frameInput?.frameSelectors) === JSON.stringify(["iframe#fixture-frame"]),
+      "same-origin iframe element did not include frameSelectors",
+      frameInput
+    );
+    assert(
+      JSON.stringify(nestedButton?.frameSelectors) === JSON.stringify(["iframe#fixture-frame", "iframe#nested-frame"]),
+      "nested iframe element did not include frame selector path",
+      nestedButton
+    );
   });
 
   await test("form control states and sensitive field redaction", async () => {
@@ -1008,6 +1431,40 @@ async function run() {
     assert(canvas === "Canvas: clicked", "canvas visual target did not receive coordinate click", {
       canvas,
       canvasPoint
+    });
+
+    const dragPath = (
+      await browserEvaluate({
+        sessionId,
+        script: `(() => {
+          const center = (selector) => {
+            const rect = document.querySelector(selector).getBoundingClientRect();
+            return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+          };
+          const source = center("#drag-source");
+          const target = center("#drag-dropzone");
+          return [
+            source,
+            { x: (source.x + target.x) / 2, y: (source.y + target.y) / 2 },
+            target
+          ];
+        })()`
+      })
+    ).result.value;
+    await browserDrag({
+      sessionId,
+      path: dragPath,
+      waitMs: 150
+    });
+    const dragResult = (
+      await browserEvaluate({
+        sessionId,
+        script: `document.getElementById("drag-result").textContent`
+      })
+    ).result.value;
+    assert(dragResult === "Drag: dropped", "CUA drag did not drop on the fixture target", {
+      dragResult,
+      dragPath
     });
 
     await browserClick({
@@ -1265,6 +1722,204 @@ async function run() {
     assert(inspected.name === "Shadow action", "elementInfo did not inspect shadow button", inspected);
   });
 
+  await test("closed shadow DOM hosts are reported as unsupported", async () => {
+    const observation = (await browserObserve({ sessionId })).result;
+    const closedHost = observation.elements.find((element) => element.tagName === "closed-widget");
+    const leakedClosedButton = observation.elements.find((element) => element.selectorCandidates?.some(
+      (candidate) => candidate.selector === "#closed-shadow-button"
+    ));
+
+    assert(closedHost, "closed shadow host was not included in observe elements", observation.elements);
+    assert(
+      closedHost.shadowRoot === "closed_unsupported",
+      "closed shadow host did not report unsupported closed shadow marker",
+      closedHost
+    );
+    assert(
+      closedHost.shadowUnsupportedReason === "custom_element_shadow_root_not_accessible",
+      "closed shadow host did not include unsupported reason",
+      closedHost
+    );
+    assert(!leakedClosedButton, "closed shadow internals leaked into observe elements", leakedClosedButton);
+  });
+
+  await test("virtualized list updates observable rows after container scroll", async () => {
+    const initialObservation = (await browserObserve({ sessionId })).result;
+    const initialVirtualRows = initialObservation.elements.filter((element) =>
+      String(element.label || "").startsWith("Virtual item ")
+    );
+    assert(
+      initialVirtualRows.some((row) => row.label === "Virtual item 00"),
+      "initial virtualized row was not observed",
+      initialVirtualRows
+    );
+    assert(
+      !initialVirtualRows.some((row) => row.label === "Virtual item 42"),
+      "far virtualized row should not be in the initial DOM window",
+      initialVirtualRows
+    );
+
+    const missingBeforeScroll = (
+      await browserLocatorQuery({
+        sessionId,
+        locator: { kind: "text", text: "Virtual item 42", exact: true },
+        kind: "count"
+      })
+    ).result;
+    assert(missingBeforeScroll.value === 0, "far virtualized item was present before scrolling", missingBeforeScroll);
+
+    const point = (
+      await browserEvaluate({
+        sessionId,
+        script: `(() => {
+          const rect = document.getElementById("virtual-list").getBoundingClientRect();
+          return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+        })()`
+      })
+    ).result.value;
+    await browserScroll({
+      sessionId,
+      x: point.x,
+      y: point.y,
+      deltaY: 42 * 42,
+      waitMs: 250
+    });
+
+    const visibleAfterScroll = (
+      await browserLocatorQuery({
+        sessionId,
+        locator: { kind: "text", text: "Virtual item 42", exact: true },
+        kind: "count"
+      })
+    ).result;
+    assert(visibleAfterScroll.value === 1, "far virtualized item was not materialized after scrolling", visibleAfterScroll);
+
+    await browserLocatorAction({
+      sessionId,
+      locator: { kind: "text", text: "Virtual item 42", exact: true },
+      kind: "click",
+      waitMs: 150
+    });
+    const virtualResult = (
+      await browserEvaluate({
+        sessionId,
+        script: `document.getElementById("virtual-result").textContent`
+      })
+    ).result.value;
+    assert(virtualResult === "Virtual: 42", "virtualized row click did not hit the materialized item", {
+      virtualResult
+    });
+  });
+
+  await test("risky clicks require confirmation and handoff boundaries emit events", async () => {
+    const confirmationSince = await latestEventSequence(sessionId);
+    await expectBrowserActionFailure(
+      () => browserClick({
+        sessionId,
+        selector: "#delete-account-button",
+        waitMs: 50
+      }),
+      /confirmation_required/
+    );
+    let riskResult = (
+      await browserEvaluate({
+        sessionId,
+        script: `document.getElementById("risk-result").textContent`
+      })
+    ).result.value;
+    assert(riskResult === "Risk: none" || riskResult === "Risk: idle", "destructive click ran without confirmation", {
+      riskResult
+    });
+    const confirmationEvents = (
+      await browserGetEvents({
+        sessionId,
+        name: "browserActionConfirmationRequired",
+        sinceSequence: confirmationSince,
+        limit: 5
+      })
+    ).result.events;
+    assert(confirmationEvents.length >= 1, "browserActionConfirmationRequired event was not buffered", confirmationEvents);
+    assert(
+      confirmationEvents.some((event) =>
+        event.target?.label === "Delete account" &&
+        event.reasons?.includes("destructive_action") &&
+        event.requiredParams?.confirmed === true &&
+        typeof event.requiredParams?.confirmationId === "string"
+      ),
+      "confirmation event did not include target, reasons, and retry params",
+      confirmationEvents
+    );
+
+    await browserClick({
+      sessionId,
+      selector: "#delete-account-button",
+      confirmed: true,
+      confirmationId: "real-e2e-delete",
+      waitMs: 100
+    });
+    riskResult = (
+      await browserEvaluate({
+        sessionId,
+        script: `document.getElementById("risk-result").textContent`
+      })
+    ).result.value;
+    assert(riskResult === "Risk: deleted", "confirmed destructive click did not run", { riskResult });
+
+    const permissionSince = await latestEventSequence(sessionId);
+    await expectBrowserActionFailure(
+      () => browserClick({
+        sessionId,
+        selector: "#allow-camera-button",
+        waitMs: 50
+      }),
+      /confirmation_required/
+    );
+    const permissionEvents = (
+      await browserGetEvents({
+        sessionId,
+        name: "permissionPromptDetected",
+        sinceSequence: permissionSince,
+        limit: 5
+      })
+    ).result.events;
+    assert(permissionEvents.length >= 1, "permissionPromptDetected event was not buffered", permissionEvents);
+    assert(
+      permissionEvents.some((event) => event.target?.label === "Allow camera access" && event.confirmed === false),
+      "permissionPromptDetected event did not include target and confirmation state",
+      permissionEvents
+    );
+
+    await expectBrowserActionFailure(
+      () => browserClick({
+        sessionId,
+        selector: "#captcha-button",
+        confirmed: true,
+        confirmationId: "real-e2e-captcha",
+        waitMs: 50
+      }),
+      /user_handoff_required/
+    );
+    const handoffEvents = (
+      await browserGetEvents({
+        sessionId,
+        name: "userHandoffRequired",
+        limit: 10
+      })
+    ).result.events;
+    assert(
+      handoffEvents.some((event) => event.category === "captcha" && event.target?.label === "Verify you are human"),
+      "userHandoffRequired event for CAPTCHA was not buffered",
+      handoffEvents
+    );
+    riskResult = (
+      await browserEvaluate({
+        sessionId,
+        script: `document.getElementById("risk-result").textContent`
+      })
+    ).result.value;
+    assert(riskResult !== "Risk: captcha bypassed", "CAPTCHA handoff boundary was clicked", { riskResult });
+  });
+
   await test("click, type, press key, wait for URL", async () => {
     const clicked = (
       await browserClick({
@@ -1333,6 +1988,28 @@ async function run() {
       assert(uploadedName === "red-test.png", "facade locator upload mismatch", {
         uploadedName
       });
+
+      const chooserPromise = tab.playwright.waitForEvent("filechooser", { timeoutMs: 3000 });
+      await tab.locator("#upload-label").click({ waitMs: 100 });
+      const chooser = await chooserPromise;
+      assert(chooser.isMultiple() === true, "filechooser should report multiple upload input");
+      await chooser.setFiles([uploadFixturePath, secondUploadFixturePath], {
+        confirmed: true,
+        waitMs: 300
+      });
+
+      const chooserUpload = await tab.evaluate(
+        `({
+          count: document.getElementById("upload-input").files.length,
+          names: Array.from(document.getElementById("upload-input").files).map((file) => file.name)
+        })`
+      );
+      assert(chooserUpload.count === 2, "filechooser setFiles upload count mismatch", chooserUpload);
+      assert(
+        chooserUpload.names.includes("red-test.png") && chooserUpload.names.includes("second-upload.txt"),
+        "filechooser setFiles upload names mismatch",
+        chooserUpload
+      );
     } finally {
       await objectBrowser.stop({ closeTabs: true });
     }
@@ -1480,6 +2157,37 @@ async function run() {
     assert(evaluated.title === "Formax Real Browser Fixture", "evaluate title mismatch", evaluated);
     assert(evaluated.clicks === 1, "evaluate click count mismatch", evaluated);
 
+    const originSince = await latestEventSequence(sessionId);
+    await expectBrowserActionFailure(
+      () => browserCdp({
+        sessionId,
+        method: "Runtime.evaluate",
+        params: {
+          expression: "document.title",
+          returnByValue: true
+        }
+      }),
+      /origin_approval_required/
+    );
+    const originEvents = (
+      await browserGetEvents({
+        sessionId,
+        name: "browserOriginApprovalRequired",
+        sinceSequence: originSince,
+        limit: 5
+      })
+    ).result.events;
+    assert(originEvents.length >= 1, "browserOriginApprovalRequired event was not buffered", originEvents);
+    assert(
+      originEvents.some((event) =>
+        event.action === "rawCdp" &&
+        event.requiredParams?.originApproved === true &&
+        typeof event.approvalId === "string"
+      ),
+      "origin approval event did not include rawCdp retry params",
+      originEvents
+    );
+
     const cdp = (
       await browserCdp({
         sessionId,
@@ -1487,7 +2195,8 @@ async function run() {
         params: {
           expression: "document.title",
           returnByValue: true
-        }
+        },
+        originApproved: true
       })
     ).result;
 
@@ -1532,6 +2241,17 @@ async function run() {
       scrollY
     });
 
+    const viewport = (
+      await browserEvaluate({
+        sessionId,
+        script: `({
+          width: window.innerWidth,
+          height: window.innerHeight,
+          devicePixelRatio: window.devicePixelRatio
+        })`
+      })
+    ).result.value;
+
     const screenshot = (
       await browserScreenshot({
         sessionId,
@@ -1540,6 +2260,17 @@ async function run() {
     ).result;
     assert(screenshot.dataBase64.startsWith("iVBOR"), "screenshot is not a PNG");
     assert(screenshot.dataBase64.length > 1000, "screenshot data is unexpectedly small");
+    const viewportPng = decodePng(screenshot.dataBase64);
+    assert(
+      viewportPng.width >= Math.floor(viewport.width * 0.9) &&
+        viewportPng.height >= Math.floor(viewport.height * 0.9),
+      "viewport screenshot dimensions are smaller than the viewport",
+      { image: viewportPng, viewport }
+    );
+    assert(hasVisualVariation(viewportPng), "viewport screenshot appears blank or uniform", {
+      width: viewportPng.width,
+      height: viewportPng.height
+    });
 
     const fullPage = (
       await browserScreenshot({
@@ -1550,6 +2281,20 @@ async function run() {
     ).result;
     assert(fullPage.fullPage === true, "full-page screenshot flag missing", fullPage);
     assert(fullPage.dataBase64.startsWith("iVBOR"), "full-page screenshot is not a PNG");
+    const fullPagePng = decodePng(fullPage.dataBase64);
+    assert(
+      fullPagePng.height > viewportPng.height + 500,
+      "full-page screenshot did not include below-the-fold content",
+      { fullPageHeight: fullPagePng.height, viewportHeight: viewportPng.height }
+    );
+    assert(
+      countMatchingPixels(
+        fullPagePng,
+        (color) => color.g > 230 && color.g - color.r > 15 && color.g - color.b > 10
+      ) > 10,
+      "full-page screenshot did not include the green below-the-fold spacer",
+      { width: fullPagePng.width, height: fullPagePng.height }
+    );
 
     const clip = (
       await browserScreenshot({
@@ -1560,6 +2305,31 @@ async function run() {
     ).result;
     assert(clip.clip?.width === 240 && clip.clip?.height === 160, "clip screenshot metadata mismatch", clip);
     assert(clip.dataBase64.startsWith("iVBOR"), "clip screenshot is not a PNG");
+    const clipPng = decodePng(clip.dataBase64);
+    assert(clipPng.width === 240 && clipPng.height === 160, "clip screenshot dimensions mismatch", {
+      width: clipPng.width,
+      height: clipPng.height
+    });
+
+    const scaledClip = (
+      await browserScreenshot({
+        sessionId,
+        format: "png",
+        clip: { x: 0, y: 0, width: 120, height: 80, scale: 2 }
+      })
+    ).result;
+    const scaledClipPng = decodePng(scaledClip.dataBase64);
+    assert(
+      scaledClip.clip?.scale === 2 &&
+        scaledClipPng.width === 240 &&
+        scaledClipPng.height === 160,
+      "scaled clip screenshot did not honor clip.scale",
+      {
+        metadata: scaledClip.clip,
+        width: scaledClipPng.width,
+        height: scaledClipPng.height
+      }
+    );
   });
 
   await test("upload multiple files through a visible label target", async () => {
@@ -1647,10 +2417,24 @@ async function run() {
       script: "console.error('formax dev log fixture')",
       awaitPromise: true
     });
+    await browserEvaluate({
+      sessionId,
+      script: "console.error('formax secret dev log password: hunter2 token=abc123')",
+      awaitPromise: true,
+      confirmed: true
+    });
     const logs = (await browserGetDevLogs({ sessionId, level: "error", limit: 20 })).result;
     assert(
       logs.logs.some((entry) => String(entry.text || "").includes("formax dev log fixture")),
       "expected dev log entry",
+      logs
+    );
+    const serializedLogs = JSON.stringify(logs);
+    assert(!serializedLogs.includes("hunter2"), "password value leaked in dev logs", logs);
+    assert(!serializedLogs.includes("abc123"), "token value leaked in dev logs", logs);
+    assert(
+      logs.logs.some((entry) => entry.redacted === true && String(entry.text || "").includes("[redacted]")),
+      "expected redacted dev log entry",
       logs
     );
   });

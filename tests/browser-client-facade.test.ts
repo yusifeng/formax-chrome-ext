@@ -207,6 +207,75 @@ function createMockBrowser() {
         }, args.sessionId as string | null, args.tabId as number | null);
       }
 
+      if (name === "browser_download_media") {
+        return envelope(name, {
+          sessionId: args.sessionId,
+          tabId: args.tabId,
+          media: {
+            url: "https://cdn.example.test/assets/photo.png",
+            kind: "img",
+            tagName: "img",
+            attribute: "src",
+            filename: args.filename ?? null,
+            method: "chrome_downloads"
+          },
+          download: {
+            id: 8,
+            url: "https://cdn.example.test/assets/photo.png",
+            finalUrl: "https://cdn.example.test/assets/photo.png",
+            filename: "/Users/david/Downloads/photo.png",
+            mime: "image/png",
+            state: "complete",
+            totalBytes: 24,
+            bytesReceived: 24,
+            startTime: "2026-06-08T00:00:00.000Z",
+            endTime: "2026-06-08T00:00:01.000Z"
+          }
+        }, args.sessionId as string | null, args.tabId as number | null);
+      }
+
+      if (name === "browser_wait_for_file_chooser") {
+        return envelope(name, {
+          matched: true,
+          timedOut: false,
+          elapsedMs: 12,
+          fileChooserId: "fc-test",
+          file_chooser_id: "fc-test",
+          isMultiple: true,
+          is_multiple: true,
+          fileChooser: {
+            fileChooserId: "fc-test",
+            file_chooser_id: "fc-test",
+            ref: "upload-ref",
+            selector: null,
+            multiple: true,
+            isMultiple: true,
+            is_multiple: true,
+            accept: ".png,.jpg",
+            name: "assets",
+            inputId: "asset-upload"
+          },
+          event: {
+            sequence: 9,
+            name: "fileChooserOpened",
+            sessionId: args.sessionId,
+            tabId: args.tabId,
+            fileChooserId: "fc-test",
+            file_chooser_id: "fc-test",
+            fileChooser: {
+              fileChooserId: "fc-test",
+              file_chooser_id: "fc-test",
+              ref: "upload-ref",
+              selector: null,
+              multiple: true,
+              accept: ".png,.jpg",
+              name: "assets",
+              inputId: "asset-upload"
+            }
+          }
+        }, args.sessionId as string | null, args.tabId as number | null);
+      }
+
       if (name === "browser_list_downloads") {
         return envelope(name, {
           downloads: [
@@ -253,7 +322,8 @@ function createMockBrowser() {
           elements: [
             {
               ref: "e0",
-              nodeId: "e0",
+              nodeId: "n-submit",
+              stableNodeId: "n-submit",
               role: "button",
               label: "Submit",
               visibleText: "Submit",
@@ -353,6 +423,25 @@ function createMockBrowser() {
       if (name === "browser_evaluate") {
         return envelope(name, {
           value: "evaluated"
+        }, args.sessionId as string, args.tabId as number);
+      }
+
+      if (name === "browser_resolve_frame") {
+        return envelope(name, {
+          sessionId: args.sessionId,
+          tabId: args.tabId,
+          targetId: args.targetId ?? null,
+          frameSelectors: args.frameSelectors,
+          matched: true,
+          accessible: true,
+          frameId: "frame-123",
+          frame: {
+            id: "frame-123",
+            parentId: "root-frame",
+            name: "fixture-frame",
+            url: "https://example.test/frame"
+          },
+          path: []
         }, args.sessionId as string, args.tabId as number);
       }
 
@@ -480,6 +569,35 @@ describe("browser-client object facade", () => {
     expect((globals as { __formaxBrowserSessionId?: string }).__formaxBrowserSessionId).toBe("chat-session-a");
   });
 
+  it("discovers browser backends and routes only available runtimes", async () => {
+    const globals = {};
+    const { agent, browser } = await setupBrowserRuntime({
+      globals,
+      defaultSessionId: "chat-session-a"
+    });
+
+    expect(agent.browsers.list()).toEqual(["extension"]);
+    expect(agent.browsers.discover()).toEqual([
+      expect.objectContaining({
+        browserId: "extension",
+        available: true,
+        type: "chrome-extension"
+      }),
+      expect.objectContaining({
+        browserId: "local",
+        available: false,
+        reason: "not_implemented",
+        type: "local-browser"
+      })
+    ]);
+    await expect(agent.browsers.get("extension")).resolves.toBe(browser);
+    await expect(agent.browsers.get("local")).rejects.toThrow("Browser runtime local is unavailable");
+    await expect(agent.browsers.closeUnused()).resolves.toEqual({
+      closed: [],
+      kept: ["extension"]
+    });
+  });
+
   it("keeps two tab handles isolated from mutable browser state", async () => {
     const { browser, calls } = createMockBrowser();
     const tabA = await browser.tabs.new("https://a.example");
@@ -533,7 +651,9 @@ describe("browser-client object facade", () => {
     await tab.locator("#submit").click({
       force: true,
       button: "right",
-      waitMs: 25
+      waitMs: 25,
+      confirmed: true,
+      confirmationId: "confirm-permission"
     });
 
     expect(calls.at(-1)).toEqual({
@@ -551,7 +671,9 @@ describe("browser-client object facade", () => {
         waitMs: 25,
         args: {
           force: true,
-          button: "right"
+          button: "right",
+          confirmed: true,
+          confirmationId: "confirm-permission"
         }
       }
     });
@@ -1041,12 +1163,92 @@ describe("browser-client object facade", () => {
     });
   });
 
+  it("maps locator downloadMedia to browser_download_media and enriches the download handle", async () => {
+    const { browser, calls } = createMockBrowser();
+    const tab = await browser.tabs.new();
+
+    const result = await tab.locator("img.hero").downloadMedia({
+      filename: "assets/photo.png",
+      originApproved: true,
+      waitForCompletion: true,
+      fallbackFetch: true,
+      fallbackMaxBytes: 1024 * 1024
+    }) as any;
+
+    expect(result.media).toMatchObject({
+      url: "https://cdn.example.test/assets/photo.png",
+      attribute: "src",
+      method: "chrome_downloads"
+    });
+    expect(result.download.suggestedFilename()).toBe("photo.png");
+    expect(result.download.path()).toBe("/Users/david/Downloads/photo.png");
+    expect(calls.at(-1)).toEqual({
+      name: "browser_download_media",
+      args: {
+        sessionId: "session-a",
+        tabId: 101,
+        locator: {
+          kind: "css",
+          selector: "img.hero",
+          index: 0,
+          strict: false
+        },
+        filename: "assets/photo.png",
+        originApproved: true,
+        waitForCompletion: true,
+        fallbackFetch: true,
+        fallbackMaxBytes: 1024 * 1024
+      }
+    });
+  });
+
+  it("maps playwright filechooser events to setFiles handles", async () => {
+    const { browser, calls } = createMockBrowser();
+    const tab = await browser.tabs.new();
+
+    const fileChooser = await tab.playwright.waitForEvent("filechooser", { timeoutMs: 50 }) as any;
+
+    expect(fileChooser.isMultiple()).toBe(true);
+    expect(fileChooser.toJSON()).toMatchObject({
+      fileChooserId: "fc-test",
+      ref: "upload-ref",
+      multiple: true,
+      accept: ".png,.jpg"
+    });
+
+    await fileChooser.setFiles(["/tmp/a.png", "/tmp/b.jpg"], {
+      waitMs: 25,
+      confirmed: true
+    });
+
+    expect(calls.at(-2)).toEqual({
+      name: "browser_wait_for_file_chooser",
+      args: {
+        sessionId: "session-a",
+        tabId: 101,
+        timeoutMs: 50
+      }
+    });
+    expect(calls.at(-1)).toEqual({
+      name: "browser_set_file_chooser_files",
+      args: {
+        sessionId: "session-a",
+        tabId: 101,
+        fileChooserId: "fc-test",
+        file_chooser_id: "fc-test",
+        files: ["/tmp/a.png", "/tmp/b.jpg"],
+        waitMs: 25,
+        confirmed: true
+      }
+    });
+  });
+
   it("captures element screenshots from locators and dom_cua node ids", async () => {
     const { browser, calls } = createMockBrowser();
     const tab = await browser.tabs.new();
 
     await expect(
-      tab.locator("#submit").screenshot({ format: "png", padding: 3 })
+      tab.locator("#submit").screenshot({ format: "png", padding: 3, highlight: true })
     ).resolves.toMatchObject({
       tabId: 101,
       format: "png",
@@ -1098,6 +1300,13 @@ describe("browser-client object facade", () => {
           y: 19,
           width: 39,
           height: 50
+        },
+        highlight: true,
+        highlightClip: {
+          x: 11,
+          y: 22,
+          width: 33,
+          height: 44
         }
       }
     });
@@ -1247,6 +1456,27 @@ describe("browser-client object facade", () => {
     expect(calls.at(-1)).toMatchObject({
       name: "browser_locator_action"
     });
+
+    await expect(
+      tab.frameLocator("#fixture-frame").evaluate("document.title", {
+        mode: "read",
+        reason: "frame title"
+      })
+    ).resolves.toBe("evaluated");
+    expect(calls.at(-2)).toMatchObject({
+      name: "browser_resolve_frame",
+      args: {
+        frameSelectors: ["#fixture-frame"]
+      }
+    });
+    expect(calls.at(-1)).toMatchObject({
+      name: "browser_evaluate",
+      args: {
+        frameId: "frame-123",
+        mode: "read",
+        reason: "frame title"
+      }
+    });
   });
 
   it("exposes Codex-compatible browser and tab namespaces", async () => {
@@ -1275,7 +1505,7 @@ describe("browser-client object facade", () => {
     await tab.cua.keypress({ keys: ["ControlOrMeta", "Shift", "Space"] });
     await tab.dev.logs({ limit: 5 });
 
-    expect(calls.at(-6)).toMatchObject({
+    expect(calls.at(-7)).toMatchObject({
       name: "browser_locator_action",
       args: {
         tabId: 101,
@@ -1285,7 +1515,7 @@ describe("browser-client object facade", () => {
         args: { value: "Alice" }
       }
     });
-    expect(calls.at(-5)).toMatchObject({
+    expect(calls.at(-6)).toMatchObject({
       name: "browser_click",
       args: {
         tabId: 101,
@@ -1295,7 +1525,7 @@ describe("browser-client object facade", () => {
         modifiers: ["Shift"]
       }
     });
-    expect(calls.at(-4)).toMatchObject({
+    expect(calls.at(-5)).toMatchObject({
       name: "browser_drag",
       args: {
         tabId: 101,
@@ -1305,6 +1535,13 @@ describe("browser-client object facade", () => {
         ],
         modifiers: ["ControlOrMeta", "Shift"],
         waitMs: 15
+      }
+    });
+    expect(calls.at(-4)).toMatchObject({
+      name: "browser_observe",
+      args: {
+        tabId: 101,
+        includeDomSnapshot: false
       }
     });
     expect(calls.at(-3)).toMatchObject({
@@ -1326,6 +1563,85 @@ describe("browser-client object facade", () => {
       args: {
         tabId: 101,
         limit: 5
+      }
+    });
+  });
+
+  it("normalizes common Playwright-style key aliases in the SDK facade", async () => {
+    const { browser, calls } = createMockBrowser();
+    const tab = await browser.tabs.new();
+
+    await tab.cua.keypress({ keys: ["Ctrl", "A"] });
+    await tab.cua.keypress({ keys: "Esc" });
+
+    expect(calls.at(-2)).toMatchObject({
+      name: "browser_press_key",
+      args: {
+        tabId: 101,
+        key: "Control+A"
+      }
+    });
+    expect(calls.at(-1)).toMatchObject({
+      name: "browser_press_key",
+      args: {
+        tabId: 101,
+        key: "Escape"
+      }
+    });
+  });
+
+  it("maps dom_cua node actions through the latest visible DOM snapshot", async () => {
+    const { browser, calls } = createMockBrowser();
+    const tab = await browser.tabs.new();
+
+    await tab.dom_cua.click({ node_id: "n-submit", waitMs: 10 });
+    await tab.dom_cua.type({ node_id: "n-submit", text: "hello", clear: true, waitMs: 20 });
+    await expect(tab.dom_cua.click({ node_id: "stale-e0" })).rejects.toThrow(
+      /latest visible DOM snapshot/
+    );
+
+    expect(calls.at(-5)).toEqual({
+      name: "browser_observe",
+      args: {
+        sessionId: "session-a",
+        tabId: 101,
+        includeDomSnapshot: false
+      }
+    });
+    expect(calls.at(-4)).toEqual({
+      name: "browser_click",
+      args: {
+        sessionId: "session-a",
+        tabId: 101,
+        ref: "e0",
+        waitMs: 10
+      }
+    });
+    expect(calls.at(-3)).toEqual({
+      name: "browser_observe",
+      args: {
+        sessionId: "session-a",
+        tabId: 101,
+        includeDomSnapshot: false
+      }
+    });
+    expect(calls.at(-2)).toEqual({
+      name: "browser_type_text",
+      args: {
+        sessionId: "session-a",
+        tabId: 101,
+        ref: "e0",
+        text: "hello",
+        clear: true,
+        waitMs: 20
+      }
+    });
+    expect(calls.at(-1)).toEqual({
+      name: "browser_observe",
+      args: {
+        sessionId: "session-a",
+        tabId: 101,
+        includeDomSnapshot: false
       }
     });
   });
@@ -1381,7 +1697,7 @@ describe("browser-client object facade", () => {
 
     await tab.playwright.getByRole("button", { name: "Submit" }).click();
     await tab.playwright.waitForLoadState({ state: "networkidle", timeoutMs: 55, idleMs: 200 });
-    await tab.playwright.waitForURL("submitted", { timeoutMs: 66 });
+    await tab.playwright.waitForURL("submitted", { waitUntil: "load", timeoutMs: 66 });
     const snapshot = await tab.playwright.domSnapshot();
 
     expect(snapshot).toContain("documents");
@@ -1404,6 +1720,7 @@ describe("browser-client object facade", () => {
       name: "browser_wait_for_url",
       args: {
         urlContains: "submitted",
+        waitUntil: "load",
         timeoutMs: 66
       }
     });
@@ -1411,6 +1728,84 @@ describe("browser-client object facade", () => {
       name: "browser_observe",
       args: {
         includeDomSnapshot: true
+      }
+    });
+  });
+
+  it("wraps actions with Playwright expectNavigation URL waits", async () => {
+    const { browser, calls } = createMockBrowser();
+    const tab = await browser.tabs.new();
+
+    const result = await tab.playwright.expectNavigation(
+      () => tab.click({ selector: "#submit-button", waitMs: 10 }),
+      { urlContains: "/submitted", waitUntil: "load", timeoutMs: 500 }
+    ) as any;
+
+    expect(result).toMatchObject({
+      action: {
+        ok: true,
+        sessionId: "session-a",
+        tabId: 101
+      },
+      navigation: {
+        ok: true,
+        sessionId: "session-a",
+        tabId: 101
+      }
+    });
+    expect(calls.at(-2)).toEqual({
+      name: "browser_wait_for_url",
+      args: {
+        sessionId: "session-a",
+        tabId: 101,
+        urlContains: "/submitted",
+        waitUntil: "load",
+        timeoutMs: 500
+      }
+    });
+    expect(calls.at(-1)).toEqual({
+      name: "browser_click",
+      args: {
+        sessionId: "session-a",
+        tabId: 101,
+        selector: "#submit-button",
+        waitMs: 10
+      }
+    });
+  });
+
+  it("wraps actions with commit-first Playwright expectNavigation load waits", async () => {
+    const { browser, calls } = createMockBrowser();
+    const tab = await browser.tabs.new();
+
+    await tab.playwright.expectNavigation(
+      () => tab.click({ selector: "#second-link" }),
+      { waitUntil: "domcontentloaded", timeoutMs: 700 }
+    );
+
+    expect(calls.at(-3)).toEqual({
+      name: "browser_wait_for_load_state",
+      args: {
+        sessionId: "session-a",
+        tabId: 101,
+        state: "commit",
+        timeoutMs: 700
+      }
+    });
+    expect(calls.at(-2)).toEqual({
+      name: "browser_click",
+      args: {
+        sessionId: "session-a",
+        tabId: 101,
+        selector: "#second-link"
+      }
+    });
+    expect(calls.at(-1)).toMatchObject({
+      name: "browser_wait_for_load_state",
+      args: {
+        sessionId: "session-a",
+        tabId: 101,
+        state: "domcontentloaded"
       }
     });
   });
@@ -1439,7 +1834,9 @@ describe("browser-client object facade", () => {
       text: "Visible DOM",
       nodes: [
         {
-          node_id: "e0",
+          node_id: "n-submit",
+          ref: "e0",
+          stableNodeId: "n-submit",
           role: "button",
           name: "Submit",
           visibleText: "Submit",

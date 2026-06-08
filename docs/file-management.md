@@ -34,7 +34,32 @@ await tab.locator('label[for="multi-upload"]').setInputFiles([
 });
 ```
 
-Direct protocol action:
+When the page expects a chooser-trigger click, start waiting before clicking:
+
+```js
+const chooserPromise = tab.playwright.waitForEvent("filechooser", {
+  timeoutMs: 10000,
+});
+
+await tab.locator('label[for="multi-upload"]').click();
+const chooser = await chooserPromise;
+
+if (chooser.isMultiple()) {
+  await chooser.setFiles([
+    "/absolute/path/first.txt",
+    "/absolute/path/second.txt",
+  ], { confirmed: true });
+} else {
+  await chooser.setFiles("/absolute/path/file.txt", { confirmed: true });
+}
+```
+
+This flow does not automate the operating-system file dialog. The click records
+a controlled file chooser event in the extension background, assigns it a
+short-lived `file_chooser_id`, then `setFiles()` applies files through Chrome
+DevTools after native-host path validation.
+
+Direct protocol action for simple cases:
 
 ```js
 await tab.uploadFile({
@@ -54,6 +79,33 @@ await tab.uploadFile({
 ```
 
 If upload fails, see `docs/api-troubleshooting.md#upload-failures`.
+
+## Media Downloads
+
+For image/video/audio assets already present on the page, prefer
+`locator.downloadMedia()` over guessing URLs manually:
+
+```js
+const result = await tab.locator("img.hero").downloadMedia({
+  originApproved: true,
+  filename: "assets/hero.png",
+  fallbackFetch: true,
+  waitForCompletion: true,
+});
+
+console.log(result.media.url);
+console.log(result.download?.suggestedFilename(), result.download?.path());
+```
+
+The extension resolves the asset URL from the element, requires HTTP(S), checks
+the asset origin, then starts a Chrome download. Ordinary media downloads need
+`originApproved: true`; runnable or installable downloads also require
+`confirmed: true`.
+
+`fallbackFetch: true` keeps Chrome downloads as the first attempt, then fetches
+the media with browser credentials only if direct download startup fails. The
+extension applies the same origin policy to redirected final URLs and caps the
+fallback response size.
 
 ## File URL Access
 

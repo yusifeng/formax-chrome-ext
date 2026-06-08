@@ -82,10 +82,24 @@ export type CreateBrowserClientOptions = {
   initialSessionId?: string;
 };
 
+export type BrowserBackendId = "extension" | "local";
+
+export type BrowserBackendDescriptor = {
+  browserId: BrowserBackendId;
+  name: string;
+  type: "chrome-extension" | "local-browser";
+  available: boolean;
+  reason?: string;
+  description: string;
+  priority: number;
+};
+
 export type BrowserRuntimeAgent = {
   browsers: {
-    get(name: "extension"): Promise<BrowserClient>;
+    get(name: BrowserBackendId): Promise<BrowserClient>;
     list(): string[];
+    discover(): BrowserBackendDescriptor[];
+    closeUnused(args?: JsonObject): Promise<{ closed: string[]; kept: string[] }>;
   };
   documentation: {
     get(topic?: string): Promise<unknown>;
@@ -137,9 +151,20 @@ export type BrowserDownloadWaitResult = JsonObject & {
   download: BrowserDownloadHandle | null;
 };
 
+export type BrowserDownloadMediaResult = JsonObject & {
+  media: JsonObject;
+  download: BrowserDownloadHandle | null;
+};
+
 export type BrowserDownloadHandle = JsonObject & {
   suggestedFilename(): string | null;
   path(): string | null;
+  toJSON(): JsonObject;
+};
+
+export type BrowserFileChooserHandle = JsonObject & {
+  setFiles(filePath: string | string[], args?: JsonObject): Promise<unknown>;
+  isMultiple(): boolean;
   toJSON(): JsonObject;
 };
 
@@ -187,6 +212,7 @@ export type TabPlaywrightFacade = {
   waitForUrl(matchOrArgs: string | RegExp | JsonObject, args?: JsonObject): Promise<unknown>;
   waitForTimeout(timeoutMs: number): Promise<void>;
   waitForEvent(event: string, args?: JsonObject): Promise<unknown>;
+  expectNavigation(action: () => unknown | Promise<unknown>, args?: JsonObject): Promise<unknown>;
   expectNavigation(args?: JsonObject): Promise<unknown>;
 };
 
@@ -214,11 +240,17 @@ export type TabDomCuaFacade = {
 
 export type VisibleDomNode = {
   node_id: string;
+  ref?: string;
+  stableNodeId?: string;
   role: string;
   name: string;
   visibleText?: string;
   tag: string | null;
   sensitive: boolean;
+  shadowRoot?: "open" | "closed_unsupported" | null;
+  shadowHostSelector?: string | null;
+  shadowUnsupportedReason?: string | null;
+  frameSelectors?: string[];
   selectorCandidates?: unknown;
   center: {
     x: number;
@@ -298,6 +330,8 @@ export type TabHandle = {
   type(textOrArgs: string | JsonObject, maybeTextOrArgs?: string | JsonObject, args?: JsonObject): Promise<unknown>;
   pressKey(keyOrArgs: string | JsonObject, args?: JsonObject): Promise<unknown>;
   evaluate<T = unknown>(scriptOrArgs: string | JsonObject, args?: JsonObject): Promise<T>;
+  attachTarget(args: JsonObject): Promise<unknown>;
+  detachTarget(args: JsonObject): Promise<unknown>;
   cdp<T = unknown>(methodOrArgs: string | JsonObject, params?: JsonObject, args?: JsonObject): Promise<T>;
   rawCdp<T = unknown>(methodOrArgs: string | JsonObject, params?: JsonObject, args?: JsonObject): Promise<T>;
   getDevLogs(args?: JsonObject): Promise<unknown>;
@@ -345,6 +379,7 @@ export type LocatorHandle = {
   setChecked(checked?: boolean, args?: JsonObject): Promise<unknown>;
   selectOption(value: string | string[], args?: JsonObject): Promise<unknown>;
   setInputFiles(filePath: string | string[], args?: JsonObject): Promise<unknown>;
+  downloadMedia(args?: JsonObject): Promise<BrowserDownloadMediaResult>;
   toJSON(): JsonObject;
 };
 
@@ -358,6 +393,12 @@ export type FrameLocatorHandle = {
   getByPlaceholder(text: string, args?: JsonObject): LocatorHandle;
   getByTestId(testId: string, args?: JsonObject): LocatorHandle;
   frameLocator(selector: string): FrameLocatorHandle;
+  resolve(args?: JsonObject): Promise<unknown>;
+  evaluate<T = unknown>(
+    scriptOrFunction: string | ((arg?: unknown) => unknown),
+    argOrOptions?: unknown,
+    options?: JsonObject
+  ): Promise<T>;
   toJSON(): JsonObject;
 };
 
@@ -408,6 +449,7 @@ export type BrowserClient = {
   locatorQuery(args: JsonObject): Promise<unknown>;
   locatorAction(args: JsonObject): Promise<unknown>;
   locatorWait(args: JsonObject): Promise<unknown>;
+  resolveFrame(args: JsonObject): Promise<unknown>;
   click(targetOrArgs?: string | JsonObject, args?: JsonObject): Promise<unknown>;
   drag(args: JsonObject): Promise<unknown>;
   moveMouse(xOrArgs: number | JsonObject, y?: number, args?: JsonObject): Promise<unknown>;
@@ -418,7 +460,12 @@ export type BrowserClient = {
   pressKey(keyOrArgs: string | JsonObject, args?: JsonObject): Promise<unknown>;
   handleDialog(args?: JsonObject): Promise<unknown>;
   screenshot(args?: JsonObject): Promise<BrowserScreenshotResult>;
+  waitForFileChooser(args?: JsonObject): Promise<unknown>;
+  setFileChooserFiles(args: JsonObject): Promise<unknown>;
   uploadFile(args: JsonObject): Promise<unknown>;
+  downloadMedia(args: JsonObject): Promise<BrowserDownloadMediaResult>;
+  attachTarget(args: JsonObject): Promise<unknown>;
+  detachTarget(args: JsonObject): Promise<unknown>;
   cdp(methodOrArgs: string | JsonObject, params?: JsonObject, args?: JsonObject): Promise<unknown>;
   rawCdp(methodOrArgs: string | JsonObject, params?: JsonObject, args?: JsonObject): Promise<unknown>;
   getDevLogs(args?: JsonObject): Promise<unknown>;
@@ -445,8 +492,29 @@ const noDefaultActions = new Set<BrowserToolName>([
   "browser_get_tab",
   "browser_get_capabilities",
   "browser_list_downloads",
-  "browser_wait_for_download"
+  "browser_wait_for_download",
+  "browser_wait_for_file_chooser"
 ]);
+
+const BROWSER_BACKENDS: BrowserBackendDescriptor[] = [
+  {
+    browserId: "extension",
+    name: "Chrome extension",
+    type: "chrome-extension",
+    available: true,
+    description: "Controls the user's real Chrome profile through the Formax extension and native host.",
+    priority: 10
+  },
+  {
+    browserId: "local",
+    name: "Local browser",
+    type: "local-browser",
+    available: false,
+    reason: "not_implemented",
+    description: "Planned in-app/local browser backend for unsigned public or localhost pages.",
+    priority: 20
+  }
+];
 
 export async function setupBrowserRuntime(options: BrowserRuntimeSetupOptions = {}) {
   const globals = options.globals || (globalThis as BrowserGlobals);
@@ -478,14 +546,23 @@ export async function setupBrowserRuntime(options: BrowserRuntimeSetupOptions = 
   const agent: BrowserRuntimeAgent = {
     ...(existingAgent && typeof existingAgent === "object" ? existingAgent : {}),
     browsers: {
-      get: async (name: "extension") => {
-        if (name !== "extension") {
+      get: async (name: BrowserBackendId) => {
+        const backend = browserBackendDescriptor(name);
+        if (!backend) {
           throw new Error(`Unknown browser runtime: ${name}`);
+        }
+        if (backend.available !== true) {
+          throw new Error(`Browser runtime ${name} is unavailable: ${backend.reason ?? "not available"}`);
         }
 
         return browser;
       },
-      list: () => ["extension"]
+      list: () => BROWSER_BACKENDS.filter((backend) => backend.available).map((backend) => backend.browserId),
+      discover: () => BROWSER_BACKENDS.map((backend) => ({ ...backend })),
+      closeUnused: async () => ({
+        closed: [],
+        kept: BROWSER_BACKENDS.filter((backend) => backend.available).map((backend) => backend.browserId)
+      })
     },
     documentation: {
       get: (topic = "overview") => browser.documentation(topic),
@@ -500,6 +577,10 @@ export async function setupBrowserRuntime(options: BrowserRuntimeSetupOptions = 
     agent,
     browser
   };
+}
+
+function browserBackendDescriptor(name: string) {
+  return BROWSER_BACKENDS.find((backend) => backend.browserId === name) ?? null;
 }
 
 export function createBrowserClient(options: CreateBrowserClientOptions = {}): BrowserClient {
@@ -597,6 +678,7 @@ export function createBrowserClient(options: CreateBrowserClientOptions = {}): B
     locatorQuery: (args) => result("browser_locator_query", args),
     locatorAction: (args) => result("browser_locator_action", args),
     locatorWait: (args) => result("browser_locator_wait", args),
+    resolveFrame: (args) => result("browser_resolve_frame", args),
     click: (targetOrArgs = {}, args = {}) =>
       result("browser_click", targetArg(targetOrArgs, args)),
     drag: (args) => result("browser_drag", args),
@@ -619,7 +701,12 @@ export function createBrowserClient(options: CreateBrowserClientOptions = {}): B
       );
       return writeScreenshotOutput(screenshot, outputPath);
     },
+    waitForFileChooser: (args = {}) => result("browser_wait_for_file_chooser", args),
+    setFileChooserFiles: (args) => result("browser_set_file_chooser_files", args),
     uploadFile: (args) => result("browser_upload_file", args),
+    downloadMedia: async (args) => enrichDownloadMediaResult(await result("browser_download_media", args)),
+    attachTarget: (args) => result("browser_attach_target", args),
+    detachTarget: (args) => result("browser_detach_target", args),
     cdp: (methodOrArgs, params = {}, args = {}) =>
       result("browser_cdp", cdpArg(methodOrArgs, params, args)),
     rawCdp: (methodOrArgs, params = {}, args = {}) =>
@@ -742,7 +829,9 @@ function locatorActionOptions(args: JsonObject): JsonObject {
   return cleanObject({
     force: typeof args.force === "boolean" ? args.force : undefined,
     button: typeof args.button === "string" ? args.button : undefined,
-    clickCount: optionalNumber(args.clickCount, "locator.action.clickCount")
+    clickCount: optionalNumber(args.clickCount, "locator.action.clickCount"),
+    confirmed: typeof args.confirmed === "boolean" ? args.confirmed : undefined,
+    confirmationId: typeof args.confirmationId === "string" ? args.confirmationId : undefined
   });
 }
 
@@ -814,9 +903,13 @@ function locatorFrameSelectors(value: unknown, label: string): string[] | undefi
   );
 }
 
-function elementScreenshotTabArgs(args: JsonObject, clip: JsonObject): JsonObject {
+function elementScreenshotTabArgs(args: JsonObject, clip: JsonObject, highlightClip?: JsonObject): JsonObject {
   return cleanObject({
     format: normalizeScreenshotFormat(args.format),
+    highlight: args.highlight === true ? true : undefined,
+    highlightClip: args.highlight === true ? highlightClip ?? clip : undefined,
+    highlightColor: typeof args.highlightColor === "string" ? args.highlightColor : undefined,
+    highlightDurationMs: optionalNumber(args.highlightDurationMs, "element.screenshot.highlightDurationMs"),
     path: typeof args.path === "string" ? args.path : undefined,
     saveToFile: typeof args.saveToFile === "string" ? args.saveToFile : undefined,
     clip
@@ -1127,6 +1220,16 @@ class TabHandleImpl implements TabHandle {
     return this.transport.result<T>("browser_cdp", this.targetArgs(cdpArg(methodOrArgs, params, args)));
   }
 
+  attachTarget(args: JsonObject) {
+    this.assertOpen();
+    return this.transport.result("browser_attach_target", this.targetArgs(args));
+  }
+
+  detachTarget(args: JsonObject) {
+    this.assertOpen();
+    return this.transport.result("browser_detach_target", this.targetArgs(args));
+  }
+
   rawCdp<T = unknown>(methodOrArgs: string | JsonObject, params: JsonObject = {}, args: JsonObject = {}) {
     return this.cdp<T>(methodOrArgs, params, args);
   }
@@ -1365,7 +1468,7 @@ class LocatorHandleImpl implements LocatorHandle {
   async screenshot(args: JsonObject = {}) {
     const box = await this.boundingBox(elementScreenshotQueryArgs(args));
     const clip = screenshotClipFromBox(box, "locator.screenshot.boundingBox", args);
-    return this.tab.screenshot(elementScreenshotTabArgs(args, clip));
+    return this.tab.screenshot(elementScreenshotTabArgs(args, clip, objectArg(box)));
   }
 
   click(args: JsonObject = {}) {
@@ -1431,6 +1534,15 @@ class LocatorHandleImpl implements LocatorHandle {
       locator: this.plan,
       ...uploadFilePathArgs(filePath)
     });
+  }
+
+  async downloadMedia(args: JsonObject = {}) {
+    return enrichDownloadMediaResult(await this.transport.result("browser_download_media", {
+      ...args,
+      sessionId: this.tab.sessionId,
+      tabId: this.tab.tabId,
+      locator: this.plan
+    }));
   }
 
   toJSON() {
@@ -1557,6 +1669,49 @@ class FrameLocatorHandleImpl implements FrameLocatorHandle {
     ]);
   }
 
+  resolve(args: JsonObject = {}) {
+    return this.transport.result("browser_resolve_frame", {
+      sessionId: this.tab.sessionId,
+      tabId: this.tab.tabId,
+      frameSelectors: this.frameSelectors,
+      ...(typeof args.targetId === "string" ? { targetId: args.targetId } : {}),
+      ...(typeof args.timeoutMs === "number" ? { timeoutMs: args.timeoutMs } : {})
+    });
+  }
+
+  async evaluate<T = unknown>(
+    scriptOrFunction: string | ((arg?: unknown) => unknown),
+    argOrOptions?: unknown,
+    options: JsonObject = {}
+  ) {
+    const evaluateOptions = typeof scriptOrFunction === "function"
+      ? options
+      : objectArg(argOrOptions);
+    const frame = await this.resolve(evaluateOptions) as JsonObject;
+    const frameId = typeof frame.frameId === "string" && frame.frameId.trim()
+      ? frame.frameId.trim()
+      : null;
+
+    if (!frameId) {
+      throw new Error(`FrameLocator.evaluate could not resolve a CDP frameId for ${this.frameSelectors.join(" -> ")}`);
+    }
+
+    const scopedOptions = cleanObject({
+      ...evaluateOptions,
+      frameId,
+      targetId: typeof frame.targetId === "string" ? frame.targetId : evaluateOptions.targetId
+    });
+
+    if (typeof scriptOrFunction === "function") {
+      return this.tab.evaluate<T>(
+        serializePageFunction(scriptOrFunction, argOrOptions),
+        scopedOptions
+      );
+    }
+
+    return this.tab.evaluate<T>(scriptOrFunction, scopedOptions);
+  }
+
   toJSON() {
     return {
       type: "FrameLocator",
@@ -1620,12 +1775,91 @@ function createTabPlaywrightFacade(tab: TabHandle): TabPlaywrightFacade {
         });
       }
 
+      if (normalized === "filechooser" || normalized === "fileChooser") {
+        return waitForPlaywrightFileChooser(tab, {
+          ...args,
+          sessionId: tab.sessionId,
+          tabId: tab.tabId
+        });
+      }
+
       throw new Error(`tab.playwright.waitForEvent("${normalized}") is not implemented by this backend yet.`);
     },
-    expectNavigation: (args = {}) => {
-      const state = typeof args.state === "string" ? args.state : "load";
-      return tab.waitForLoadState(state, withoutKeys(args, ["state"]));
-    }
+    expectNavigation: (actionOrArgs = {}, args = {}) =>
+      expectNavigationForAction(tab, actionOrArgs, args)
+  };
+}
+
+async function expectNavigationForAction(
+  tab: TabHandle,
+  actionOrArgs: JsonObject | (() => unknown | Promise<unknown>) = {},
+  args: JsonObject = {}
+) {
+  if (typeof actionOrArgs !== "function") {
+    const state = typeof actionOrArgs.state === "string" ? actionOrArgs.state : "load";
+    return tab.waitForLoadState(state, withoutKeys(actionOrArgs, ["state"]));
+  }
+
+  const options = objectArg(args);
+  const navigationPromise = waitForExpectedNavigation(tab, options);
+  let actionResult;
+
+  try {
+    actionResult = await actionOrArgs();
+  } catch (error) {
+    navigationPromise.catch(() => undefined);
+    throw error;
+  }
+
+  const navigation = await navigationPromise;
+
+  return {
+    action: actionResult,
+    navigation
+  };
+}
+
+async function waitForExpectedNavigation(tab: TabHandle, options: JsonObject) {
+  const timeoutMs = optionalNumber(options.timeoutMs, "tab.playwright.expectNavigation.timeoutMs") ?? 15000;
+  const waitUntil = typeof options.waitUntil === "string"
+    ? options.waitUntil
+    : typeof options.state === "string"
+      ? options.state
+      : "load";
+
+  if (
+    typeof options.url === "string" ||
+    typeof options.urlContains === "string" ||
+    typeof options.urlRegex === "string"
+  ) {
+    return tab.waitForUrl(withoutKeys({
+      ...options,
+      waitUntil,
+      timeoutMs
+    }, ["state"]));
+  }
+
+  const startedAt = Date.now();
+  const commit = await tab.waitForLoadState("commit", {
+    ...withoutKeys(options, ["state", "waitUntil"]),
+    timeoutMs
+  });
+
+  if (waitUntil === "commit") {
+    return {
+      commit
+    };
+  }
+
+  const remainingMs = Math.max(0, timeoutMs - (Date.now() - startedAt));
+  const loadState = await tab.waitForLoadState(waitUntil, {
+    ...withoutKeys(options, ["state", "waitUntil"]),
+    timeoutMs: remainingMs
+  });
+
+  return {
+    commit,
+    loadState
   };
 }
 
@@ -1646,36 +1880,31 @@ function createTabDomCuaFacade(tab: TabHandle): TabDomCuaFacade {
     get_visible_dom: async (args = {}) => visibleDomSnapshotForDomCua(tab, args),
     element_info: (args = {}) => tab.elementInfo(args),
     elementInfo: (args = {}) => tab.elementInfo(args),
-    click: (args = {}) => tab.click(domCuaTargetArgs(args)),
-    double_click: (args = {}) => tab.click(domCuaTargetArgs(args, { clickCount: 2 })),
+    click: async (args = {}) => {
+      const node = await domCuaNodeFromLatestSnapshot(tab, args, "tab.dom_cua.click");
+      return tab.click(node ? domCuaTargetArgsForNode(args, node) : domCuaTargetArgs(args));
+    },
+    double_click: async (args = {}) => {
+      const node = await domCuaNodeFromLatestSnapshot(tab, args, "tab.dom_cua.double_click");
+      return tab.click(node ? domCuaTargetArgsForNode(args, node, { clickCount: 2 }) : domCuaTargetArgs(args, { clickCount: 2 }));
+    },
     scroll: async (args = {}) => {
-      if (typeof args.node_id === "string" || typeof args.ref === "string") {
-        const nodeId = requireNonEmptyString(args.node_id ?? args.ref, "tab.dom_cua.scroll.node_id");
-        const snapshot = await visibleDomSnapshotForDomCua(tab);
-        const node = snapshot.nodes.find((candidate) => candidate.node_id === nodeId);
-
-        if (!node) {
-          throw new Error(`tab.dom_cua.scroll could not find node_id "${nodeId}" in the latest visible DOM snapshot.`);
-        }
-
+      const node = await domCuaNodeFromLatestSnapshot(tab, args, "tab.dom_cua.scroll");
+      if (node) {
         return tab.scroll(domCuaNodeScrollArgs(args, node));
       }
 
       return tab.scroll(domCuaScrollArgs(args));
     },
-    type: (args = {}) => tab.type(domCuaTypeArgs(args)),
+    type: async (args = {}) => {
+      const node = await domCuaNodeFromLatestSnapshot(tab, args, "tab.dom_cua.type");
+      return tab.type(node ? domCuaTypeArgsForNode(args, node) : domCuaTypeArgs(args));
+    },
     keypress: (args = {}) => tab.pressKey(cuaKeyArg(args, "tab.dom_cua.keypress")),
     screenshot: async (args = {}) => {
-      const nodeId = requireNonEmptyString(args.node_id ?? args.ref, "tab.dom_cua.screenshot.node_id");
-      const snapshot = await visibleDomSnapshotForDomCua(tab);
-      const node = snapshot.nodes.find((candidate) => candidate.node_id === nodeId);
-
-      if (!node) {
-        throw new Error(`tab.dom_cua.screenshot could not find node_id "${nodeId}" in the latest visible DOM snapshot.`);
-      }
-
-      const clip = screenshotClipFromBox(node.box, `tab.dom_cua.screenshot(${nodeId}).box`, args);
-      return tab.screenshot(elementScreenshotTabArgs(args, clip));
+      const node = await domCuaNodeFromLatestSnapshot(tab, args, "tab.dom_cua.screenshot", true);
+      const clip = screenshotClipFromBox(node.box, `tab.dom_cua.screenshot(${node.node_id}).box`, args);
+      return tab.screenshot(elementScreenshotTabArgs(args, clip, objectArg(node.box)));
     }
   };
 }
@@ -1814,6 +2043,14 @@ function domCuaTargetArgs(args: JsonObject = {}, extra: JsonObject = {}) {
   });
 }
 
+function domCuaTargetArgsForNode(args: JsonObject, node: VisibleDomNode, extra: JsonObject = {}) {
+  return cleanObject({
+    ref: node.ref ?? node.node_id,
+    clickCount: extra.clickCount ?? optionalNumber(args.clickCount, "tab.dom_cua.click.clickCount"),
+    waitMs: optionalNumber(args.waitMs, "tab.dom_cua.click.waitMs")
+  });
+}
+
 function visibleDomSnapshotFromObservation(observation: unknown, tab: TabHandle): VisibleDomSnapshot {
   const source = objectArg(observation);
   const elements = Array.isArray(source.elements) ? source.elements : [];
@@ -1844,13 +2081,46 @@ async function visibleDomSnapshotForDomCua(tab: TabHandle, args: JsonObject = {}
   return visibleDomSnapshotFromObservation(observation, tab);
 }
 
+async function domCuaNodeFromLatestSnapshot(
+  tab: TabHandle,
+  args: JsonObject,
+  label: string,
+  required = false
+) {
+  const rawNodeId = args.node_id ?? args.ref;
+
+  if (rawNodeId == null) {
+    if (required) {
+      throw new Error(`${label}.node_id is required.`);
+    }
+
+    return null;
+  }
+
+  const nodeId = requireNonEmptyString(rawNodeId, `${label}.node_id`);
+  const snapshot = await visibleDomSnapshotForDomCua(tab);
+  const node = snapshot.nodes.find((candidate) => candidate.node_id === nodeId || candidate.ref === nodeId);
+
+  if (!node) {
+    throw new Error(`${label} could not find node_id "${nodeId}" in the latest visible DOM snapshot.`);
+  }
+
+  return node;
+}
+
 function visibleDomNodeFromElement(element: unknown): VisibleDomNode | null {
   const source = objectArg(element);
-  const nodeId = typeof source.ref === "string" && source.ref.trim()
+  const ref = typeof source.ref === "string" && source.ref.trim()
     ? source.ref.trim()
     : null;
+  const stableNodeId = typeof source.stableNodeId === "string" && source.stableNodeId.trim()
+    ? source.stableNodeId.trim()
+    : typeof source.nodeId === "string" && source.nodeId.trim()
+      ? source.nodeId.trim()
+      : null;
+  const nodeId = stableNodeId ?? ref;
 
-  if (!nodeId) {
+  if (!nodeId || !ref) {
     return null;
   }
 
@@ -1864,11 +2134,19 @@ function visibleDomNodeFromElement(element: unknown): VisibleDomNode | null {
 
   return {
     node_id: nodeId,
+    ref,
+    stableNodeId: stableNodeId ?? undefined,
     role: typeof source.role === "string" ? source.role : "",
     name: typeof source.label === "string" ? source.label : "",
     visibleText: typeof source.visibleText === "string" ? source.visibleText : "",
     tag: typeof source.tagName === "string" ? source.tagName : null,
     sensitive: source.sensitive === true,
+    shadowRoot: source.shadowRoot === "open" || source.shadowRoot === "closed_unsupported" ? source.shadowRoot : null,
+    shadowHostSelector: typeof source.shadowHostSelector === "string" ? source.shadowHostSelector : null,
+    shadowUnsupportedReason: typeof source.shadowUnsupportedReason === "string" ? source.shadowUnsupportedReason : null,
+    frameSelectors: Array.isArray(source.frameSelectors)
+      ? source.frameSelectors.filter((selector) => typeof selector === "string")
+      : [],
     selectorCandidates: Array.isArray(source.selectorCandidates)
       ? source.selectorCandidates
       : [],
@@ -1923,6 +2201,15 @@ function domCuaNodeScrollArgs(args: JsonObject, node: VisibleDomNode) {
 function domCuaTypeArgs(args: JsonObject = {}) {
   return cleanObject({
     ...domCuaOptionalTarget(args),
+    text: requireNonEmptyString(args.text, "tab.dom_cua.type.text"),
+    clear: typeof args.clear === "boolean" ? args.clear : undefined,
+    waitMs: optionalNumber(args.waitMs, "tab.dom_cua.type.waitMs")
+  });
+}
+
+function domCuaTypeArgsForNode(args: JsonObject, node: VisibleDomNode) {
+  return cleanObject({
+    ref: node.ref ?? node.node_id,
     text: requireNonEmptyString(args.text, "tab.dom_cua.type.text"),
     clear: typeof args.clear === "boolean" ? args.clear : undefined,
     waitMs: optionalNumber(args.waitMs, "tab.dom_cua.type.waitMs")
@@ -2013,12 +2300,33 @@ function normalizeSingleKey(value: unknown, label: string) {
 
 function normalizeKeyCombo(parts: string[], label: string) {
   const modifiers = ["Alt", "Control", "ControlOrMeta", "Meta", "Shift"];
+  const modifierAliases: Record<string, string> = {
+    Ctrl: "Control",
+    Cmd: "Meta",
+    Command: "Meta",
+    Option: "Alt"
+  };
+  const keyAliases: Record<string, string> = {
+    Esc: "Escape",
+    Del: "Delete",
+    Spacebar: "Space",
+    Left: "ArrowLeft",
+    Right: "ArrowRight",
+    Up: "ArrowUp",
+    Down: "ArrowDown",
+    PgUp: "PageUp",
+    PgDown: "PageDown",
+    Return: "Enter",
+    Apps: "ContextMenu",
+    Menu: "ContextMenu"
+  };
   const baseKeys = [
     "Enter",
     "Tab",
     "Escape",
     "Backspace",
     "Delete",
+    "Insert",
     "Space",
     "Home",
     "End",
@@ -2027,11 +2335,35 @@ function normalizeKeyCombo(parts: string[], label: string) {
     "ArrowUp",
     "ArrowDown",
     "ArrowLeft",
-    "ArrowRight"
+    "ArrowRight",
+    "Pause",
+    "CapsLock",
+    "NumLock",
+    "ScrollLock",
+    "ContextMenu",
+    ...Array.from({ length: 12 }, (_value, index) => `F${index + 1}`),
+    ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ".split(""),
+    ..."abcdefghijklmnopqrstuvwxyz".split(""),
+    ..."0123456789".split(""),
+    "`",
+    "-",
+    "=",
+    "[",
+    "]",
+    "\\",
+    ";",
+    "'",
+    ",",
+    ".",
+    "/"
   ];
-  const normalized = parts.flatMap((part) => part.split("+")).map((part) => part.trim()).filter(Boolean);
-  const key = normalized.at(-1);
-  const modifierParts = normalized.slice(0, -1);
+  const normalized = parts
+    .flatMap((part) => part.split("+"))
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const rawKey = normalized.at(-1);
+  const key = rawKey ? keyAliases[rawKey] ?? rawKey : undefined;
+  const modifierParts = normalized.slice(0, -1).map((part) => modifierAliases[part] ?? part);
 
   if (!key || (!baseKeys.includes(key) && !modifiers.includes(key))) {
     throw new Error(`${label} contains unsupported key: ${String(key)}.`);
@@ -2262,6 +2594,67 @@ async function waitForPlaywrightDownload(tab: TabHandle, args: JsonObject): Prom
   return isPlainDownloadHandle(result.download) ? result.download : null;
 }
 
+async function waitForPlaywrightFileChooser(tab: TabHandle, args: JsonObject): Promise<BrowserFileChooserHandle | null> {
+  const result = objectArg(await tab.browser.waitForFileChooser({
+    ...args,
+    sessionId: tab.sessionId,
+    tabId: tab.tabId
+  }));
+
+  if (result.timedOut === true || result.matched === false) {
+    throw new BrowserTimeoutError("waitForEvent(filechooser)", result);
+  }
+
+  return result.fileChooser ? createFileChooserHandle(tab, result) : null;
+}
+
+function createFileChooserHandle(tab: TabHandle, sourceValue: unknown): BrowserFileChooserHandle {
+  const source = objectArg(sourceValue);
+  const fileChooser = objectArg(source.fileChooser ?? {});
+  const fileChooserId = stringOrNull(source.fileChooserId) ??
+    stringOrNull(source.file_chooser_id) ??
+    stringOrNull(fileChooser.fileChooserId) ??
+    stringOrNull(fileChooser.file_chooser_id);
+  const ref = typeof fileChooser.ref === "string" && fileChooser.ref.trim() ? fileChooser.ref.trim() : null;
+  const selector = typeof fileChooser.selector === "string" && fileChooser.selector.trim()
+    ? fileChooser.selector.trim()
+    : null;
+  const multiple = source.isMultiple === true ||
+    source.is_multiple === true ||
+    fileChooser.multiple === true ||
+    fileChooser.isMultiple === true ||
+    fileChooser.is_multiple === true;
+  const snapshot = {
+    ...fileChooser,
+    ...(fileChooserId ? { fileChooserId, file_chooser_id: fileChooserId } : {}),
+    ref,
+    selector,
+    multiple,
+    isMultiple: multiple,
+    is_multiple: multiple
+  };
+
+  return {
+    ...snapshot,
+    setFiles: (filePath: string | string[], args: JsonObject = {}) => {
+      if (!fileChooserId) {
+        throw new Error("File chooser handle is missing fileChooserId");
+      }
+
+      return tab.browser.setFileChooserFiles({
+        ...args,
+        sessionId: tab.sessionId,
+        tabId: tab.tabId,
+        fileChooserId,
+        file_chooser_id: fileChooserId,
+        ...fileChooserFilesArgs(filePath)
+      });
+    },
+    isMultiple: () => multiple,
+    toJSON: () => snapshot
+  };
+}
+
 function enrichDownloadListResult(result: unknown) {
   const source = objectArg(result);
   return {
@@ -2276,6 +2669,15 @@ function enrichDownloadWaitResult(result: unknown) {
   const source = objectArg(result);
   return {
     ...source,
+    download: source.download ? enrichDownloadSummary(source.download) : null
+  };
+}
+
+function enrichDownloadMediaResult(result: unknown): BrowserDownloadMediaResult {
+  const source = objectArg(result);
+  return {
+    ...source,
+    media: objectArg(source.media),
     download: source.download ? enrichDownloadSummary(source.download) : null
   };
 }
@@ -2787,6 +3189,12 @@ function uploadFilePathArgs(filePath: string | string[] | undefined): JsonObject
   return { filePath };
 }
 
+function fileChooserFilesArgs(filePath: string | string[]): JsonObject {
+  return {
+    files: Array.isArray(filePath) ? filePath : [filePath]
+  };
+}
+
 function pointArg(xOrArgs: number | JsonObject, y?: number, args: JsonObject = {}) {
   if (typeof xOrArgs !== "number") {
     return xOrArgs;
@@ -2893,6 +3301,10 @@ function objectArg(value: unknown): JsonObject {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as JsonObject
     : {};
+}
+
+function stringOrNull(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function pickKeys(source: JsonObject, keys: string[]) {

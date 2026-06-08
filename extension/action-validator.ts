@@ -40,7 +40,9 @@ const EXTENSION_DOWNLOAD_PARAMS = [
 ];
 
 const EXTENSION_ACTION_PARAM_SPECS: Record<string, ExtensionParamSpec[]> = {
-  health: [],
+  health: [
+    extParam("nativeDiagnostics", "object")
+  ],
   reloadExtension: [],
   getEvents: [
     ...EXTENSION_SESSION_TAB_PARAMS,
@@ -178,8 +180,10 @@ const EXTENSION_ACTION_PARAM_SPECS: Record<string, ExtensionParamSpec[]> = {
     extParam("url", "string"),
     extParam("urlContains", "string"),
     extParam("urlRegex", "string"),
+    extParam("waitUntil", "string"),
     extParam("timeoutMs", "number"),
-    extParam("pollMs", "number")
+    extParam("pollMs", "number"),
+    extParam("idleMs", "number")
   ],
   waitForSelector: [
     ...EXTENSION_SESSION_TAB_PARAMS,
@@ -230,6 +234,12 @@ const EXTENSION_ACTION_PARAM_SPECS: Record<string, ExtensionParamSpec[]> = {
     extParam("state", "string"),
     extParam("timeoutMs", "number"),
     extParam("pollMs", "number")
+  ],
+  resolveFrame: [
+    ...EXTENSION_SESSION_TAB_PARAMS,
+    extParam("frameSelectors", "stringArray", true),
+    extParam("targetId", "string"),
+    extParam("timeoutMs", "number")
   ],
   click: [
     ...EXTENSION_SESSION_TAB_PARAMS,
@@ -285,6 +295,8 @@ const EXTENSION_ACTION_PARAM_SPECS: Record<string, ExtensionParamSpec[]> = {
   ],
   evaluate: [
     ...EXTENSION_SESSION_TAB_PARAMS,
+    extParam("targetId", "string"),
+    extParam("frameId", "string"),
     extParam("script", "string", true),
     extParam("awaitPromise", "boolean"),
     extParam("timeoutMs", "number"),
@@ -307,7 +319,29 @@ const EXTENSION_ACTION_PARAM_SPECS: Record<string, ExtensionParamSpec[]> = {
     ...EXTENSION_SESSION_TAB_PARAMS,
     extParam("format", "string"),
     extParam("fullPage", "boolean"),
-    extParam("clip", "object")
+    extParam("clip", "object"),
+    extParam("highlight", "boolean"),
+    extParam("highlightClip", "object"),
+    extParam("highlightColor", "string"),
+    extParam("highlightDurationMs", "number")
+  ],
+  waitForFileChooser: [
+    ...EXTENSION_SESSION_TAB_PARAMS,
+    extParam("timeoutMs", "number"),
+    extParam("pollMs", "number"),
+    extParam("sinceSequence", "number")
+  ],
+  setFileChooserFiles: [
+    ...EXTENSION_SESSION_TAB_PARAMS,
+    extParam("fileChooserId", "string"),
+    extParam("file_chooser_id", "string"),
+    extParam("files", "stringArray"),
+    extParam("filePath", "string"),
+    extParam("filePaths", "stringArray"),
+    extParam("timeoutMs", "number"),
+    extParam("waitMs", "number"),
+    extParam("confirmed", "boolean"),
+    extParam("confirmationId", "string")
   ],
   uploadFile: [
     ...EXTENSION_SESSION_TAB_PARAMS,
@@ -319,6 +353,35 @@ const EXTENSION_ACTION_PARAM_SPECS: Record<string, ExtensionParamSpec[]> = {
     extParam("waitMs", "number"),
     extParam("confirmed", "boolean"),
     extParam("confirmationId", "string")
+  ],
+  downloadMedia: [
+    ...EXTENSION_SESSION_TAB_PARAMS,
+    extParam("locator", "locator", true),
+    extParam("attribute", "string"),
+    extParam("filename", "string"),
+    extParam("conflictAction", "string"),
+    extParam("saveAs", "boolean"),
+    extParam("waitForCompletion", "boolean"),
+    extParam("timeoutMs", "number"),
+    extParam("pollMs", "number"),
+    extParam("fallbackFetch", "boolean"),
+    extParam("fallbackMaxBytes", "number"),
+    extParam("originApproved", "boolean"),
+    extParam("confirmed", "boolean"),
+    extParam("confirmationId", "string")
+  ],
+  attachTarget: [
+    ...EXTENSION_SESSION_TAB_PARAMS,
+    extParam("targetId", "string", true),
+    extParam("originApproved", "boolean"),
+    extParam("confirmed", "boolean"),
+    extParam("confirmationId", "string"),
+    extParam("reason", "string")
+  ],
+  detachTarget: [
+    ...EXTENSION_SESSION_TAB_PARAMS,
+    extParam("targetId", "string", true),
+    extParam("reason", "string")
   ],
   cdp: [
     ...EXTENSION_SESSION_TAB_PARAMS,
@@ -381,6 +444,7 @@ const EXTENSION_BASE_KEYS = [
   "Escape",
   "Backspace",
   "Delete",
+  "Insert",
   "Space",
   "Home",
   "End",
@@ -389,18 +453,55 @@ const EXTENSION_BASE_KEYS = [
   "ArrowUp",
   "ArrowDown",
   "ArrowLeft",
-  "ArrowRight"
+  "ArrowRight",
+  "Pause",
+  "CapsLock",
+  "NumLock",
+  "ScrollLock",
+  "ContextMenu",
+  ...Array.from({ length: 12 }, (_value, index) => `F${index + 1}`),
+  ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ".split(""),
+  ..."abcdefghijklmnopqrstuvwxyz".split(""),
+  ..."0123456789".split(""),
+  "`",
+  "-",
+  "=",
+  "[",
+  "]",
+  "\\",
+  ";",
+  "'",
+  ",",
+  ".",
+  "/"
+];
+const EXTENSION_KEY_ALIASES = [
+  "Esc",
+  "Del",
+  "Spacebar",
+  "Left",
+  "Right",
+  "Up",
+  "Down",
+  "PgUp",
+  "PgDown",
+  "Return",
+  "Apps",
+  "Menu"
 ];
 const EXTENSION_MODIFIER_KEYS = ["Alt", "Control", "ControlOrMeta", "Meta", "Shift"];
+const EXTENSION_MODIFIER_ALIASES = ["Ctrl", "Cmd", "Command", "Option"];
+const EXTENSION_PRESS_KEY_BASES = [...EXTENSION_BASE_KEYS, ...EXTENSION_KEY_ALIASES];
+const EXTENSION_PRESS_KEY_MODIFIERS = [...EXTENSION_MODIFIER_KEYS, ...EXTENSION_MODIFIER_ALIASES];
 const EXTENSION_SUPPORTED_KEYS = [
-  ...EXTENSION_BASE_KEYS,
-  ...EXTENSION_MODIFIER_KEYS,
-  ...EXTENSION_MODIFIER_KEYS.flatMap((modifier) =>
-    EXTENSION_BASE_KEYS.map((key) => `${modifier}+${key}`)
+  ...EXTENSION_PRESS_KEY_BASES,
+  ...EXTENSION_PRESS_KEY_MODIFIERS,
+  ...EXTENSION_PRESS_KEY_MODIFIERS.flatMap((modifier) =>
+    EXTENSION_PRESS_KEY_BASES.map((key) => `${modifier}+${key}`)
   ),
-  ...EXTENSION_MODIFIER_KEYS.flatMap((first, firstIndex) =>
-    EXTENSION_MODIFIER_KEYS.slice(firstIndex + 1).flatMap((second) =>
-      EXTENSION_BASE_KEYS.map((key) => `${first}+${second}+${key}`)
+  ...EXTENSION_PRESS_KEY_MODIFIERS.flatMap((first, firstIndex) =>
+    EXTENSION_PRESS_KEY_MODIFIERS.slice(firstIndex + 1).flatMap((second) =>
+      EXTENSION_PRESS_KEY_BASES.map((key) => `${first}+${second}+${key}`)
     )
   )
 ];
@@ -410,7 +511,10 @@ const EXTENSION_ACTION_PARAM_ENUMS: Record<string, Record<string, string[]>> = {
     decision: ["allow", "always_allow", "deny"]
   },
   waitForLoadState: {
-    state: ["load", "domcontentloaded", "networkidle"]
+    state: ["commit", "load", "domcontentloaded", "networkidle"]
+  },
+  waitForUrl: {
+    waitUntil: ["commit", "load", "domcontentloaded", "networkidle"]
   },
   waitForSelector: {
     state: ["attached", "visible", "hidden", "detached"]

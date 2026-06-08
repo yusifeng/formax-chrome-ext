@@ -31,6 +31,7 @@ export type BrowserAction =
   | "locatorQuery"
   | "locatorAction"
   | "locatorWait"
+  | "resolveFrame"
   | "click"
   | "drag"
   | "moveMouse"
@@ -40,7 +41,12 @@ export type BrowserAction =
   | "pressKey"
   | "handleDialog"
   | "screenshot"
+  | "waitForFileChooser"
+  | "setFileChooserFiles"
   | "uploadFile"
+  | "downloadMedia"
+  | "attachTarget"
+  | "detachTarget"
   | "cdp"
   | "listTabs"
   | "getTab"
@@ -53,12 +59,13 @@ export type BrowserAction =
   | "endTurn"
   | "stopSession";
 
-export type BrowserKey =
+export type BrowserNamedKey =
   | "Enter"
   | "Tab"
   | "Escape"
   | "Backspace"
   | "Delete"
+  | "Insert"
   | "Space"
   | "Home"
   | "End"
@@ -68,15 +75,26 @@ export type BrowserKey =
   | "ArrowDown"
   | "ArrowLeft"
   | "ArrowRight"
+  | "Pause"
+  | "CapsLock"
+  | "NumLock"
+  | "ScrollLock"
+  | "ContextMenu"
+  | `F${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12}`;
+export type BrowserModifierKey =
   | "Alt"
   | "Control"
   | "ControlOrMeta"
   | "Meta"
-  | "Shift"
-  | `${"Alt" | "Control" | "ControlOrMeta" | "Meta" | "Shift"}+${string}`;
+  | "Shift";
+export type BrowserKey =
+  | BrowserNamedKey
+  | BrowserModifierKey
+  | `${BrowserModifierKey}+${string}`
+  | (string & {});
 
 export type BrowserMouseButton = "left" | "middle" | "right" | "back" | "forward";
-export type BrowserPointerModifier = "Alt" | "Control" | "ControlOrMeta" | "Meta" | "Shift";
+export type BrowserPointerModifier = BrowserModifierKey;
 
 export type NativeRequest = {
   type: "request";
@@ -144,13 +162,16 @@ export type BrowserTabLease = {
 export type BrowserElement = {
   ref: string;
   nodeId?: string;
+  stableNodeId?: string;
   role: string;
   label: string;
   visibleText?: string;
   sensitive: boolean;
   tagName: string;
-  shadowRoot?: "open" | null;
+  shadowRoot?: "open" | "closed_unsupported" | null;
   shadowHostSelector?: string | null;
+  shadowUnsupportedReason?: string | null;
+  frameSelectors?: string[];
   selectorCandidates?: BrowserSelectorCandidate[];
   href?: string | null;
   placeholder?: string | null;
@@ -192,8 +213,10 @@ export type BrowserElementInfo = {
   visibleText?: string;
   tagName?: string | null;
   sensitive?: boolean;
-  shadowRoot?: "open" | null;
+  shadowRoot?: "open" | "closed_unsupported" | null;
   shadowHostSelector?: string | null;
+  shadowUnsupportedReason?: string | null;
+  frameSelectors?: string[];
   selectorCandidates?: BrowserSelectorCandidate[];
   rect?: BrowserRect | null;
   center?: {
@@ -254,6 +277,9 @@ export type BrowserObservation = {
   truncation?: {
     text: boolean;
     textMaxLength: number;
+    textSource?: "body" | "summary";
+    textSummarized?: boolean;
+    bodyTextLength?: number;
     elements: boolean;
     elementCount: number;
     elementMaxCount: number;
@@ -261,6 +287,7 @@ export type BrowserObservation = {
   text: string;
   elements: BrowserElement[];
   accessibilityTree?: BrowserAccessibilityNode[];
+  frameTree?: BrowserFrameTree;
   domSnapshot?: unknown;
   domSnapshotSummary?: BrowserDomSnapshotSummary;
   semanticTree?: BrowserSemanticTree;
@@ -290,6 +317,24 @@ export type BrowserSemanticNode = {
   value?: string | number | boolean;
   description?: string | number | boolean;
   backendDOMNodeId?: number;
+};
+
+export type BrowserFrameTree = {
+  source: "cdp";
+  frameCount: number;
+  root: BrowserFrameTreeNode | null;
+  error?: string;
+};
+
+export type BrowserFrameTreeNode = {
+  id: string | null;
+  parentId: string | null;
+  name: string | null;
+  url: string | null;
+  securityOrigin: string | null;
+  mimeType: string | null;
+  unreachableUrl?: string | null;
+  childFrames: BrowserFrameTreeNode[];
 };
 
 export type BrowserDomSnapshotSummary = {
@@ -344,6 +389,7 @@ export type HealthResult = {
   attachedTabs: number[];
   supportedActions?: BrowserAction[];
   backendRevision?: number;
+  profile?: BrowserProfileMetadata;
   permissions?: {
     required: string[];
     granted: boolean;
@@ -358,6 +404,25 @@ export type HealthResult = {
     allowed: boolean | null;
     error?: string;
   };
+  nativeManifest?: {
+    path: string | null;
+    expectedOrigin: string | null;
+    hostName?: string | null;
+    extensionId?: string | null;
+    extensionOrigin: string;
+    originMatchesExtensionId: boolean;
+  };
+};
+
+export type BrowserProfileMetadata = {
+  activeProfileName: string | null;
+  activeProfileId: string | null;
+  activeProfileSource: "native_diagnostics" | "unavailable";
+  lastUsedProfileHint: string | null;
+  lastUsedProfileSource: "native_diagnostics" | "unavailable";
+  incognito: boolean;
+  extensionInstanceId: string | null;
+  readsProfileFiles: false;
 };
 
 export type ReloadExtensionResult = {
@@ -367,6 +432,116 @@ export type ReloadExtensionResult = {
 
 export type BrowserEvent = NativeEvent & {
   sequence: number;
+};
+
+export type BrowserFileChooserSummary = {
+  fileChooserId?: string;
+  file_chooser_id?: string;
+  ref?: string | null;
+  selector?: string | null;
+  multiple: boolean;
+  isMultiple?: boolean;
+  is_multiple?: boolean;
+  accept?: string;
+  name?: string;
+  inputId?: string;
+};
+
+export type BrowserFileChooserEvent = BrowserEvent & {
+  name: "fileChooserOpened";
+  fileChooser: BrowserFileChooserSummary;
+};
+
+export type BrowserUserHandoffRequiredEvent = BrowserEvent & {
+  name: "userHandoffRequired";
+  action: string;
+  category:
+    | "captcha"
+    | "password_change_final_submission"
+    | "browser_security_interstitial"
+    | "paywall_bypass";
+  reason: string;
+  sessionId: string | null;
+  tabId: number;
+  target?: {
+    label?: string;
+    text?: string;
+    tagName?: string | null;
+  };
+};
+
+export type BrowserPermissionPromptDetectedEvent = BrowserEvent & {
+  name: "permissionPromptDetected";
+  action: string;
+  host: string | null;
+  confirmed: boolean;
+  reasons: string[];
+  sessionId: string | null;
+  tabId: number | null;
+  target?: {
+    label?: string;
+    text?: string;
+    tagName?: string | null;
+  };
+};
+
+export type BrowserHostApprovalRequiredEvent = BrowserEvent & {
+  name: "hostApprovalRequired";
+  action: string;
+  approvalId: string;
+  host: string;
+  message: string;
+  sessionId: string | null;
+  tabId: number | null;
+  suggestedDecisions: {
+    allowForSession: {
+      decision: "allow";
+      host: string;
+      sessionId: string;
+    } | null;
+    alwaysAllow: {
+      decision: "always_allow";
+      host: string;
+    };
+    deny: {
+      decision: "deny";
+      host: string;
+    };
+  };
+};
+
+export type BrowserActionConfirmationRequiredEvent = BrowserEvent & {
+  name: "browserActionConfirmationRequired";
+  action: string;
+  confirmationId: string;
+  host: string | null;
+  message: string;
+  reasons: string[];
+  sessionId: string | null;
+  tabId: number | null;
+  target?: {
+    label?: string;
+    text?: string;
+    tagName?: string | null;
+  };
+  requiredParams: {
+    confirmed: true;
+    confirmationId: string;
+  };
+};
+
+export type BrowserOriginApprovalRequiredEvent = BrowserEvent & {
+  name: "browserOriginApprovalRequired";
+  action: string;
+  approvalId: string;
+  host: string | null;
+  message: string;
+  reasons: string[];
+  sessionId: string | null;
+  tabId: number | null;
+  requiredParams: {
+    originApproved: true;
+  };
 };
 
 export type BrowserEventSnapshot = {
@@ -470,6 +645,8 @@ export type GetDiagnosticsResult = {
     expectedOrigin: string | null;
     hostName?: string | null;
     extensionId?: string | null;
+    extensionOrigin?: string;
+    originMatchesExtensionId?: boolean;
   };
   extension: {
     id: string;
@@ -704,7 +881,7 @@ export type GetTabResult = {
 export type WaitForLoadStateParams = {
   sessionId?: string;
   tabId?: number;
-  state?: "load" | "domcontentloaded" | "networkidle";
+  state?: "commit" | "load" | "domcontentloaded" | "networkidle";
   timeoutMs?: number;
   idleMs?: number;
 };
@@ -712,8 +889,14 @@ export type WaitForLoadStateParams = {
 export type WaitForLoadStateResult = {
   sessionId: string | null;
   tabId: number;
-  state: "load" | "domcontentloaded" | "networkidle";
-  reason: "already_satisfied" | "Page.loadEventFired" | "Page.domContentEventFired" | "networkidle" | "timeout";
+  state: "commit" | "load" | "domcontentloaded" | "networkidle";
+  reason:
+    | "already_satisfied"
+    | "Page.frameNavigated"
+    | "Page.loadEventFired"
+    | "Page.domContentEventFired"
+    | "networkidle"
+    | "timeout";
 };
 
 export type WaitForUrlParams = {
@@ -722,8 +905,10 @@ export type WaitForUrlParams = {
   url?: string;
   urlContains?: string;
   urlRegex?: string;
+  waitUntil?: "commit" | "load" | "domcontentloaded" | "networkidle";
   timeoutMs?: number;
   pollMs?: number;
+  idleMs?: number;
 };
 
 export type WaitForUrlResult = {
@@ -734,6 +919,8 @@ export type WaitForUrlResult = {
   elapsedMs: number;
   url?: string;
   title?: string;
+  waitUntil?: "commit" | "load" | "domcontentloaded" | "networkidle";
+  loadReason?: "url_matched" | "already_satisfied" | "Page.frameNavigated" | "Page.loadEventFired" | "Page.domContentEventFired" | "networkidle" | "timeout";
 };
 
 export type WaitForSelectorParams = {
@@ -831,6 +1018,8 @@ export type LocatorQueryResult = {
   sessionId: string | null;
   tabId: number;
   kind: LocatorQueryKind;
+  frameId?: string | null;
+  targetId?: string | null;
   value: unknown;
   count: number;
 };
@@ -870,10 +1059,42 @@ export type LocatorWaitResult = {
   sessionId: string | null;
   tabId: number;
   state: "attached" | "visible" | "hidden" | "detached";
+  frameId?: string | null;
+  targetId?: string | null;
   matched: boolean;
   timedOut: boolean;
   elapsedMs: number;
   count: number;
+};
+
+export type ResolveFrameParams = {
+  sessionId?: string;
+  tabId?: number;
+  frameSelectors: string[];
+  targetId?: string;
+  timeoutMs?: number;
+};
+
+export type ResolveFrameResult = {
+  sessionId: string | null;
+  tabId: number;
+  targetId?: string | null;
+  frameSelectors: string[];
+  matched: boolean;
+  accessible: boolean;
+  frameId: string | null;
+  frame: BrowserFrameTreeNode | null;
+  path: Array<{
+    selector: string;
+    index: number;
+    accessible: boolean;
+    id?: string | null;
+    name?: string | null;
+    title?: string | null;
+    src?: string | null;
+    url?: string | null;
+    frameId?: string | null;
+  }>;
 };
 
 export type ClickParams = {
@@ -953,6 +1174,8 @@ export type TypeTextParams = {
 export type EvaluateParams = {
   sessionId?: string;
   tabId?: number;
+  targetId?: string;
+  frameId?: string;
   script: string;
   awaitPromise?: boolean;
   timeoutMs?: number;
@@ -965,6 +1188,9 @@ export type EvaluateParams = {
 export type EvaluateResult = {
   sessionId: string | null;
   tabId: number;
+  targetId?: string | null;
+  frameId?: string | null;
+  executionContextId?: number | null;
   value: unknown;
 };
 
@@ -994,6 +1220,10 @@ export type ScreenshotParams = {
   format?: "png" | "jpeg";
   fullPage?: boolean;
   clip?: BrowserRect;
+  highlight?: boolean;
+  highlightClip?: BrowserRect;
+  highlightColor?: string;
+  highlightDurationMs?: number;
 };
 
 export type ScreenshotResult = {
@@ -1003,6 +1233,42 @@ export type ScreenshotResult = {
   fullPage?: boolean;
   clip?: (BrowserRect & { scale?: number }) | null;
   dataBase64: string;
+};
+
+export type WaitForFileChooserParams = {
+  sessionId?: string;
+  tabId?: number;
+  timeoutMs?: number;
+  pollMs?: number;
+  sinceSequence?: number;
+};
+
+export type WaitForFileChooserResult = {
+  sessionId: string | null;
+  tabId: number | null;
+  matched: boolean;
+  timedOut: boolean;
+  elapsedMs: number;
+  fileChooserId: string | null;
+  file_chooser_id: string | null;
+  isMultiple: boolean | null;
+  is_multiple: boolean | null;
+  fileChooser: BrowserFileChooserSummary | null;
+  event: BrowserFileChooserEvent | null;
+};
+
+export type SetFileChooserFilesParams = {
+  sessionId?: string;
+  tabId?: number;
+  fileChooserId?: string;
+  file_chooser_id?: string;
+  files?: string[];
+  filePath?: string;
+  filePaths?: string[];
+  timeoutMs?: number;
+  waitMs?: number;
+  confirmed?: boolean;
+  confirmationId?: string;
 };
 
 export type UploadFileParams = {
@@ -1016,6 +1282,42 @@ export type UploadFileParams = {
   waitMs?: number;
   confirmed?: boolean;
   confirmationId?: string;
+};
+
+export type DownloadMediaParams = {
+  sessionId?: string;
+  tabId?: number;
+  locator: LocatorPlan;
+  attribute?: "auto" | "src" | "href" | "poster" | "backgroundImage";
+  filename?: string;
+  conflictAction?: "uniquify" | "overwrite" | "prompt";
+  saveAs?: boolean;
+  waitForCompletion?: boolean;
+  timeoutMs?: number;
+  pollMs?: number;
+  fallbackFetch?: boolean;
+  fallbackMaxBytes?: number;
+  originApproved?: boolean;
+  confirmed?: boolean;
+  confirmationId?: string;
+};
+
+export type DownloadMediaResult = {
+  sessionId: string | null;
+  tabId: number;
+  media: {
+    url: string;
+    kind: string;
+    tagName: string;
+    attribute: string;
+    filename: string | null;
+    originalUrl?: string;
+    method?: "chrome_downloads" | "fetch_blob";
+  };
+  download: BrowserDownloadSummary | null;
+  matched?: boolean;
+  timedOut?: boolean;
+  elapsedMs?: number;
 };
 
 export type CdpParams = {
@@ -1039,6 +1341,23 @@ export type CdpResult = {
   result: unknown;
 };
 
+export type TargetAttachmentParams = {
+  sessionId?: string;
+  tabId?: number;
+  targetId: string;
+  originApproved?: boolean;
+  confirmed?: boolean;
+  confirmationId?: string;
+  reason?: string;
+};
+
+export type TargetAttachmentResult = {
+  attached: boolean;
+  sessionId: string | null;
+  tabId: number;
+  targetId: string;
+};
+
 export type DevLogLevel = "log" | "debug" | "info" | "warning" | "error";
 
 export type DevLogEntry = {
@@ -1050,6 +1369,8 @@ export type DevLogEntry = {
   source: "console" | "log" | "exception";
   level?: DevLogLevel | string;
   text?: string;
+  redacted?: boolean;
+  redactionReasons?: string[];
   url?: string;
   lineNumber?: number;
   columnNumber?: number;
@@ -1244,6 +1565,7 @@ export type BrowserActionParams =
   | LocatorQueryParams
   | LocatorActionParams
   | LocatorWaitParams
+  | ResolveFrameParams
   | ClickParams
   | DragParams
   | MoveMouseParams
@@ -1253,7 +1575,11 @@ export type BrowserActionParams =
   | PressKeyParams
   | HandleDialogParams
   | ScreenshotParams
+  | WaitForFileChooserParams
+  | SetFileChooserFilesParams
   | UploadFileParams
+  | DownloadMediaParams
+  | TargetAttachmentParams
   | CdpParams
   | GetDevLogsParams
   | GetCapabilitiesParams

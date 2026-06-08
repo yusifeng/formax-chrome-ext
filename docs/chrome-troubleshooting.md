@@ -106,9 +106,13 @@ Symptoms:
 Fix:
 
 1. Confirm the active Chrome window profile avatar/name.
-2. Open `chrome://extensions` in that same window.
-3. Install or enable Formax in that profile.
-4. Retry `browser.user.openTabs({ currentWindow: true })` before claiming a tab.
+2. Inspect `browser.health().profile`. `extensionInstanceId` identifies the
+   extension instance and `incognito` identifies the extension context, but
+   `activeProfileName` may be `null` because the extension does not read Chrome
+   profile files.
+3. Open `chrome://extensions` in that same window.
+4. Install or enable Formax in that profile.
+5. Retry `browser.user.openTabs({ currentWindow: true })` before claiming a tab.
 
 Do not guess tab IDs across profiles. Claim a tab only from descriptors returned
 by `browser.user.openTabs()`.

@@ -42,6 +42,7 @@ Locator crop:
 await tab.locator("main").screenshot({
   path: "/absolute/path/main.png",
   padding: 8,
+  highlight: true,
 });
 ```
 
@@ -52,11 +53,16 @@ await tab.dom_cua.screenshot({
   node_id,
   path: "/absolute/path/node.png",
   padding: 8,
+  highlight: true,
 });
 ```
 
 Element screenshots are SDK helpers. They derive a clip from the locator
 bounding box or latest visible DOM node box, then call the tab screenshot API.
+When `highlight: true` is set, the extension draws a best-effort content-script
+overlay around the original element box before capture. `highlightColor` and
+`highlightDurationMs` can tune the overlay. This works for both interactable
+locator targets and non-interactable DOM CUA nodes that have a current box.
 
 ## When To Screenshot
 

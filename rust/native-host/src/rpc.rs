@@ -53,6 +53,7 @@ const ALLOWED_ACTIONS: &[&str] = &[
     "locatorQuery",
     "locatorAction",
     "locatorWait",
+    "resolveFrame",
     "click",
     "drag",
     "moveMouse",
@@ -62,7 +63,12 @@ const ALLOWED_ACTIONS: &[&str] = &[
     "pressKey",
     "handleDialog",
     "screenshot",
+    "waitForFileChooser",
+    "setFileChooserFiles",
     "uploadFile",
+    "downloadMedia",
+    "attachTarget",
+    "detachTarget",
     "cdp",
     "listTabs",
     "getTab",
@@ -194,7 +200,10 @@ async fn handle_rpc_inner(
     validate_action_allowlist(&action)?;
 
     let mut params = req.params.unwrap_or(json!({}));
-    if action == "getDiagnostics" {
+    if !params.is_object() {
+        return Err(format!("{action}.params must be an object"));
+    }
+    if action == "health" || action == "getDiagnostics" {
         inject_native_diagnostics(&mut params, &state.native_diagnostics)?;
     }
     let timeout_ms = validate_timeout_ms(req.timeout_ms.unwrap_or(30000))?;
@@ -300,36 +309,53 @@ fn validate_action_params(
 
     validate_action_param_shape(action, params_object)?;
 
-    if action != "uploadFile" {
+    if action == "setFileChooserFiles" {
+        validate_file_chooser_id(params_object)?;
+    }
+
+    if action != "uploadFile" && action != "setFileChooserFiles" {
         return Ok(());
     }
 
-    let file_paths = upload_file_paths(params_object)?;
+    let file_paths = upload_file_paths(action, params_object)?;
 
     for file_path in file_paths {
-        validate_upload_file_path(&file_path, allowed_upload_roots)?;
+        validate_upload_file_path(action, &file_path, allowed_upload_roots)?;
     }
 
     Ok(())
 }
 
-fn upload_file_paths(params_object: &Map<String, Value>) -> Result<Vec<String>, String> {
-    let mut file_paths = Vec::new();
+fn validate_file_chooser_id(params_object: &Map<String, Value>) -> Result<(), String> {
+    let has_file_chooser_id = params_object
+        .get("fileChooserId")
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+        || params_object
+            .get("file_chooser_id")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty());
 
-    if let Some(file_path) = params_object.get("filePath") {
-        match file_path.as_str() {
-            Some(s) if !s.trim().is_empty() => file_paths.push(s.trim().to_string()),
-            _ => return Err("uploadFile.params.filePath must be a non-empty string".to_string()),
-        }
+    if has_file_chooser_id {
+        return Ok(());
     }
 
-    if let Some(file_path_values) = params_object.get("filePaths") {
+    Err("setFileChooserFiles.params requires fileChooserId or file_chooser_id".to_string())
+}
+
+fn upload_file_paths(
+    action: &str,
+    params_object: &Map<String, Value>,
+) -> Result<Vec<String>, String> {
+    let mut file_paths = Vec::new();
+
+    if let Some(file_path_values) = params_object.get("files") {
         let items = file_path_values
             .as_array()
-            .ok_or_else(|| "uploadFile.params.filePaths must be an array".to_string())?;
+            .ok_or_else(|| format!("{action}.params.files must be an array"))?;
 
         if items.is_empty() {
-            return Err("uploadFile.params.filePaths must not be empty".to_string());
+            return Err(format!("{action}.params.files must not be empty"));
         }
 
         for (index, item) in items.iter().enumerate() {
@@ -337,7 +363,39 @@ fn upload_file_paths(params_object: &Map<String, Value>) -> Result<Vec<String>, 
                 Some(s) if !s.trim().is_empty() => file_paths.push(s.trim().to_string()),
                 _ => {
                     return Err(format!(
-                        "uploadFile.params.filePaths[{index}] must be a non-empty string"
+                        "{action}.params.files[{index}] must be a non-empty string"
+                    ))
+                }
+            }
+        }
+    }
+
+    if let Some(file_path) = params_object.get("filePath") {
+        match file_path.as_str() {
+            Some(s) if !s.trim().is_empty() => file_paths.push(s.trim().to_string()),
+            _ => {
+                return Err(format!(
+                    "{action}.params.filePath must be a non-empty string"
+                ))
+            }
+        }
+    }
+
+    if let Some(file_path_values) = params_object.get("filePaths") {
+        let items = file_path_values
+            .as_array()
+            .ok_or_else(|| format!("{action}.params.filePaths must be an array"))?;
+
+        if items.is_empty() {
+            return Err(format!("{action}.params.filePaths must not be empty"));
+        }
+
+        for (index, item) in items.iter().enumerate() {
+            match item.as_str() {
+                Some(s) if !s.trim().is_empty() => file_paths.push(s.trim().to_string()),
+                _ => {
+                    return Err(format!(
+                        "{action}.params.filePaths[{index}] must be a non-empty string"
                     ))
                 }
             }
@@ -345,32 +403,35 @@ fn upload_file_paths(params_object: &Map<String, Value>) -> Result<Vec<String>, 
     }
 
     if file_paths.is_empty() {
-        return Err("uploadFile.params requires filePath or filePaths".to_string());
+        return Err(format!(
+            "{action}.params requires files, filePath, or filePaths"
+        ));
     }
 
     Ok(file_paths)
 }
 
 fn validate_upload_file_path(
+    action: &str,
     file_path: &str,
     allowed_upload_roots: &[PathBuf],
 ) -> Result<(), String> {
     if !Path::new(file_path).is_absolute() {
         return Err(format!(
-            "uploadFile path must be an absolute path: {file_path}"
+            "{action} path must be an absolute path: {file_path}"
         ));
     }
 
     let canonical_file_path = std::fs::canonicalize(file_path)
-        .map_err(|_| format!("uploadFile path does not exist: {file_path}"))?;
+        .map_err(|_| format!("{action} path does not exist: {file_path}"))?;
     let metadata = std::fs::metadata(&canonical_file_path)
-        .map_err(|_| format!("uploadFile path does not exist: {file_path}"))?;
+        .map_err(|_| format!("{action} path does not exist: {file_path}"))?;
 
     if !metadata.is_file() {
-        return Err(format!("uploadFile path is not a file: {file_path}"));
+        return Err(format!("{action} path is not a file: {file_path}"));
     }
 
-    validate_upload_root(&canonical_file_path, allowed_upload_roots)
+    validate_upload_root(action, &canonical_file_path, allowed_upload_roots)
 }
 
 #[derive(Clone, Copy)]
@@ -389,7 +450,12 @@ type ParamSpec = (&'static str, ParamKind, bool);
 
 fn validate_action_param_shape(action: &str, params: &Map<String, Value>) -> Result<(), String> {
     match action {
-        "health" | "reloadExtension" => validate_param_specs(action, params, &[]),
+        "health" => validate_param_specs(
+            action,
+            params,
+            &[("nativeDiagnostics", ParamKind::Object, false)],
+        ),
+        "reloadExtension" => validate_param_specs(action, params, &[]),
         "getEvents" => validate_param_specs(
             action,
             params,
@@ -608,21 +674,36 @@ fn validate_action_param_shape(action: &str, params: &Map<String, Value>) -> Res
                     ("idleMs", ParamKind::Number, false),
                 ],
             )?;
-            validate_string_enum(action, params, "state", &["load", "domcontentloaded", "networkidle"])
+            validate_string_enum(
+                action,
+                params,
+                "state",
+                &["commit", "load", "domcontentloaded", "networkidle"],
+            )
         }
-        "waitForUrl" => validate_param_specs(
-            action,
-            params,
-            &[
-                ("sessionId", ParamKind::String, false),
-                ("tabId", ParamKind::Number, false),
-                ("url", ParamKind::String, false),
-                ("urlContains", ParamKind::String, false),
-                ("urlRegex", ParamKind::String, false),
-                ("timeoutMs", ParamKind::Number, false),
-                ("pollMs", ParamKind::Number, false),
-            ],
-        ),
+        "waitForUrl" => {
+            validate_param_specs(
+                action,
+                params,
+                &[
+                    ("sessionId", ParamKind::String, false),
+                    ("tabId", ParamKind::Number, false),
+                    ("url", ParamKind::String, false),
+                    ("urlContains", ParamKind::String, false),
+                    ("urlRegex", ParamKind::String, false),
+                    ("waitUntil", ParamKind::String, false),
+                    ("timeoutMs", ParamKind::Number, false),
+                    ("pollMs", ParamKind::Number, false),
+                    ("idleMs", ParamKind::Number, false),
+                ],
+            )?;
+            validate_string_enum(
+                action,
+                params,
+                "waitUntil",
+                &["commit", "load", "domcontentloaded", "networkidle"],
+            )
+        }
         "waitForSelector" => {
             validate_param_specs(
                 action,
@@ -765,6 +846,17 @@ fn validate_action_param_shape(action: &str, params: &Map<String, Value>) -> Res
                 &["attached", "visible", "hidden", "detached"],
             )
         }
+        "resolveFrame" => validate_param_specs(
+            action,
+            params,
+            &[
+                ("sessionId", ParamKind::String, false),
+                ("tabId", ParamKind::Number, false),
+                ("frameSelectors", ParamKind::StringArray, true),
+                ("targetId", ParamKind::String, false),
+                ("timeoutMs", ParamKind::Number, false),
+            ],
+        ),
         "click" => {
             validate_param_specs(
                 action,
@@ -871,11 +963,14 @@ fn validate_action_param_shape(action: &str, params: &Map<String, Value>) -> Res
                 &[
                     ("sessionId", ParamKind::String, false),
                     ("tabId", ParamKind::Number, false),
+                    ("targetId", ParamKind::String, false),
+                    ("frameId", ParamKind::String, false),
                     ("script", ParamKind::String, true),
                     ("awaitPromise", ParamKind::Boolean, false),
                     ("timeoutMs", ParamKind::Number, false),
                     ("mode", ParamKind::String, false),
                     ("confirmed", ParamKind::Boolean, false),
+                    ("confirmationId", ParamKind::String, false),
                     ("reason", ParamKind::String, false),
                 ],
             )?;
@@ -914,10 +1009,42 @@ fn validate_action_param_shape(action: &str, params: &Map<String, Value>) -> Res
                     ("format", ParamKind::String, false),
                     ("fullPage", ParamKind::Boolean, false),
                     ("clip", ParamKind::Object, false),
+                    ("highlight", ParamKind::Boolean, false),
+                    ("highlightClip", ParamKind::Object, false),
+                    ("highlightColor", ParamKind::String, false),
+                    ("highlightDurationMs", ParamKind::Number, false),
                 ],
             )?;
             validate_string_enum(action, params, "format", &["png", "jpeg"])
         }
+        "waitForFileChooser" => validate_param_specs(
+            action,
+            params,
+            &[
+                ("sessionId", ParamKind::String, false),
+                ("tabId", ParamKind::Number, false),
+                ("timeoutMs", ParamKind::Number, false),
+                ("pollMs", ParamKind::Number, false),
+                ("sinceSequence", ParamKind::Number, false),
+            ],
+        ),
+        "setFileChooserFiles" => validate_param_specs(
+            action,
+            params,
+            &[
+                ("sessionId", ParamKind::String, false),
+                ("tabId", ParamKind::Number, false),
+                ("fileChooserId", ParamKind::String, false),
+                ("file_chooser_id", ParamKind::String, false),
+                ("files", ParamKind::StringArray, false),
+                ("filePath", ParamKind::String, false),
+                ("filePaths", ParamKind::StringArray, false),
+                ("timeoutMs", ParamKind::Number, false),
+                ("waitMs", ParamKind::Number, false),
+                ("confirmed", ParamKind::Boolean, false),
+                ("confirmationId", ParamKind::String, false),
+            ],
+        ),
         "uploadFile" => validate_param_specs(
             action,
             params,
@@ -934,17 +1061,77 @@ fn validate_action_param_shape(action: &str, params: &Map<String, Value>) -> Res
                 ("confirmationId", ParamKind::String, false),
             ],
         ),
+        "downloadMedia" => {
+            validate_param_specs(
+                action,
+                params,
+                &[
+                    ("sessionId", ParamKind::String, false),
+                    ("tabId", ParamKind::Number, false),
+                    ("locator", ParamKind::Locator, true),
+                    ("attribute", ParamKind::String, false),
+                    ("filename", ParamKind::String, false),
+                    ("conflictAction", ParamKind::String, false),
+                    ("saveAs", ParamKind::Boolean, false),
+                    ("waitForCompletion", ParamKind::Boolean, false),
+                    ("timeoutMs", ParamKind::Number, false),
+                    ("pollMs", ParamKind::Number, false),
+                    ("fallbackFetch", ParamKind::Boolean, false),
+                    ("fallbackMaxBytes", ParamKind::Number, false),
+                    ("originApproved", ParamKind::Boolean, false),
+                    ("confirmed", ParamKind::Boolean, false),
+                    ("confirmationId", ParamKind::String, false),
+                ],
+            )?;
+            validate_string_enum(
+                action,
+                params,
+                "attribute",
+                &["auto", "src", "href", "poster", "backgroundImage"],
+            )?;
+            validate_string_enum(
+                action,
+                params,
+                "conflictAction",
+                &["uniquify", "overwrite", "prompt"],
+            )
+        }
         "cdp" => validate_param_specs(
             action,
             params,
             &[
                 ("sessionId", ParamKind::String, false),
                 ("tabId", ParamKind::Number, false),
+                ("targetId", ParamKind::String, false),
                 ("method", ParamKind::String, true),
                 ("params", ParamKind::Object, false),
                 ("timeoutMs", ParamKind::Number, false),
                 ("originApproved", ParamKind::Boolean, false),
                 ("confirmed", ParamKind::Boolean, false),
+                ("confirmationId", ParamKind::String, false),
+                ("reason", ParamKind::String, false),
+            ],
+        ),
+        "attachTarget" => validate_param_specs(
+            action,
+            params,
+            &[
+                ("sessionId", ParamKind::String, false),
+                ("tabId", ParamKind::Number, false),
+                ("targetId", ParamKind::String, true),
+                ("originApproved", ParamKind::Boolean, false),
+                ("confirmed", ParamKind::Boolean, false),
+                ("confirmationId", ParamKind::String, false),
+                ("reason", ParamKind::String, false),
+            ],
+        ),
+        "detachTarget" => validate_param_specs(
+            action,
+            params,
+            &[
+                ("sessionId", ParamKind::String, false),
+                ("tabId", ParamKind::Number, false),
+                ("targetId", ParamKind::String, true),
                 ("reason", ParamKind::String, false),
             ],
         ),
@@ -1332,25 +1519,7 @@ fn validate_press_key_param(params: &Map<String, Value>) -> Result<(), String> {
 }
 
 fn is_supported_press_key(value: &str) -> bool {
-    const BASE_KEYS: &[&str] = &[
-        "Enter",
-        "Tab",
-        "Escape",
-        "Backspace",
-        "Delete",
-        "Space",
-        "Home",
-        "End",
-        "PageUp",
-        "PageDown",
-        "ArrowUp",
-        "ArrowDown",
-        "ArrowLeft",
-        "ArrowRight",
-    ];
-    const MODIFIERS: &[&str] = &["Alt", "Control", "ControlOrMeta", "Meta", "Shift"];
-
-    if BASE_KEYS.contains(&value) || MODIFIERS.contains(&value) {
+    if is_supported_base_press_key(value) || is_supported_press_modifier(value) {
         return true;
     }
 
@@ -1364,18 +1533,108 @@ fn is_supported_press_key(value: &str) -> bool {
         return false;
     };
 
-    if !BASE_KEYS.contains(key) {
+    if !is_supported_base_press_key(key) {
         return false;
     }
 
     let modifiers = &parts[..parts.len() - 1];
-    modifiers
+    if !modifiers
         .iter()
-        .all(|modifier| MODIFIERS.contains(modifier))
-        && modifiers.windows(2).all(|pair| pair[0] != pair[1])
+        .all(|modifier| is_supported_press_modifier(modifier))
+    {
+        return false;
+    }
+
+    let canonical_modifiers: Vec<String> = modifiers
+        .iter()
+        .map(|modifier| canonical_press_modifier(modifier).to_string())
+        .collect();
+
+    canonical_modifiers
+        .windows(2)
+        .all(|pair| pair[0] != pair[1])
 }
 
-fn validate_upload_root(file_path: &Path, allowed_upload_roots: &[PathBuf]) -> Result<(), String> {
+fn is_supported_base_press_key(value: &str) -> bool {
+    const BASE_KEYS: &[&str] = &[
+        "Enter",
+        "Tab",
+        "Escape",
+        "Backspace",
+        "Delete",
+        "Insert",
+        "Space",
+        "Home",
+        "End",
+        "PageUp",
+        "PageDown",
+        "ArrowUp",
+        "ArrowDown",
+        "ArrowLeft",
+        "ArrowRight",
+        "Pause",
+        "CapsLock",
+        "NumLock",
+        "ScrollLock",
+        "ContextMenu",
+    ];
+    const KEY_ALIASES: &[&str] = &[
+        "Esc", "Del", "Spacebar", "Left", "Right", "Up", "Down", "PgUp", "PgDown", "Return",
+        "Apps", "Menu",
+    ];
+
+    BASE_KEYS.contains(&value)
+        || KEY_ALIASES.contains(&value)
+        || is_function_key(value)
+        || is_printable_press_key(value)
+}
+
+fn is_supported_press_modifier(value: &str) -> bool {
+    matches!(
+        value,
+        "Alt"
+            | "Control"
+            | "ControlOrMeta"
+            | "Meta"
+            | "Shift"
+            | "Ctrl"
+            | "Cmd"
+            | "Command"
+            | "Option"
+    )
+}
+
+fn canonical_press_modifier(value: &str) -> &str {
+    match value {
+        "Ctrl" => "Control",
+        "Cmd" | "Command" => "Meta",
+        "Option" => "Alt",
+        _ => value,
+    }
+}
+
+fn is_function_key(value: &str) -> bool {
+    let Some(number) = value.strip_prefix('F') else {
+        return false;
+    };
+
+    matches!(number.parse::<u8>(), Ok(1..=12))
+}
+
+fn is_printable_press_key(value: &str) -> bool {
+    if value.chars().count() != 1 {
+        return false;
+    }
+
+    let ch = value.chars().next().unwrap_or_default();
+    ch.is_ascii_alphanumeric() || "`-=[]\\;',./".contains(ch)
+}
+
+fn validate_upload_root(
+    action: &str,
+    file_path: &Path,
+    allowed_upload_roots: &[PathBuf],
+) -> Result<(), String> {
     if allowed_upload_roots.is_empty() {
         return Ok(());
     }
@@ -1393,7 +1652,7 @@ fn validate_upload_root(file_path: &Path, allowed_upload_roots: &[PathBuf]) -> R
     }
 
     Err(format!(
-        "uploadFile path is outside allowed upload roots: {}",
+        "{action} path is outside allowed upload roots: {}",
         file_path.display()
     ))
 }
@@ -1467,7 +1726,7 @@ fn error_code_for_message(message: &str) -> String {
         return "invalid_timeout".to_string();
     }
 
-    if message.starts_with("uploadFile") {
+    if message.starts_with("uploadFile") || message.starts_with("setFileChooserFiles") {
         return "invalid_upload_file".to_string();
     }
 
@@ -1795,7 +2054,17 @@ mod tests {
             let frame = rx.recv().await.unwrap();
             assert_eq!(frame["type"], "request");
             assert_eq!(frame["action"], "health");
-            assert_eq!(frame["params"], json!({}));
+            assert_eq!(
+                frame["params"],
+                json!({
+                    "nativeDiagnostics": {
+                        "manifestPath": "/tmp/com.formax.browserhost.json",
+                        "expectedOrigin": "chrome-extension://ext-123/",
+                        "hostName": "com.formax.browserhost",
+                        "extensionId": "ext-123"
+                    }
+                })
+            );
 
             // Resolve the pending request
             let id = frame["id"].as_str().unwrap().to_string();
@@ -1857,6 +2126,46 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["ok"], true);
         assert_eq!(body["result"], json!({"diagnostics": true}));
+    }
+
+    #[tokio::test]
+    async fn test_health_injects_native_manifest_metadata() {
+        let (state, mut rx) = test_state();
+        let pending = state.pending.clone();
+
+        tokio::spawn(async move {
+            let frame = rx.recv().await.unwrap();
+            assert_eq!(frame["type"], "request");
+            assert_eq!(frame["action"], "health");
+            assert_eq!(
+                frame["params"]["nativeDiagnostics"],
+                json!({
+                    "manifestPath": "/tmp/com.formax.browserhost.json",
+                    "expectedOrigin": "chrome-extension://ext-123/",
+                    "hostName": "com.formax.browserhost",
+                    "extensionId": "ext-123"
+                })
+            );
+
+            let id = frame["id"].as_str().unwrap().to_string();
+            let mut lock = pending.lock().await;
+            if let Some(tx) = lock.remove(&id) {
+                let _ = tx.send(CallResult::Success(json!({"ok": true})));
+            }
+        });
+
+        let (status, body) = call_rpc(
+            state.clone(),
+            "POST",
+            "/rpc",
+            json!({"action": "health", "params": {}}),
+            None,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["result"], json!({"ok": true}));
     }
 
     // --- Test: Extension error response ---
@@ -1928,7 +2237,7 @@ mod tests {
         assert!(body["error"]
             .as_str()
             .unwrap()
-            .contains("requires filePath or filePaths"));
+            .contains("requires files, filePath, or filePaths"));
         assert_eq!(body["errorCode"], "invalid_upload_file");
     }
 
@@ -2033,6 +2342,9 @@ mod tests {
             &[]
         )
         .is_ok());
+        assert!(validate_action_params("pressKey", &json!({"key": "Ctrl+A"}), &[]).is_ok());
+        assert!(validate_action_params("pressKey", &json!({"key": "F5"}), &[]).is_ok());
+        assert!(validate_action_params("pressKey", &json!({"key": "Esc"}), &[]).is_ok());
         assert!(
             validate_action_params("click", &json!({"x": 10, "y": 20, "button": "back"}), &[])
                 .is_ok()
@@ -2073,7 +2385,51 @@ mod tests {
     }
 
     #[test]
-    fn test_wait_for_load_state_accepts_networkidle() {
+    fn test_download_media_params_are_validated() {
+        assert!(validate_action_params(
+            "downloadMedia",
+            &json!({
+                "locator": {"kind": "css", "selector": "img.hero"},
+                "attribute": "src",
+                "conflictAction": "uniquify",
+                "fallbackFetch": true,
+                "fallbackMaxBytes": 1048576,
+                "originApproved": true
+            }),
+            &[]
+        )
+        .is_ok());
+        assert!(validate_action_params(
+            "downloadMedia",
+            &json!({
+                "attribute": "src",
+                "originApproved": true
+            }),
+            &[]
+        )
+        .is_err());
+        assert!(validate_action_params(
+            "downloadMedia",
+            &json!({
+                "locator": {"kind": "css", "selector": "img.hero"},
+                "attribute": "onclick"
+            }),
+            &[]
+        )
+        .is_err());
+        assert!(validate_action_params(
+            "downloadMedia",
+            &json!({
+                "locator": {"kind": "css", "selector": "img.hero"},
+                "conflictAction": "replace"
+            }),
+            &[]
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn test_wait_for_load_state_accepts_networkidle_and_commit() {
         assert!(validate_action_params(
             "waitForLoadState",
             &json!({
@@ -2088,6 +2444,29 @@ mod tests {
             "waitForLoadState",
             &json!({
                 "state": "commit"
+            }),
+            &[]
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn test_wait_for_url_accepts_wait_until_load_states() {
+        assert!(validate_action_params(
+            "waitForUrl",
+            &json!({
+                "urlContains": "/complete",
+                "waitUntil": "networkidle",
+                "idleMs": 200
+            }),
+            &[]
+        )
+        .is_ok());
+        assert!(validate_action_params(
+            "waitForUrl",
+            &json!({
+                "urlContains": "/complete",
+                "waitUntil": "paint"
             }),
             &[]
         )
@@ -2183,6 +2562,8 @@ mod tests {
         assert!(validate_action_params(
             "evaluate",
             &json!({
+                "targetId": "target-1",
+                "frameId": "frame-1",
                 "script": "document.title",
                 "mode": "read",
                 "reason": "inspect page title"
@@ -2195,9 +2576,48 @@ mod tests {
             &json!({
                 "method": "DOMSnapshot.captureSnapshot",
                 "params": {},
+                "targetId": "target-1",
                 "originApproved": true,
                 "confirmed": true,
+                "confirmationId": "confirm-1",
                 "reason": "diagnostic snapshot"
+            }),
+            &[]
+        )
+        .is_ok());
+        assert!(validate_action_params(
+            "attachTarget",
+            &json!({
+                "sessionId": "session-a",
+                "tabId": 101,
+                "targetId": "target-1",
+                "originApproved": true,
+                "confirmed": true,
+                "confirmationId": "confirm-1",
+                "reason": "target lifecycle"
+            }),
+            &[]
+        )
+        .is_ok());
+        assert!(validate_action_params(
+            "detachTarget",
+            &json!({
+                "sessionId": "session-a",
+                "tabId": 101,
+                "targetId": "target-1",
+                "reason": "target lifecycle cleanup"
+            }),
+            &[]
+        )
+        .is_ok());
+        assert!(validate_action_params(
+            "resolveFrame",
+            &json!({
+                "sessionId": "session-a",
+                "tabId": 101,
+                "frameSelectors": ["#outer-frame", "#inner-frame"],
+                "targetId": "target-1",
+                "timeoutMs": 10000
             }),
             &[]
         )
@@ -2287,6 +2707,84 @@ mod tests {
             "POST",
             "/rpc",
             json!({"action": "uploadFile", "params": {"filePaths": [first_abs, second_abs]}}),
+            None,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["ok"], true);
+    }
+
+    #[tokio::test]
+    async fn test_set_file_chooser_files_rejects_missing_id() {
+        let (state, _handle) = test_state();
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let file_path = tmp_dir.path().join("test.txt");
+        std::fs::write(&file_path, b"hello world").unwrap();
+
+        let (status, body) = call_rpc(
+            state.clone(),
+            "POST",
+            "/rpc",
+            json!({"action": "setFileChooserFiles", "params": {"files": [file_path.to_string_lossy()]}}),
+            None,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body["errorCode"], "invalid_upload_file");
+        assert!(body["error"]
+            .as_str()
+            .unwrap()
+            .contains("requires fileChooserId or file_chooser_id"));
+    }
+
+    #[tokio::test]
+    async fn test_set_file_chooser_files_rejects_relative_path() {
+        let (state, _handle) = test_state();
+
+        let (status, body) = call_rpc(
+            state.clone(),
+            "POST",
+            "/rpc",
+            json!({"action": "setFileChooserFiles", "params": {"file_chooser_id": "fc-test", "files": ["relative/path.txt"]}}),
+            None,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(body["error"]
+            .as_str()
+            .unwrap()
+            .contains("setFileChooserFiles path must be an absolute path"));
+        assert_eq!(body["errorCode"], "invalid_upload_file");
+    }
+
+    #[tokio::test]
+    async fn test_set_file_chooser_files_accepts_existing_absolute_files() {
+        let (state, mut rx) = test_state();
+        let pending = state.pending.clone();
+
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let file_path = tmp_dir.path().join("test.txt");
+        std::fs::write(&file_path, b"hello world").unwrap();
+
+        tokio::spawn(async move {
+            let frame = rx.recv().await.unwrap();
+            assert_eq!(frame["action"], "setFileChooserFiles");
+            assert_eq!(frame["params"]["file_chooser_id"], "fc-test");
+            let id = frame["id"].as_str().unwrap().to_string();
+            let mut lock = pending.lock().await;
+            if let Some(tx) = lock.remove(&id) {
+                let _ = tx.send(CallResult::Success(json!({"uploaded": true})));
+            }
+        });
+
+        let (status, body) = call_rpc(
+            state.clone(),
+            "POST",
+            "/rpc",
+            json!({"action": "setFileChooserFiles", "params": {"file_chooser_id": "fc-test", "files": [file_path.to_string_lossy()]}}),
             None,
         )
         .await;

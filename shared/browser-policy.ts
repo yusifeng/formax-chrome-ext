@@ -56,7 +56,9 @@ export type BrowserActionClassificationInput = {
   label?: string | null;
   text?: string | null;
   filePath?: string | null;
+  filename?: string | null;
   method?: string | null;
+  params?: unknown;
   script?: string | null;
   mode?: "read" | "write" | string;
   sensitive?: boolean;
@@ -77,6 +79,7 @@ const KEY_MAP: Record<string, NormalizedKey> = {
   Escape: { key: "Escape", code: "Escape", keyCode: 27 },
   Backspace: { key: "Backspace", code: "Backspace", keyCode: 8 },
   Delete: { key: "Delete", code: "Delete", keyCode: 46 },
+  Insert: { key: "Insert", code: "Insert", keyCode: 45 },
   Space: { key: " ", code: "Space", keyCode: 32 },
   Home: { key: "Home", code: "Home", keyCode: 36 },
   End: { key: "End", code: "End", keyCode: 35 },
@@ -86,16 +89,65 @@ const KEY_MAP: Record<string, NormalizedKey> = {
   ArrowDown: { key: "ArrowDown", code: "ArrowDown", keyCode: 40 },
   ArrowLeft: { key: "ArrowLeft", code: "ArrowLeft", keyCode: 37 },
   ArrowRight: { key: "ArrowRight", code: "ArrowRight", keyCode: 39 },
+  Pause: { key: "Pause", code: "Pause", keyCode: 19 },
+  CapsLock: { key: "CapsLock", code: "CapsLock", keyCode: 20 },
+  NumLock: { key: "NumLock", code: "NumLock", keyCode: 144 },
+  ScrollLock: { key: "ScrollLock", code: "ScrollLock", keyCode: 145 },
+  ContextMenu: { key: "ContextMenu", code: "ContextMenu", keyCode: 93 },
   Alt: { key: "Alt", code: "AltLeft", keyCode: 18 },
   Control: { key: "Control", code: "ControlLeft", keyCode: 17 },
   ControlOrMeta: { key: "Control", code: "ControlLeft", keyCode: 17 },
   Meta: { key: "Meta", code: "MetaLeft", keyCode: 91 },
   Shift: { key: "Shift", code: "ShiftLeft", keyCode: 16 }
 };
+const KEY_ALIASES: Record<string, string> = {
+  Esc: "Escape",
+  Del: "Delete",
+  Spacebar: "Space",
+  Left: "ArrowLeft",
+  Right: "ArrowRight",
+  Up: "ArrowUp",
+  Down: "ArrowDown",
+  Pageup: "PageUp",
+  Pagedown: "PageDown",
+  PgUp: "PageUp",
+  PgDown: "PageDown",
+  Cmd: "Meta",
+  Command: "Meta",
+  Option: "Alt",
+  Ctrl: "Control",
+  Return: "Enter",
+  Apps: "ContextMenu",
+  Menu: "ContextMenu"
+};
+const PRINTABLE_KEY_CODES: Record<string, { code: string; keyCode: number }> = {
+  "`": { code: "Backquote", keyCode: 192 },
+  "-": { code: "Minus", keyCode: 189 },
+  "=": { code: "Equal", keyCode: 187 },
+  "[": { code: "BracketLeft", keyCode: 219 },
+  "]": { code: "BracketRight", keyCode: 221 },
+  "\\": { code: "Backslash", keyCode: 220 },
+  ";": { code: "Semicolon", keyCode: 186 },
+  "'": { code: "Quote", keyCode: 222 },
+  ",": { code: "Comma", keyCode: 188 },
+  ".": { code: "Period", keyCode: 190 },
+  "/": { code: "Slash", keyCode: 191 }
+};
+
+for (let index = 1; index <= 12; index += 1) {
+  KEY_MAP[`F${index}`] = {
+    key: `F${index}`,
+    code: `F${index}`,
+    keyCode: 111 + index
+  };
+}
 
 const destructivePattern = /\b(delete|remove|destroy|cancel|close\s+account|deactivate|terminate|drop)\b/i;
 const sideEffectPattern = /\b(send|submit|post|publish|comment|reply|create|book|schedule|invite|save|update|confirm|pay|purchase|subscribe|unsubscribe)\b/i;
-const mutatingEvaluatePattern = /\b(click|submit|remove|setAttribute|removeAttribute|appendChild|insertBefore|replaceChild|dispatchEvent|localStorage|sessionStorage|indexedDB|cookie\s*=)\b|\.value\s*=|\.checked\s*=|\.textContent\s*=|\.innerHTML\s*=/i;
+const permissionGrantPattern = /\b(allow|enable|grant|authorize|request|share|use|start|turn\s+on|access)\b/i;
+const browserPermissionTargetPattern = /\b(camera|webcam|microphone|\bmic\b|location|geolocation|notification|notify|screen|display|clipboard|account\s+access|login\s+access|extension\s+install|install\s+extension)\b/i;
+const mutatingEvaluatePattern = /\b(click|submit|remove|setAttribute|removeAttribute|appendChild|insertBefore|replaceChild|dispatchEvent|deleteDatabase|localStorage\s*\.\s*(setItem|removeItem|clear)|sessionStorage\s*\.\s*(setItem|removeItem|clear)|document\s*\.\s*cookie\s*=|cookie\s*=)\b|\.value\s*=|\.checked\s*=|\.textContent\s*=|\.innerHTML\s*=/i;
+const sensitiveBrowserStatePattern = /\b(document\s*\.\s*cookie|cookieStore|localStorage|sessionStorage|indexedDB|chrome\s*\.\s*storage|Storage\.|Network\.get(All)?Cookies|password|passwd|pwd|credential|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|session[_-]?(id|token)?|csrf)\b/i;
 
 const secretPatterns: Array<[RegExp, string]> = [
   [/\b(token|access_token|refresh_token|secret)\s*=\s*([^\s&]+)/gi, "$1=[redacted]"],
@@ -238,6 +290,7 @@ export function classifyBrowserAction(
   const text = input.text ?? "";
   const reasons = new Set<string>();
   const script = input.script ?? "";
+  const rawCdpText = action === "rawCdp" ? `${input.method ?? ""} ${stringifyPolicyParams(input.params)}` : "";
   const readOnly =
     action === "evaluate" &&
     input.mode !== "write" &&
@@ -247,8 +300,8 @@ export function classifyBrowserAction(
     reasons.add("file_upload");
   }
 
-  if (action === "download") {
-    reasons.add("download");
+  if (action === "download" && looksLikeRunnableDownload(input.url, input.filename ?? input.filePath)) {
+    reasons.add("download_run_or_install");
   }
 
   if (action === "history") {
@@ -269,12 +322,17 @@ export function classifyBrowserAction(
     reasons.add("external_side_effect");
   }
 
-  if (action === "permission") {
+  if (action === "permission" || looksLikeBrowserPermissionPrompt(label, text)) {
     reasons.add("browser_permission");
   }
 
   if (action === "rawCdp") {
     reasons.add("raw_cdp");
+  }
+
+  if ((action === "evaluate" && sensitiveBrowserStatePattern.test(script)) ||
+      (action === "rawCdp" && sensitiveBrowserStatePattern.test(rawCdpText))) {
+    reasons.add("sensitive_browser_state");
   }
 
   if (action === "evaluate" && !readOnly) {
@@ -286,20 +344,72 @@ export function classifyBrowserAction(
     host: normalizePolicyHost(input.url),
     readOnly,
     requiresConfirmation: reasons.size > 0,
-    requiresOriginApproval: action === "rawCdp",
+    requiresOriginApproval: action === "rawCdp" || action === "download",
     reasons: Array.from(reasons)
   };
 }
 
+function looksLikeRunnableDownload(url?: string | null, filename?: string | null) {
+  const source = `${filename ?? ""} ${url ?? ""}`.toLowerCase();
+  return /\.(app|apk|bat|bin|cmd|com|deb|dmg|exe|msi|pkg|ps1|rpm|run|scr|sh)(?:[?#\s]|$)/i.test(source);
+}
+
+function looksLikeBrowserPermissionPrompt(label: string, text: string) {
+  const source = `${label} ${text}`.trim();
+  return permissionGrantPattern.test(source) && browserPermissionTargetPattern.test(source);
+}
+
+function stringifyPolicyParams(params: unknown) {
+  if (params == null) {
+    return "";
+  }
+
+  if (typeof params === "string") {
+    return params;
+  }
+
+  try {
+    return JSON.stringify(params).slice(0, 8000);
+  } catch {
+    return String(params);
+  }
+}
+
 export function normalizeKey(key: string): NormalizedKey {
   const baseKey = key.split("+").map((part) => part.trim()).filter(Boolean).at(-1) ?? key;
-  const normalized = KEY_MAP[baseKey as BrowserKey];
+  const normalized = KEY_MAP[canonicalKeyName(baseKey) as BrowserKey] ?? printableKey(baseKey);
 
   if (!normalized) {
     throw new Error(`Unsupported key: ${key}`);
   }
 
   return normalized;
+}
+
+function canonicalKeyName(key: string) {
+  return KEY_ALIASES[key] ?? key;
+}
+
+function printableKey(key: string): NormalizedKey | null {
+  if (/^[a-zA-Z]$/.test(key)) {
+    const upper = key.toUpperCase();
+    return {
+      key,
+      code: `Key${upper}`,
+      keyCode: upper.charCodeAt(0)
+    };
+  }
+
+  if (/^[0-9]$/.test(key)) {
+    return {
+      key,
+      code: `Digit${key}`,
+      keyCode: key.charCodeAt(0)
+    };
+  }
+
+  const mapped = PRINTABLE_KEY_CODES[key];
+  return mapped ? { key, ...mapped } : null;
 }
 
 export function redactPasswordValue(inputType: string, value: string): string {

@@ -5,6 +5,7 @@ const BROWSER_BASE_KEYS = [
     "Escape",
     "Backspace",
     "Delete",
+    "Insert",
     "Space",
     "Home",
     "End",
@@ -13,16 +14,53 @@ const BROWSER_BASE_KEYS = [
     "ArrowUp",
     "ArrowDown",
     "ArrowLeft",
-    "ArrowRight"
+    "ArrowRight",
+    "Pause",
+    "CapsLock",
+    "NumLock",
+    "ScrollLock",
+    "ContextMenu",
+    ...Array.from({ length: 12 }, (_value, index) => `F${index + 1}`),
+    ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ".split(""),
+    ..."abcdefghijklmnopqrstuvwxyz".split(""),
+    ..."0123456789".split(""),
+    "`",
+    "-",
+    "=",
+    "[",
+    "]",
+    "\\",
+    ";",
+    "'",
+    ",",
+    ".",
+    "/"
+];
+const BROWSER_KEY_ALIASES = [
+    "Esc",
+    "Del",
+    "Spacebar",
+    "Left",
+    "Right",
+    "Up",
+    "Down",
+    "PgUp",
+    "PgDown",
+    "Return",
+    "Apps",
+    "Menu"
 ];
 const BROWSER_MODIFIER_KEYS = ["Alt", "Control", "ControlOrMeta", "Meta", "Shift"];
+const BROWSER_MODIFIER_ALIASES = ["Ctrl", "Cmd", "Command", "Option"];
 const BROWSER_MOUSE_BUTTONS = ["left", "middle", "right", "back", "forward"];
 const BROWSER_POINTER_MODIFIERS = BROWSER_MODIFIER_KEYS;
+const BROWSER_PRESS_KEY_BASES = [...BROWSER_BASE_KEYS, ...BROWSER_KEY_ALIASES];
+const BROWSER_PRESS_KEY_MODIFIERS = [...BROWSER_MODIFIER_KEYS, ...BROWSER_MODIFIER_ALIASES];
 const BROWSER_SUPPORTED_KEYS = [
-    ...BROWSER_BASE_KEYS,
-    ...BROWSER_MODIFIER_KEYS,
-    ...BROWSER_MODIFIER_KEYS.flatMap((modifier) => BROWSER_BASE_KEYS.map((key) => `${modifier}+${key}`)),
-    ...BROWSER_MODIFIER_KEYS.flatMap((first, firstIndex) => BROWSER_MODIFIER_KEYS.slice(firstIndex + 1).flatMap((second) => BROWSER_BASE_KEYS.map((key) => `${first}+${second}+${key}`)))
+    ...BROWSER_PRESS_KEY_BASES,
+    ...BROWSER_PRESS_KEY_MODIFIERS,
+    ...BROWSER_PRESS_KEY_MODIFIERS.flatMap((modifier) => BROWSER_PRESS_KEY_BASES.map((key) => `${modifier}+${key}`)),
+    ...BROWSER_PRESS_KEY_MODIFIERS.flatMap((first, firstIndex) => BROWSER_PRESS_KEY_MODIFIERS.slice(firstIndex + 1).flatMap((second) => BROWSER_PRESS_KEY_BASES.map((key) => `${first}+${second}+${key}`)))
 ];
 export const browserToolSchemas = [
     {
@@ -30,7 +68,12 @@ export const browserToolSchemas = [
         description: "Check whether the browser extension and native host are connected.",
         parameters: {
             type: "object",
-            properties: {},
+            properties: {
+                nativeDiagnostics: {
+                    type: "object",
+                    additionalProperties: true
+                }
+            },
             additionalProperties: false
         }
     },
@@ -424,7 +467,7 @@ export const browserToolSchemas = [
                 tabId: { type: "number" },
                 state: {
                     type: "string",
-                    enum: ["load", "domcontentloaded", "networkidle"]
+                    enum: ["commit", "load", "domcontentloaded", "networkidle"]
                 },
                 timeoutMs: { type: "number" },
                 idleMs: { type: "number" }
@@ -443,8 +486,13 @@ export const browserToolSchemas = [
                 url: { type: "string" },
                 urlContains: { type: "string" },
                 urlRegex: { type: "string" },
+                waitUntil: {
+                    type: "string",
+                    enum: ["commit", "load", "domcontentloaded", "networkidle"]
+                },
                 timeoutMs: { type: "number" },
-                pollMs: { type: "number" }
+                pollMs: { type: "number" },
+                idleMs: { type: "number" }
             },
             additionalProperties: false
         }
@@ -670,6 +718,25 @@ export const browserToolSchemas = [
         }
     },
     {
+        name: "browser_resolve_frame",
+        description: "Resolve a frameLocator selector path to CDP frame metadata for scoped evaluation.",
+        parameters: {
+            type: "object",
+            properties: {
+                sessionId: { type: "string" },
+                tabId: { type: "number" },
+                frameSelectors: {
+                    type: "array",
+                    items: { type: "string" }
+                },
+                targetId: { type: "string" },
+                timeoutMs: { type: "number" }
+            },
+            required: ["frameSelectors"],
+            additionalProperties: false
+        }
+    },
+    {
         name: "browser_click",
         description: "Click a page target by observation ref, CSS selector, or viewport coordinates.",
         parameters: {
@@ -818,6 +885,8 @@ export const browserToolSchemas = [
             properties: {
                 sessionId: { type: "string" },
                 tabId: { type: "number" },
+                targetId: { type: "string" },
+                frameId: { type: "string" },
                 script: { type: "string" },
                 awaitPromise: { type: "boolean" },
                 timeoutMs: { type: "number" },
@@ -888,7 +957,63 @@ export const browserToolSchemas = [
                     },
                     required: ["x", "y", "width", "height"],
                     additionalProperties: false
+                },
+                highlight: { type: "boolean" },
+                highlightColor: { type: "string" },
+                highlightDurationMs: { type: "number" },
+                highlightClip: {
+                    type: "object",
+                    properties: {
+                        x: { type: "number" },
+                        y: { type: "number" },
+                        width: { type: "number" },
+                        height: { type: "number" }
+                    },
+                    required: ["x", "y", "width", "height"],
+                    additionalProperties: false
                 }
+            },
+            additionalProperties: false
+        }
+    },
+    {
+        name: "browser_wait_for_file_chooser",
+        description: "Wait for a controlled click to open an input[type=file] chooser and return its background-owned file chooser id.",
+        parameters: {
+            type: "object",
+            properties: {
+                sessionId: { type: "string" },
+                tabId: { type: "number" },
+                timeoutMs: { type: "number" },
+                pollMs: { type: "number" },
+                sinceSequence: { type: "number" }
+            },
+            additionalProperties: false
+        }
+    },
+    {
+        name: "browser_set_file_chooser_files",
+        description: "Set local files on a previously opened file chooser id.",
+        parameters: {
+            type: "object",
+            properties: {
+                sessionId: { type: "string" },
+                tabId: { type: "number" },
+                fileChooserId: { type: "string" },
+                file_chooser_id: { type: "string" },
+                files: {
+                    type: "array",
+                    items: { type: "string" }
+                },
+                filePath: { type: "string" },
+                filePaths: {
+                    type: "array",
+                    items: { type: "string" }
+                },
+                timeoutMs: { type: "number" },
+                waitMs: { type: "number" },
+                confirmed: { type: "boolean" },
+                confirmationId: { type: "string" }
             },
             additionalProperties: false
         }
@@ -940,6 +1065,61 @@ export const browserToolSchemas = [
         }
     },
     {
+        name: "browser_download_media",
+        description: "Download a media/page asset resolved from a locator after origin policy approval.",
+        parameters: {
+            type: "object",
+            properties: {
+                sessionId: { type: "string" },
+                tabId: { type: "number" },
+                locator: {
+                    type: "object",
+                    properties: {
+                        kind: { type: "string", enum: ["css", "text", "role", "label", "placeholder", "testId"] },
+                        selector: { type: "string" },
+                        text: { type: "string" },
+                        role: { type: "string" },
+                        name: { type: "string" },
+                        testId: { type: "string" },
+                        frameSelectors: { type: "array", items: { type: "string" } },
+                        and: { type: "object", additionalProperties: true },
+                        or: { type: "object", additionalProperties: true },
+                        has: { type: "object", additionalProperties: true },
+                        hasNot: { type: "object", additionalProperties: true },
+                        hasText: { type: "string" },
+                        hasNotText: { type: "string" },
+                        visible: { type: "boolean" },
+                        exact: { type: "boolean" },
+                        index: { type: "number" },
+                        strict: { type: "boolean" }
+                    },
+                    required: ["kind"],
+                    additionalProperties: false
+                },
+                attribute: {
+                    type: "string",
+                    enum: ["auto", "src", "href", "poster", "backgroundImage"]
+                },
+                filename: { type: "string" },
+                conflictAction: {
+                    type: "string",
+                    enum: ["uniquify", "overwrite", "prompt"]
+                },
+                saveAs: { type: "boolean" },
+                waitForCompletion: { type: "boolean" },
+                timeoutMs: { type: "number" },
+                pollMs: { type: "number" },
+                fallbackFetch: { type: "boolean" },
+                fallbackMaxBytes: { type: "number" },
+                originApproved: { type: "boolean" },
+                confirmed: { type: "boolean" },
+                confirmationId: { type: "string" }
+            },
+            required: ["locator"],
+            additionalProperties: false
+        }
+    },
+    {
         name: "browser_cdp",
         description: "Send a raw Chrome DevTools Protocol command to a controlled tab.",
         parameters: {
@@ -960,6 +1140,39 @@ export const browserToolSchemas = [
                 reason: { type: "string" }
             },
             required: ["method"],
+            additionalProperties: false
+        }
+    },
+    {
+        name: "browser_attach_target",
+        description: "Attach Chrome debugger control to a DevTools target under a controlled tab.",
+        parameters: {
+            type: "object",
+            properties: {
+                sessionId: { type: "string" },
+                tabId: { type: "number" },
+                targetId: { type: "string" },
+                originApproved: { type: "boolean" },
+                confirmed: { type: "boolean" },
+                confirmationId: { type: "string" },
+                reason: { type: "string" }
+            },
+            required: ["targetId"],
+            additionalProperties: false
+        }
+    },
+    {
+        name: "browser_detach_target",
+        description: "Detach Chrome debugger control from a previously attached DevTools target.",
+        parameters: {
+            type: "object",
+            properties: {
+                sessionId: { type: "string" },
+                tabId: { type: "number" },
+                targetId: { type: "string" },
+                reason: { type: "string" }
+            },
+            required: ["targetId"],
             additionalProperties: false
         }
     },
@@ -1129,8 +1342,24 @@ export function validateBrowserActionParams(action, params) {
     if (!schemaResult.ok) {
         return schemaResult;
     }
-    if (action === "uploadFile") {
-        return validateUploadFilePathParams(params ?? {});
+    if (action === "uploadFile" || action === "setFileChooserFiles") {
+        const uploadResult = validateUploadFilePathParams(params ?? {});
+        if (!uploadResult.ok || action !== "setFileChooserFiles") {
+            return uploadResult;
+        }
+        return validateFileChooserIdParams(params ?? {});
+    }
+    return { ok: true };
+}
+function validateFileChooserIdParams(params) {
+    if (!params || typeof params !== "object" || Array.isArray(params)) {
+        return invalid("$", "must be an object");
+    }
+    const source = params;
+    const hasFileChooserId = (typeof source.fileChooserId === "string" && source.fileChooserId.trim().length > 0) ||
+        (typeof source.file_chooser_id === "string" && source.file_chooser_id.trim().length > 0);
+    if (!hasFileChooserId) {
+        return invalid("$.fileChooserId", "or $.file_chooser_id is required");
     }
     return { ok: true };
 }
@@ -1140,10 +1369,12 @@ function validateUploadFilePathParams(params) {
     }
     const source = params;
     const hasFilePath = typeof source.filePath === "string" && source.filePath.trim().length > 0;
+    const hasFiles = Array.isArray(source.files) &&
+        source.files.some((item) => typeof item === "string" && item.trim().length > 0);
     const hasFilePaths = Array.isArray(source.filePaths) &&
         source.filePaths.some((item) => typeof item === "string" && item.trim().length > 0);
-    if (!hasFilePath && !hasFilePaths) {
-        return invalid("$.filePath", "or $.filePaths is required");
+    if (!hasFilePath && !hasFiles && !hasFilePaths) {
+        return invalid("$.files", "or $.filePath / $.filePaths is required");
     }
     return { ok: true };
 }

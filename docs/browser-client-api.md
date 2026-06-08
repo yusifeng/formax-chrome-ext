@@ -20,8 +20,10 @@ npm run docs:browser-api
 ```ts
 export type BrowserRuntimeAgent = {
   browsers: {
-    get(name: "extension"): Promise<BrowserClient>;
+    get(name: BrowserBackendId): Promise<BrowserClient>;
     list(): string[];
+    discover(): BrowserBackendDescriptor[];
+    closeUnused(args?: JsonObject): Promise<{ closed: string[]; kept: string[] }>;
   };
   documentation: {
     get(topic?: string): Promise<unknown>;
@@ -87,6 +89,7 @@ export type BrowserClient = {
   locatorQuery(args: JsonObject): Promise<unknown>;
   locatorAction(args: JsonObject): Promise<unknown>;
   locatorWait(args: JsonObject): Promise<unknown>;
+  resolveFrame(args: JsonObject): Promise<unknown>;
   click(targetOrArgs?: string | JsonObject, args?: JsonObject): Promise<unknown>;
   drag(args: JsonObject): Promise<unknown>;
   moveMouse(xOrArgs: number | JsonObject, y?: number, args?: JsonObject): Promise<unknown>;
@@ -97,7 +100,12 @@ export type BrowserClient = {
   pressKey(keyOrArgs: string | JsonObject, args?: JsonObject): Promise<unknown>;
   handleDialog(args?: JsonObject): Promise<unknown>;
   screenshot(args?: JsonObject): Promise<BrowserScreenshotResult>;
+  waitForFileChooser(args?: JsonObject): Promise<unknown>;
+  setFileChooserFiles(args: JsonObject): Promise<unknown>;
   uploadFile(args: JsonObject): Promise<unknown>;
+  downloadMedia(args: JsonObject): Promise<BrowserDownloadMediaResult>;
+  attachTarget(args: JsonObject): Promise<unknown>;
+  detachTarget(args: JsonObject): Promise<unknown>;
   cdp(methodOrArgs: string | JsonObject, params?: JsonObject, args?: JsonObject): Promise<unknown>;
   rawCdp(methodOrArgs: string | JsonObject, params?: JsonObject, args?: JsonObject): Promise<unknown>;
   getDevLogs(args?: JsonObject): Promise<unknown>;
@@ -341,6 +349,8 @@ export type TabHandle = {
   type(textOrArgs: string | JsonObject, maybeTextOrArgs?: string | JsonObject, args?: JsonObject): Promise<unknown>;
   pressKey(keyOrArgs: string | JsonObject, args?: JsonObject): Promise<unknown>;
   evaluate<T = unknown>(scriptOrArgs: string | JsonObject, args?: JsonObject): Promise<T>;
+  attachTarget(args: JsonObject): Promise<unknown>;
+  detachTarget(args: JsonObject): Promise<unknown>;
   cdp<T = unknown>(methodOrArgs: string | JsonObject, params?: JsonObject, args?: JsonObject): Promise<T>;
   rawCdp<T = unknown>(methodOrArgs: string | JsonObject, params?: JsonObject, args?: JsonObject): Promise<T>;
   getDevLogs(args?: JsonObject): Promise<unknown>;
@@ -382,6 +392,7 @@ export type TabPlaywrightFacade = {
   waitForUrl(matchOrArgs: string | RegExp | JsonObject, args?: JsonObject): Promise<unknown>;
   waitForTimeout(timeoutMs: number): Promise<void>;
   waitForEvent(event: string, args?: JsonObject): Promise<unknown>;
+  expectNavigation(action: () => unknown | Promise<unknown>, args?: JsonObject): Promise<unknown>;
   expectNavigation(args?: JsonObject): Promise<unknown>;
 };
 ```
@@ -444,11 +455,17 @@ if (target) await tab.dom_cua.click({ node_id: target.node_id });
 ```ts
 export type VisibleDomNode = {
   node_id: string;
+  ref?: string;
+  stableNodeId?: string;
   role: string;
   name: string;
   visibleText?: string;
   tag: string | null;
   sensitive: boolean;
+  shadowRoot?: "open" | "closed_unsupported" | null;
+  shadowHostSelector?: string | null;
+  shadowUnsupportedReason?: string | null;
+  frameSelectors?: string[];
   selectorCandidates?: unknown;
   center: {
     x: number;
@@ -556,6 +573,7 @@ export type LocatorHandle = {
   setChecked(checked?: boolean, args?: JsonObject): Promise<unknown>;
   selectOption(value: string | string[], args?: JsonObject): Promise<unknown>;
   setInputFiles(filePath: string | string[], args?: JsonObject): Promise<unknown>;
+  downloadMedia(args?: JsonObject): Promise<BrowserDownloadMediaResult>;
   toJSON(): JsonObject;
 };
 ```
@@ -581,6 +599,12 @@ export type FrameLocatorHandle = {
   getByPlaceholder(text: string, args?: JsonObject): LocatorHandle;
   getByTestId(testId: string, args?: JsonObject): LocatorHandle;
   frameLocator(selector: string): FrameLocatorHandle;
+  resolve(args?: JsonObject): Promise<unknown>;
+  evaluate<T = unknown>(
+    scriptOrFunction: string | ((arg?: unknown) => unknown),
+    argOrOptions?: unknown,
+    options?: JsonObject
+  ): Promise<T>;
   toJSON(): JsonObject;
 };
 ```

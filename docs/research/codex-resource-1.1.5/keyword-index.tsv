@@ -1,0 +1,101 @@
+file	line	keyword	text
+docs/research/codex-resource-1.1.5/background.pretty.js	1499	webmcp	var n = Te.create, b = st.create, di = ft.create, ui = rt.create, L = nt.create, li = it.create, hi = ot.create, fi = Se.create, mi = Ie.create, pi = ct.create, me = ie.create, vi = Y.create, gi = dt.create, k = oe.creat
+docs/research/codex-resource-1.1.5/background.pretty.js	1503	webmcp	var As = c({ browser_id: n(), tab_id: n(), tool_name: n(), input: me(), timeout_ms: b().int().positive().optional() }), Xi = c({ result: me() }), Rs = "webmcp_invoke_tool";
+docs/research/codex-resource-1.1.5/background.pretty.js	1513	file_chooser_id	}), Tc = c({ browser_id: n(), tab_id: n(), selector: n(), selections: k(Ns).min(1), timeout_ms: b().int().positive().optional() }), Sc = c({}), Ic = c({ browser_id: n(), tab_id: n(), selector: n(), checked: L(), force: L
+docs/research/codex-resource-1.1.5/background.pretty.js	1513	download_id	}), Tc = c({ browser_id: n(), tab_id: n(), selector: n(), selections: k(Ns).min(1), timeout_ms: b().int().positive().optional() }), Sc = c({}), Ic = c({ browser_id: n(), tab_id: n(), selector: n(), checked: L(), force: L
+docs/research/codex-resource-1.1.5/background.pretty.js	1513	dom_snapshot	}), Tc = c({ browser_id: n(), tab_id: n(), selector: n(), selections: k(Ns).min(1), timeout_ms: b().int().positive().optional() }), Sc = c({}), Ic = c({ browser_id: n(), tab_id: n(), selector: n(), checked: L(), force: L
+docs/research/codex-resource-1.1.5/background.pretty.js	1513	wait_until	}), Tc = c({ browser_id: n(), tab_id: n(), selector: n(), selections: k(Ns).min(1), timeout_ms: b().int().positive().optional() }), Sc = c({}), Ic = c({ browser_id: n(), tab_id: n(), selector: n(), checked: L(), force: L
+docs/research/codex-resource-1.1.5/background.pretty.js	1513	networkidle	}), Tc = c({ browser_id: n(), tab_id: n(), selector: n(), selections: k(Ns).min(1), timeout_ms: b().int().positive().optional() }), Sc = c({}), Ic = c({ browser_id: n(), tab_id: n(), selector: n(), checked: L(), force: L
+docs/research/codex-resource-1.1.5/background.pretty.js	1513	commit	}), Tc = c({ browser_id: n(), tab_id: n(), selector: n(), selections: k(Ns).min(1), timeout_ms: b().int().positive().optional() }), Sc = c({}), Ic = c({ browser_id: n(), tab_id: n(), selector: n(), checked: L(), force: L
+docs/research/codex-resource-1.1.5/background.pretty.js	1542	pageAssets	var nr = { id: "pageAssets", description: "List assets already observed in the current page state and bundle selected assets into a temporary local artifact." }, ir = class extends Xt {
+docs/research/codex-resource-1.1.5/background.pretty.js	1554	webmcp	}, or = ea({ capability: ir, info: nr }), sa = { id: "webmcp", description: "List and invoke page-defined WebMCP tools registered through navigator.modelContext in the active tab." }, cr = class extends Xt {
+docs/research/codex-resource-1.1.5/background.pretty.js	1563	webmcp	if (!s) throw new Error("tab.capabilities.webmcp.invokeTool requires a toolName");
+docs/research/codex-resource-1.1.5/background.pretty.js	1748	codex-favicon-badge	var Cr = "codex-favicon-badge", ga = { cursor: null, isVisible: false, sessionId: null, turnId: null };
+docs/research/codex-resource-1.1.5/background.pretty.js	1752	codex-favicon-badge	return decodeURIComponent(t.slice(19)).includes(`data-codex-favicon-badge="${Cr}"`);
+docs/research/codex-resource-1.1.5/background.pretty.js	1883	AGENT_CURSOR_STATE	const e = { type: "AGENT_CURSOR_STATE", state: this.readCursorOverlayState(t) };
+docs/research/codex-resource-1.1.5/background.pretty.js	2583	TAB_FAVICON_BADGE	storageKey = "TAB_FAVICON_BADGES";
+docs/research/codex-resource-1.1.5/background.pretty.js	2755	TAB_FAVICON_BADGE	const i = a == null || r == null ? { type: "TAB_FAVICON_BADGE", badge: null, faviconDataUrl: null } : { type: "TAB_FAVICON_BADGE", badge: a, faviconDataUrl: r };
+docs/research/codex-resource-1.1.5/background.pretty.js	3005	pageAssets	}, en = { id: "pageAssets", description: "List assets already observed in the current page state and bundle selected assets into a temporary local artifact." }, se = /* @__PURE__ */ new Set(), Ze = /* @__PURE__ */ new Se
+docs/research/codex-resource-1.1.5/background.pretty.js	3015	cursorArrivalWaitersByKey	cursorArrivalWaitersByKey = /* @__PURE__ */ new Map();
+docs/research/codex-resource-1.1.5/background.pretty.js	3016	downloadChangeListeners	downloadChangeListeners = /* @__PURE__ */ new Set();
+docs/research/codex-resource-1.1.5/background.pretty.js	3026	executeCdp	async executeCdp(t) {
+docs/research/codex-resource-1.1.5/background.pretty.js	3027	executeCdp	return await (await this.activateSession(t)).executeCdp(t);
+docs/research/codex-resource-1.1.5/background.pretty.js	3029	attach(	async attach(t) {
+docs/research/codex-resource-1.1.5/background.pretty.js	3030	attach(	await this.resolveSession(t).attach(this.requireTurnId(t), t);
+docs/research/codex-resource-1.1.5/background.pretty.js	3032	attachTarget	async attachTarget(t) {
+docs/research/codex-resource-1.1.5/background.pretty.js	3033	attachTarget	await this.resolveSession(t).attachTarget(this.requireTurnId(t), t);
+docs/research/codex-resource-1.1.5/background.pretty.js	3035	detach(	async detach(t) {
+docs/research/codex-resource-1.1.5/background.pretty.js	3036	detach(	await this.resolveSession(t).detach(this.requireTurnId(t), t);
+docs/research/codex-resource-1.1.5/background.pretty.js	3041	getTabs	async getTabs(t) {
+docs/research/codex-resource-1.1.5/background.pretty.js	3042	getTabs	return await (await this.activateSession(t)).getTabs();
+docs/research/codex-resource-1.1.5/background.pretty.js	3044	getUserTabs	async getUserTabs(t) {
+docs/research/codex-resource-1.1.5/background.pretty.js	3047	getUserHistory	async getUserHistory(t) {
+docs/research/codex-resource-1.1.5/background.pretty.js	3050	claimUserTab	async claimUserTab(t) {
+docs/research/codex-resource-1.1.5/background.pretty.js	3051	claimUserTab	return await this.resolveSession(t).claimUserTab(this.requireTurnId(t), t.tabId);
+docs/research/codex-resource-1.1.5/background.pretty.js	3053	createTab	async createTab(t) {
+docs/research/codex-resource-1.1.5/background.pretty.js	3054	createTab	return await this.resolveSession(t).createTab(this.requireTurnId(t));
+docs/research/codex-resource-1.1.5/background.pretty.js	3056	finalizeTabs	async finalizeTabs(t) {
+docs/research/codex-resource-1.1.5/background.pretty.js	3058	finalizeTabs	if (!Array.isArray(t.keep)) throw new Error("finalizeTabs requires a keep array");
+docs/research/codex-resource-1.1.5/background.pretty.js	3059	finalizeTabs	await e.finalizeTabs(a, t.keep);
+docs/research/codex-resource-1.1.5/background.pretty.js	3061	nameSession	async nameSession(t) {
+docs/research/codex-resource-1.1.5/background.pretty.js	3062	nameSession	await this.resolveSession(t).nameSession(this.requireTurnId(t), t.name);
+docs/research/codex-resource-1.1.5/background.pretty.js	3083	cursorArrivalWaitersByKey	Number.isInteger(t) && this.cursorArrivalWaitersByKey.get(xa(e, a, t))?.();
+docs/research/codex-resource-1.1.5/background.pretty.js	3097	downloadChangeListeners	return this.downloadChangeListeners.add(t), () => {
+docs/research/codex-resource-1.1.5/background.pretty.js	3098	downloadChangeListeners	this.downloadChangeListeners.delete(t);
+docs/research/codex-resource-1.1.5/background.pretty.js	3101	handleDownloadCreated	handleDownloadCreated(t) {
+docs/research/codex-resource-1.1.5/background.pretty.js	3104	handleDownloadChanged	handleDownloadChanged(t) {
+docs/research/codex-resource-1.1.5/background.pretty.js	3140	cursorArrivalWaitersByKey	r != null && (clearTimeout(r), r = null), this.cursorArrivalWaitersByKey.delete(s), i?.();
+docs/research/codex-resource-1.1.5/background.pretty.js	3143	cursorArrivalWaitersByKey	i = d, r = setTimeout(o, tn), this.cursorArrivalWaitersByKey.set(s, o);
+docs/research/codex-resource-1.1.5/background.pretty.js	3147	downloadChangeListeners	for (const e of this.downloadChangeListeners) e(t);
+docs/research/codex-resource-1.1.5/background.pretty.js	3167	executeCdp	async executeCdp(t) {
+docs/research/codex-resource-1.1.5/background.pretty.js	3176	attach(	async attach(t, e) {
+docs/research/codex-resource-1.1.5/background.pretty.js	3181	attachTarget	async attachTarget(t, e) {
+docs/research/codex-resource-1.1.5/background.pretty.js	3186	detach(	async detach(t, e) {
+docs/research/codex-resource-1.1.5/background.pretty.js	3196	getTabs	async getTabs() {
+docs/research/codex-resource-1.1.5/background.pretty.js	3199	createTab	async createTab(t) {
+docs/research/codex-resource-1.1.5/background.pretty.js	3205	claimUserTab	async claimUserTab(t, e) {
+docs/research/codex-resource-1.1.5/background.pretty.js	3214	finalizeTabs	async finalizeTabs(t, e) {
+docs/research/codex-resource-1.1.5/background.pretty.js	3243	nameSession	async nameSession(t, e) {
+docs/research/codex-resource-1.1.5/background.pretty.js	3314	attach(	await chrome.debugger.attach({ tabId: t }, "1.3");
+docs/research/codex-resource-1.1.5/background.pretty.js	3314	chrome.debugger.attach	await chrome.debugger.attach({ tabId: t }, "1.3");
+docs/research/codex-resource-1.1.5/background.pretty.js	3326	attach(	await chrome.debugger.attach({ targetId: e }, "1.3");
+docs/research/codex-resource-1.1.5/background.pretty.js	3326	chrome.debugger.attach	await chrome.debugger.attach({ targetId: e }, "1.3");
+docs/research/codex-resource-1.1.5/background.pretty.js	3346	detach(	await chrome.debugger.detach({ tabId: t });
+docs/research/codex-resource-1.1.5/background.pretty.js	3346	chrome.debugger.detach	await chrome.debugger.detach({ tabId: t });
+docs/research/codex-resource-1.1.5/background.pretty.js	3355	detach(	await chrome.debugger.detach({ targetId: t });
+docs/research/codex-resource-1.1.5/background.pretty.js	3355	chrome.debugger.detach	await chrome.debugger.detach({ targetId: t });
+docs/research/codex-resource-1.1.5/background.pretty.js	3365	detach(	await chrome.debugger.detach({ tabId: t });
+docs/research/codex-resource-1.1.5/background.pretty.js	3365	chrome.debugger.detach	await chrome.debugger.detach({ tabId: t });
+docs/research/codex-resource-1.1.5/background.pretty.js	3406	chrome.history	return e.startTime = a, s != null && (e.endTime = s), (await chrome.history.search(e)).flatMap(wn);
+docs/research/codex-resource-1.1.5/background.pretty.js	3410	getUserHistory	if (typeof t != "string") throw new Error("getUserHistory requires query to be a string");
+docs/research/codex-resource-1.1.5/background.pretty.js	3415	getUserHistory	if (typeof t != "number" || !Number.isInteger(t) || t <= 0) throw new Error("getUserHistory requires limit to be a positive integer");
+docs/research/codex-resource-1.1.5/background.pretty.js	3420	getUserHistory	if (typeof t != "string") throw new Error(`getUserHistory requires ${e} to be a valid date`);
+docs/research/codex-resource-1.1.5/background.pretty.js	3430	getUserHistory	if (Number.isNaN(a)) throw new Error(`getUserHistory requires ${e} to be a valid date`);
+docs/research/codex-resource-1.1.5/background.pretty.js	3538	finalizeTabs	if (s == null) throw new Error("finalizeTabs received invalid tab entry");
+docs/research/codex-resource-1.1.5/background.pretty.js	3540	finalizeTabs	if ($a("finalizeTabs", r), !e.has(r)) throw new Error(`finalizeTabs cannot keep unknown tab ${r}`);
+docs/research/codex-resource-1.1.5/background.pretty.js	3541	finalizeTabs	if (i !== "handoff" && i !== "deliverable") throw new Error(`finalizeTabs received invalid status ${String(i)}`);
+docs/research/codex-resource-1.1.5/background.pretty.js	3542	finalizeTabs	if (a.has(r)) throw new Error(`finalizeTabs received duplicate tab ${r}`);
+docs/research/codex-resource-1.1.5/background.pretty.js	3558	Target.getTargets	if (t.method === "Target.getTargets") return chrome.debugger.getTargets().then((a) => ({ targetInfos: a }));
+docs/research/codex-resource-1.1.5/background.pretty.js	3560	chrome.debugger.sendCommand	return chrome.debugger.sendCommand(e, t.method, t.commandParams);
+docs/research/codex-resource-1.1.5/background.pretty.js	3622	requestHost	requestHost(t, e) {
+docs/research/codex-resource-1.1.5/background.pretty.js	3648	connectNative	e = chrome.runtime.connectNative(this.application);
+docs/research/codex-resource-1.1.5/background.pretty.js	3663	native-host:	return this.nextHostRequestId += 1, `native-host:${this.nextHostRequestId}`;
+docs/research/codex-resource-1.1.5/background.pretty.js	3769	detach(	await Promise.allSettled(a.filter((s) => typeof s.tabId == "number").map((s) => chrome.debugger.detach({ tabId: s.tabId }).catch(() => {
+docs/research/codex-resource-1.1.5/background.pretty.js	3769	chrome.debugger.detach	await Promise.allSettled(a.filter((s) => typeof s.tabId == "number").map((s) => chrome.debugger.detach({ tabId: s.tabId }).catch(() => {
+docs/research/codex-resource-1.1.5/background.pretty.js	3819	requestHost	const i = await t.requestHost("ensureCodexAppServer"), o = t.refreshStatus();
+docs/research/codex-resource-1.1.5/background.pretty.js	3866	chrome.downloads	}), chrome.downloads.onCreated.addListener((i) => {
+docs/research/codex-resource-1.1.5/background.pretty.js	3867	handleDownloadCreated	a.handleDownloadCreated(i);
+docs/research/codex-resource-1.1.5/background.pretty.js	3868	chrome.downloads	}), chrome.downloads.onChanged.addListener((i) => {
+docs/research/codex-resource-1.1.5/background.pretty.js	3869	handleDownloadChanged	a.handleDownloadChanged(i);
+docs/research/codex-resource-1.1.5/background.pretty.js	3878	AGENT_CURSOR_STATE	case "GET_AGENT_CURSOR_STATE":
+docs/research/codex-resource-1.1.5/background.pretty.js	3878	GET_AGENT_CURSOR_STATE	case "GET_AGENT_CURSOR_STATE":
+docs/research/codex-resource-1.1.5/background.pretty.js	3880	AGENT_CURSOR_ARRIVED	case "AGENT_CURSOR_ARRIVED":
+docs/research/codex-resource-1.1.5/content.pretty.js	130	codex-favicon-badge	var mt = "codex-favicon-badge", yt = { cursor: null, isVisible: false, sessionId: null, turnId: null };
+docs/research/codex-resource-1.1.5/content.pretty.js	134	codex-favicon-badge	return decodeURIComponent(t.slice(19)).includes(`data-codex-favicon-badge="${mt}"`);
+docs/research/codex-resource-1.1.5/content.pretty.js	139	codex-favicon-badge	var en = 'link[data-codex-favicon-badge="true"]', rn = 'link[rel~="icon"], link[rel="shortcut icon"]', G = "codexFaviconBadgeCreated", k = "codexOriginalFaviconHref", on = "black", sn = "#22c55e", an = "#facc15", cn = "M
+docs/research/codex-resource-1.1.5/content.pretty.js	193	codex-favicon-badge	const e = t === "active" ? ' opacity="0.3"' : "", r = `<svg xmlns="http://www.w3.org/2000/svg" data-codex-favicon-badge="${mt}" width="32" height="32" viewBox="0 0 32 32">${`<image href="${Cn(n)}" width="32" height="32"$
+docs/research/codex-resource-1.1.5/content.pretty.js	449	AGENT_CURSOR_ARRIVED	const l = { type: "AGENT_CURSOR_ARRIVED", moveSequence: c, sessionId: n.sessionId, turnId: n.turnId };
+docs/research/codex-resource-1.1.5/content.pretty.js	460	AGENT_CURSOR_STATE	}, a = (s, c, l) => s?.type !== "AGENT_CURSOR_STATE" ? false : e == null ? (l({ ok: false }), true) : (i(Ft(s.state)), l({ ok: true }), true);
+docs/research/codex-resource-1.1.5/content.pretty.js	461	AGENT_CURSOR_STATE	return chrome.runtime.onMessage.addListener(a), window.addEventListener("resize", o), window.visualViewport?.addEventListener("resize", o), t.replaceChildren(r), o(), chrome.runtime.sendMessage({ type: "GET_AGENT_CURSOR_
+docs/research/codex-resource-1.1.5/content.pretty.js	461	GET_AGENT_CURSOR_STATE	return chrome.runtime.onMessage.addListener(a), window.addEventListener("resize", o), window.visualViewport?.addEventListener("resize", o), t.replaceChildren(r), o(), chrome.runtime.sendMessage({ type: "GET_AGENT_CURSOR_
+docs/research/codex-resource-1.1.5/content.pretty.js	483	TAB_FAVICON_BADGE	if (!Dt(t) || t.type !== "TAB_FAVICON_BADGE") return false;

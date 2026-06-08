@@ -13,7 +13,14 @@
     x: number;
     y: number;
   };
-  type CursorPhase = "idle" | "active" | "thinking";
+  type CursorPhase =
+    | "idle"
+    | "active"
+    | "thinking"
+    | "handoff"
+    | "deliverable"
+    | "stopped"
+    | "taken_over";
   type CursorArrival = {
     moveSequence: number;
     sessionId: string | null;
@@ -124,6 +131,24 @@
   label.style.willChange = "opacity, transform";
   label.textContent = "Agent";
 
+  const highlight = document.createElement("div");
+  highlight.id = "agent-browser-controller-highlight";
+  highlight.style.all = "initial";
+  highlight.style.position = "fixed";
+  highlight.style.left = "0";
+  highlight.style.top = "0";
+  highlight.style.border = "3px solid rgba(16, 185, 129, 0.96)";
+  highlight.style.borderRadius = "10px";
+  highlight.style.boxShadow =
+    "0 0 0 9999px rgba(15, 23, 42, 0.08), 0 0 0 4px rgba(16, 185, 129, 0.22), 0 14px 34px rgba(15, 23, 42, 0.24)";
+  highlight.style.display = "none";
+  highlight.style.opacity = "0";
+  highlight.style.pointerEvents = "none";
+  highlight.style.transition = "opacity 90ms ease";
+  highlight.style.transform = "translate3d(-9999px, -9999px, 0)";
+  highlight.style.willChange = "opacity, transform, width, height";
+
+  root.appendChild(highlight);
   cursor.appendChild(cursorImage);
   root.appendChild(cursor);
   root.appendChild(label);
@@ -151,6 +176,7 @@
   let pendingArrival: CursorArrival | null = null;
   let rafId: number | null = null;
   let lastFrameAt = 0;
+  let highlightHideTimer: number | null = null;
   const faviconBadgeId = "agent-browser-controller-favicon-badge";
 
   function mount() {
@@ -197,12 +223,9 @@
   }
 
   function applyPhase(nextPhase: unknown) {
-    phase =
-      nextPhase === "active" || nextPhase === "thinking" || nextPhase === "idle"
-        ? nextPhase
-        : "active";
+    phase = normalizePhase(nextPhase);
 
-    if (!visible || phase === "idle") {
+    if (phase === "idle" || (!visible && !isPersistentPageStatus(phase))) {
       removeFaviconBadge();
       return;
     }
@@ -210,6 +233,12 @@
     if (phase === "thinking") {
       cursorImage.style.filter =
         "drop-shadow(0 0 8px rgba(59, 130, 246, 0.82)) drop-shadow(0 0 24px rgba(16, 185, 129, 0.38))";
+    } else if (phase === "taken_over") {
+      cursorImage.style.filter =
+        "drop-shadow(0 0 8px rgba(239, 68, 68, 0.82)) drop-shadow(0 0 24px rgba(245, 158, 11, 0.38))";
+    } else if (phase === "stopped") {
+      cursorImage.style.filter =
+        "drop-shadow(0 0 8px rgba(100, 116, 139, 0.74)) drop-shadow(0 0 18px rgba(51, 65, 85, 0.34))";
     } else {
       cursorImage.style.filter =
         "drop-shadow(0 0 7px rgba(16, 185, 129, 0.82)) drop-shadow(0 0 18px rgba(16, 185, 129, 0.42))";
@@ -222,16 +251,45 @@
     }
   }
 
+  function normalizePhase(value: unknown): CursorPhase {
+    return value === "active" ||
+      value === "thinking" ||
+      value === "idle" ||
+      value === "handoff" ||
+      value === "deliverable" ||
+      value === "stopped" ||
+      value === "taken_over"
+      ? value
+      : "active";
+  }
+
+  function isPersistentPageStatus(value: CursorPhase) {
+    return value === "handoff" ||
+      value === "deliverable" ||
+      value === "stopped" ||
+      value === "taken_over";
+  }
+
   function updateFaviconBadge(nextPhase: CursorPhase) {
     if (!document.head) {
       return;
     }
 
-    const color = nextPhase === "thinking" ? "#3b82f6" : "#10b981";
+    const color =
+      nextPhase === "thinking" ? "#3b82f6" :
+      nextPhase === "handoff" ? "#facc15" :
+      nextPhase === "deliverable" ? "#22c55e" :
+      nextPhase === "taken_over" ? "#ef4444" :
+      nextPhase === "stopped" ? "#64748b" :
+      "#10b981";
+    const indicator =
+      nextPhase === "handoff" || nextPhase === "deliverable" || nextPhase === "stopped"
+        ? `<circle cx="24" cy="24" r="7" fill="${color}" stroke="white" stroke-width="2"/>`
+        : `<circle cx="22" cy="10" r="6" fill="${color}" stroke="white" stroke-width="2"/>`;
     const svg = [
       '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">',
       '<rect width="32" height="32" rx="7" fill="#0f172a"/>',
-      `<circle cx="22" cy="10" r="6" fill="${color}" stroke="white" stroke-width="2"/>`,
+      indicator,
       '<path d="M8 22V8l10 10h-6l-4 4z" fill="white"/>',
       "</svg>"
     ].join("");
@@ -849,6 +907,56 @@
     }, 420);
   }
 
+  function showHighlightRect(rect: unknown, options: Record<string, unknown> = {}) {
+    if (!rect || typeof rect !== "object") {
+      return { ok: false, error: "Invalid highlight rect" };
+    }
+
+    const source = rect as Record<string, unknown>;
+    const x = Number(source.x);
+    const y = Number(source.y);
+    const width = Number(source.width);
+    const height = Number(source.height);
+
+    if (
+      !Number.isFinite(x) ||
+      !Number.isFinite(y) ||
+      !Number.isFinite(width) ||
+      !Number.isFinite(height) ||
+      width <= 0 ||
+      height <= 0
+    ) {
+      return { ok: false, error: "Invalid highlight rectangle dimensions" };
+    }
+
+    if (highlightHideTimer != null) {
+      window.clearTimeout(highlightHideTimer);
+      highlightHideTimer = null;
+    }
+
+    const color = typeof options.color === "string" && options.color.trim()
+      ? options.color.trim()
+      : "rgba(16, 185, 129, 0.96)";
+    const durationMs = Math.max(120, Math.min(Number(options.durationMs) || 900, 5000));
+
+    highlight.style.borderColor = color;
+    highlight.style.display = "block";
+    highlight.style.height = `${height}px`;
+    highlight.style.opacity = "1";
+    highlight.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+    highlight.style.width = `${width}px`;
+
+    highlightHideTimer = window.setTimeout(() => {
+      highlight.style.opacity = "0";
+      highlightHideTimer = window.setTimeout(() => {
+        highlight.style.display = "none";
+        highlightHideTimer = null;
+      }, 140);
+    }, durationMs);
+
+    return { ok: true };
+  }
+
   mount();
   setCursor(current, { animate: false, visible: false });
   restoreCursorState();
@@ -897,6 +1005,12 @@
       return true;
     }
 
+    if (message.type === "AGENT_PAGE_STATUS") {
+      applyPhase(message.phase);
+      sendResponse({ ok: true });
+      return true;
+    }
+
     if (message.type === "AGENT_CURSOR") {
       const x = Number(message.x);
       const y = Number(message.y);
@@ -938,6 +1052,14 @@
       setCursor({ x, y }, { animate: true, phase: "active", visible: true });
       showClickRipple({ x, y });
       sendResponse({ ok: true });
+      return true;
+    }
+
+    if (message.type === "AGENT_HIGHLIGHT_RECT") {
+      sendResponse(showHighlightRect(message.rect, {
+        color: message.color,
+        durationMs: message.durationMs
+      }));
       return true;
     }
 

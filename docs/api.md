@@ -28,6 +28,13 @@ Formax currently exposes the Chrome extension backend only. It has no in-app
 browser backend and no OS-level Computer Use fallback. See
 `docs/backend-boundaries.md`.
 
+To inspect backend availability:
+
+```js
+console.log(agent.browsers.list());      // ["extension"]
+console.log(agent.browsers.discover());  // includes unavailable "local"
+```
+
 ## Object Model
 
 Prefer the object API:
@@ -43,7 +50,8 @@ Core namespaces:
 
 - `browser.tabs`: create, list, get, switch, close, and finalize controlled tabs.
 - `browser.user`: inspect and claim user-opened tabs, read confirmed history,
-  finalize handoffs, and stop user-facing sessions.
+  finalize handoffs, and stop user-facing sessions. Bookmarks are intentionally
+  not exposed.
 - `browser.events`: read, clear, and wait for buffered browser events.
 - `browser.downloads`: list and wait for Chrome downloads.
 - `browser.policy`: inspect and update allow/block policy.

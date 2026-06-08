@@ -22,6 +22,9 @@ describe("browser tool schemas", () => {
     const names = new Set(browserToolSchemas.map((schema) => schema.name));
 
     expect(names).toContain("browser_wait_for_event");
+    expect(names).toContain("browser_wait_for_file_chooser");
+    expect(names).toContain("browser_set_file_chooser_files");
+    expect(names).toContain("browser_download_media");
     expect(names).toContain("browser_get_policy");
     expect(names).toContain("browser_update_policy");
     expect(names).toContain("browser_name_session");
@@ -31,6 +34,7 @@ describe("browser tool schemas", () => {
     expect(names).toContain("browser_locator_query");
     expect(names).toContain("browser_locator_action");
     expect(names).toContain("browser_locator_wait");
+    expect(names).toContain("browser_resolve_frame");
     expect(names).toContain("browser_get_dev_logs");
     expect(names).toContain("browser_get_capabilities");
   });
@@ -97,6 +101,7 @@ describe("browser tool schemas", () => {
       locatorQuery: "LocatorQueryParams",
       locatorAction: "LocatorActionParams",
       locatorWait: "LocatorWaitParams",
+      resolveFrame: "ResolveFrameParams",
       click: "ClickParams",
       drag: "DragParams",
       moveMouse: "MoveMouseParams",
@@ -106,7 +111,12 @@ describe("browser tool schemas", () => {
       pressKey: "PressKeyParams",
       handleDialog: "HandleDialogParams",
       screenshot: "ScreenshotParams",
+      waitForFileChooser: "WaitForFileChooserParams",
+      setFileChooserFiles: "SetFileChooserFilesParams",
       uploadFile: "UploadFileParams",
+      downloadMedia: "DownloadMediaParams",
+      attachTarget: "TargetAttachmentParams",
+      detachTarget: "TargetAttachmentParams",
       cdp: "CdpParams",
       listTabs: "ListTabsParams",
       getTab: "GetTabParams",
@@ -211,6 +221,16 @@ describe("browser tool schemas", () => {
     ).toEqual({ ok: true });
 
     expect(
+      validateBrowserActionParams("resolveFrame", {
+        sessionId: "session-a",
+        tabId: 101,
+        frameSelectors: ["#outer-frame", "#inner-frame"],
+        targetId: "target-1",
+        timeoutMs: 10000
+      })
+    ).toEqual({ ok: true });
+
+    expect(
       validateBrowserActionParams("locatorQuery", {
         locator: {
           kind: "css",
@@ -244,10 +264,25 @@ describe("browser tool schemas", () => {
       validateBrowserActionParams("waitForLoadState", {
         state: "commit"
       })
+    ).toEqual({ ok: true });
+
+    expect(
+      validateBrowserActionParams("waitForUrl", {
+        urlContains: "/complete",
+        waitUntil: "networkidle",
+        idleMs: 200
+      })
+    ).toEqual({ ok: true });
+
+    expect(
+      validateBrowserActionParams("waitForUrl", {
+        urlContains: "/complete",
+        waitUntil: "paint"
+      })
     ).toMatchObject({
       ok: false,
       code: "invalid_params",
-      path: "$.state"
+      path: "$.waitUntil"
     });
 
     expect(
@@ -275,8 +310,50 @@ describe("browser tool schemas", () => {
     ).toMatchObject({
       ok: false,
       code: "invalid_params",
-      path: "$.filePath"
+      path: "$.files"
     });
+
+    expect(
+      validateBrowserActionParams("setFileChooserFiles", {
+        fileChooserId: "fc-test",
+        files: ["/tmp/a.txt"],
+        confirmed: true
+      })
+    ).toEqual({ ok: true });
+
+    expect(
+      validateBrowserActionParams("setFileChooserFiles", {
+        fileChooserId: "fc-test",
+        confirmed: true
+      })
+    ).toMatchObject({
+      ok: false,
+      code: "invalid_params",
+      path: "$.files"
+    });
+
+    expect(
+      validateBrowserActionParams("setFileChooserFiles", {
+        files: ["/tmp/a.txt"],
+        confirmed: true
+      })
+    ).toMatchObject({
+      ok: false,
+      code: "invalid_params",
+      path: "$.fileChooserId"
+    });
+
+    expect(
+      validateBrowserActionParams("downloadMedia", {
+        locator: { kind: "css", selector: "img.hero" },
+        attribute: "src",
+        conflictAction: "uniquify",
+        filename: "assets/photo.png",
+        fallbackFetch: true,
+        fallbackMaxBytes: 1048576,
+        originApproved: true
+      })
+    ).toEqual({ ok: true });
 
     expect(
       validateBrowserActionParams("elementInfo", {
@@ -300,6 +377,8 @@ describe("browser tool schemas", () => {
 
     expect(
       validateBrowserActionParams("evaluate", {
+        targetId: "target-1",
+        frameId: "frame-1",
         script: "document.title",
         mode: "read",
         reason: "inspect page title"
@@ -318,6 +397,26 @@ describe("browser tool schemas", () => {
     ).toEqual({ ok: true });
 
     expect(
+      validateBrowserActionParams("attachTarget", {
+        sessionId: "session-a",
+        tabId: 101,
+        targetId: "target-1",
+        originApproved: true,
+        confirmed: true,
+        reason: "target lifecycle"
+      })
+    ).toEqual({ ok: true });
+
+    expect(
+      validateBrowserActionParams("detachTarget", {
+        sessionId: "session-a",
+        tabId: 101,
+        targetId: "target-1",
+        reason: "target lifecycle cleanup"
+      })
+    ).toEqual({ ok: true });
+
+    expect(
       validateBrowserActionParams("getDevLogs", {
         levels: ["error", 1]
       })
@@ -330,7 +429,11 @@ describe("browser tool schemas", () => {
     expect(
       validateBrowserActionParams("screenshot", {
         fullPage: true,
-        clip: { x: 0, y: 0, width: 100, height: 80 }
+        clip: { x: 0, y: 0, width: 100, height: 80 },
+        highlight: true,
+        highlightClip: { x: 5, y: 5, width: 40, height: 30 },
+        highlightColor: "rgba(16, 185, 129, 0.96)",
+        highlightDurationMs: 900
       })
     ).toEqual({ ok: true });
 
@@ -380,6 +483,9 @@ describe("browser tool schemas", () => {
         key: "Space"
       })
     ).toEqual({ ok: true });
+    expect(validateBrowserActionParams("pressKey", { key: "Ctrl+A" })).toEqual({ ok: true });
+    expect(validateBrowserActionParams("pressKey", { key: "F5" })).toEqual({ ok: true });
+    expect(validateBrowserActionParams("pressKey", { key: "Esc" })).toEqual({ ok: true });
 
     expect(
       validateBrowserActionParams("getHistory", {
@@ -558,10 +664,64 @@ describe("browser tool schemas", () => {
     }
   });
 
+  it("emits structured host approval prompts before first interaction with a new host", () => {
+    const background = readFileSync("extension/background.ts", "utf8");
+    const protocol = readFileSync("shared/protocol.md", "utf8");
+    const types = readFileSync("shared/types.ts", "utf8");
+
+    expect(background).toContain('name: "hostApprovalRequired"');
+    expect(background).toContain("function hostApprovalPromptDetails");
+    expect(background).toContain("function postHostApprovalRequiredEvent");
+    expect(background).toContain("function hostApprovalId");
+    expect(background).toContain('throw browserActionError("requires_host_approval"');
+    expect(background).toContain("suggestedDecisions");
+    expect(background).toContain("allowForSession");
+    expect(background).toContain("sanitizeStructuredErrorDetails");
+    expect(protocol).toContain("Host approval request event example");
+    expect(protocol).toContain("The triggering action still fails with `requires_host_approval`");
+    expect(types).toContain("export type BrowserHostApprovalRequiredEvent");
+  });
+
+  it("emits structured browser action confirmation prompts for risky actions", () => {
+    const background = readFileSync("extension/background.ts", "utf8");
+    const protocol = readFileSync("shared/protocol.md", "utf8");
+    const types = readFileSync("shared/types.ts", "utf8");
+
+    expect(background).toContain('name: "browserActionConfirmationRequired"');
+    expect(background).toContain("function browserActionConfirmationDetails");
+    expect(background).toContain("function postBrowserActionConfirmationRequiredEvent");
+    expect(background).toContain("function browserActionConfirmationId");
+    expect(background).toContain('throw browserActionError("confirmation_required"');
+    expect(background).toContain("requiredParams: {");
+    expect(protocol).toContain("Action confirmation request event example");
+    expect(protocol).toContain("retry the exact action with `confirmed: true`");
+    expect(types).toContain("export type BrowserActionConfirmationRequiredEvent");
+  });
+
+  it("emits structured origin approval prompts for raw CDP and page asset downloads", () => {
+    const background = readFileSync("extension/background.ts", "utf8");
+    const protocol = readFileSync("shared/protocol.md", "utf8");
+    const types = readFileSync("shared/types.ts", "utf8");
+
+    expect(background).toContain('name: "browserOriginApprovalRequired"');
+    expect(background).toContain("function browserOriginApprovalDetails");
+    expect(background).toContain("function postBrowserOriginApprovalRequiredEvent");
+    expect(background).toContain("function browserOriginApprovalId");
+    expect(background).toContain('throw browserActionError("origin_approval_required"');
+    expect(background).toContain("originApproved: true");
+    expect(protocol).toContain("Origin approval request event example");
+    expect(protocol).toContain("retry the exact raw CDP or page asset download action");
+    expect(types).toContain("export type BrowserOriginApprovalRequiredEvent");
+  });
+
   it("keeps locator actionability checks present in the extension backend", () => {
     const background = readFileSync("extension/background.ts", "utf8");
 
     expect(background).toContain("function locatorActionabilitySource");
+    expect(background).toContain("function pointerTargetContextExpression");
+    expect(background).toContain("looksLikeBrowserPermissionPrompt(label, text)");
+    expect(background).toContain("BROWSER_PERMISSION_TARGET_PATTERN");
+    expect(background).toContain("confirmed: args.confirmed");
     expect(background).toContain("locatorActionabilityForce");
     expect(background).toContain('code: "detached"');
     expect(background).toContain('code: "not_visible"');
@@ -573,10 +733,85 @@ describe("browser tool schemas", () => {
 
   it("keeps download actions covered by extension host blocklist enforcement", () => {
     const background = readFileSync("extension/background.ts", "utf8");
+    const client = readFileSync("mcp-node-repl/browser-client.ts", "utf8");
 
     expect(background).toContain("await assertBrowserBlocklistForDownloads(downloads, params.sessionId);");
+    expect(background).toContain('await assertBrowserPolicyForUrl("download", media.url');
+    expect(background).toContain("async function fetchMediaAsDataUrl");
+    expect(background).toContain('method: "fetch_blob"');
+    expect(background).toContain('await assertBrowserPolicyForUrl("download", fetched.finalUrl');
+    expect(background).toContain("async function downloadMedia");
+    expect(background).toContain("function mediaDownloadTargetExpression");
+    expect(background).toContain('!classification.reasons.includes("sensitive_browser_state")');
     expect(background).toContain("function assertBrowserBlocklistForUrl");
     expect(background).toContain('verdict.code !== "host_blocked"');
+    expect(client).toContain("downloadMedia(args");
+    expect(client).toContain('"browser_download_media"');
+  });
+
+  it("keeps file chooser events wired to playwright wait handles", () => {
+    const background = readFileSync("extension/background.ts", "utf8");
+    const client = readFileSync("mcp-node-repl/browser-client.ts", "utf8");
+    const types = readFileSync("shared/types.ts", "utf8");
+
+    expect(background).toContain('name: "fileChooserOpened"');
+    expect(background).toContain("function registerFileChooser");
+    expect(background).toContain("function waitForFileChooser");
+    expect(background).toContain("function setFileChooserFiles");
+    expect(background).toContain("fileChooserId: fileChooser.fileChooserId");
+    expect(background).toContain("const fileChooserFor = (node) =>");
+    expect(client).toContain('normalized === "filechooser"');
+    expect(client).toContain('"browser_wait_for_file_chooser"');
+    expect(client).toContain('"browser_set_file_chooser_files"');
+    expect(client).toContain("function createFileChooserHandle");
+    expect(client).toContain("tab.browser.setFileChooserFiles({");
+    expect(types).toContain("export type BrowserFileChooserEvent");
+    expect(types).toContain("export type WaitForFileChooserParams");
+    expect(types).toContain("export type SetFileChooserFilesParams");
+  });
+
+  it("keeps observations exposing a sanitized CDP frame tree", () => {
+    const background = readFileSync("extension/background.ts", "utf8");
+    const protocol = readFileSync("shared/protocol.md", "utf8");
+    const types = readFileSync("shared/types.ts", "utf8");
+
+    expect(background).toContain('await cdp(tabId, "Page.getFrameTree")');
+    expect(background).toContain("function summarizePageFrameTreeNode");
+    expect(background).toContain("function countFrameTreeNodes");
+    expect(background).toContain("observation.frameTree = await getPageFrameTree(tabId)");
+    expect(background).toContain("url: typeof frame.url === \"string\" ? sanitizeDebugUrl(frame.url) : null");
+    expect(types).toContain("export type BrowserFrameTree");
+    expect(types).toContain("frameTree?: BrowserFrameTree");
+    expect(protocol).toContain("CDP `Page.getFrameTree`");
+    expect(protocol).toContain("does not imply that");
+  });
+
+  it("matches Codex-style CDP target lifecycle entry points", () => {
+    const background = readFileSync("extension/background.ts", "utf8");
+    const protocol = readFileSync("shared/protocol.md", "utf8");
+    const types = readFileSync("shared/types.ts", "utf8");
+
+    expect(background).toContain('case "attachTarget"');
+    expect(background).toContain('case "detachTarget"');
+    expect(background).toContain('method === "Target.getTargets"');
+    expect(background).toContain("chrome.debugger.getTargets()");
+    expect(background).toContain("async function createEvaluationContextForFrame");
+    expect(background).toContain('"Page.createIsolatedWorld"');
+    expect(background).toContain("contextId: executionContextId");
+    expect(background).toContain("async function resolveFrame");
+    expect(background).toContain("function resolveFrameSelectorPathExpression");
+    expect(background).toContain("function matchResolvedFramePathToFrameTree");
+    expect(background).toContain("async function locatorExecutionTarget");
+    expect(background).toContain('const useFrameScopedContext = kind !== "boundingBox"');
+    expect(background).toContain("contextId: target.executionContextId");
+    expect(background).toContain("stripLocatorFrameSelectors(locator)");
+    expect(types).toContain("frameId?: string");
+    expect(types).toContain("executionContextId?: number | null");
+    expect(types).toContain("export type ResolveFrameParams");
+    expect(protocol).toContain("Codex resource 1.1.5");
+    expect(protocol).toContain("Target.getTargets");
+    expect(protocol).toContain("Page.createIsolatedWorld");
+    expect(protocol).toContain("### resolveFrame");
   });
 
   it("keeps user tab descriptors enriched with time and group metadata", () => {
@@ -591,11 +826,46 @@ describe("browser tool schemas", () => {
 
   it("keeps observed element refs scoped to avoid stale-ref reuse after navigation", () => {
     const background = readFileSync("extension/background.ts", "utf8");
+    const client = readFileSync("mcp-node-repl/browser-client.ts", "utf8");
 
     expect(background).toContain("const refScope = (() => {");
     expect(background).toContain("crypto.randomUUID()");
     expect(background).toContain('const ref = refScope + "-e" + index;');
+    expect(background).toContain("const stableNodeHash = (value) =>");
+    expect(background).toContain("const stableNodeBaseFor = (el, frameSelectors) =>");
+    expect(background).toContain("const stableNodeCounts = new Map();");
+    expect(background).toContain("stableNodeId");
+    expect(client).toContain("stableNodeId ?? ref");
+    expect(client).toContain("candidate.node_id === nodeId || candidate.ref === nodeId");
+    expect(client).toContain("ref: node.ref ?? node.node_id");
     expect(background).not.toContain('const ref = "e" + index;');
+  });
+
+  it("clearly reports unsupported closed shadow roots without piercing them", () => {
+    const background = readFileSync("extension/background.ts", "utf8");
+    const client = readFileSync("mcp-node-repl/browser-client.ts", "utf8");
+    const types = readFileSync("shared/types.ts", "utf8");
+    const protocol = readFileSync("shared/protocol.md", "utf8");
+
+    expect(background).toContain("isUnsupportedClosedShadowHost");
+    expect(background).toContain('shadowRoot: "closed_unsupported"');
+    expect(background).toContain('shadowUnsupportedReason: "custom_element_shadow_root_not_accessible"');
+    expect(client).toContain('source.shadowRoot === "closed_unsupported"');
+    expect(types).toContain('"closed_unsupported"');
+    expect(protocol).toContain("closed_unsupported");
+  });
+
+  it("keeps observe page text summarized instead of dumping large body innerText", () => {
+    const background = readFileSync("extension/background.ts", "utf8");
+    const protocol = readFileSync("shared/protocol.md", "utf8");
+
+    expect(background).toContain("const buildTextSummary = () =>");
+    expect(background).toContain("MAX_BODY_TEXT_INLINE");
+    expect(background).toContain("textSource: pageTextSummary.source");
+    expect(background).toContain("bodyTextLength: bodyText.length");
+    expect(background).toContain("text: pageTextSummary.text");
+    expect(background).not.toContain("text: bodyText.slice(0, MAX_TEXT_LENGTH)");
+    expect(protocol).toContain("It intentionally avoids returning raw `document.body.innerText`");
   });
 
   it("keeps browser history output redacted before returning to callers", () => {
@@ -609,12 +879,48 @@ describe("browser tool schemas", () => {
 
   it("keeps health checks reporting Chrome permissions and file URL access", () => {
     const background = readFileSync("extension/background.ts", "utf8");
+    const protocol = readFileSync("shared/protocol.md", "utf8");
+    const healthSchema = browserToolSchemas.find((schema) => schema.name === "browser_health");
 
-    expect(background).toContain("async function health()");
+    expect(healthSchema?.parameters.properties).toMatchObject({
+      nativeDiagnostics: {
+        type: "object",
+        additionalProperties: true
+      }
+    });
+
+    expect(background).toContain("async function health(params");
     expect(background).toContain("permissions: permissionStatus");
     expect(background).toContain("fileUrlAccess");
+    expect(background).toContain("nativeManifestHealth");
+    expect(background).toContain("originMatchesExtensionId");
+    expect(background).toContain("const profile = browserProfileMetadata(params.nativeDiagnostics)");
+    expect(background).toContain("profile,");
+    expect(background).toContain("function browserProfileMetadata");
+    expect(background).toContain("readsProfileFiles: false");
+    expect(background).toContain("function safeProfileHint");
     expect(background).toContain("async function chromePermissionStatus");
     expect(background).toContain("async function chromeFileUrlAccessStatus");
+    expect(protocol).toContain("The extension does not read Chrome");
+    expect(protocol).toContain("activeProfileSource");
+  });
+
+  it("keeps bookmarks intentionally unsupported", () => {
+    const manifest = JSON.parse(readFileSync("extension/manifest.json", "utf8"));
+    const background = readFileSync("extension/background.ts", "utf8");
+    const protocol = readFileSync("shared/protocol.md", "utf8");
+    const skill = readFileSync("skill/SKILL.md", "utf8");
+    const actions = browserActionRegistry.map((entry) => entry.action);
+    const schemaNames = browserToolSchemas.map((schema) => schema.name);
+
+    expect(manifest.permissions ?? []).not.toContain("bookmarks");
+    expect(actions).not.toContain("getBookmarks");
+    expect(actions).not.toContain("bookmarks");
+    expect(schemaNames.some((name) => name.includes("bookmark"))).toBe(false);
+    expect(background).toContain('browserCapability("browser.user.bookmarks"');
+    expect(background).toContain('"unsupported_sensitive_browser_state"');
+    expect(protocol).toContain("Bookmarks are intentionally not exposed");
+    expect(skill).toContain("Bookmarks are intentionally not exposed");
   });
 
   it("keeps evaluate and raw CDP calls audited without payload bodies", () => {
@@ -638,6 +944,25 @@ describe("browser tool schemas", () => {
     expect(background).not.toContain("commandParams: commandParams");
   });
 
+  it("redacts buffered dev log and runtime exception payloads before returning them", () => {
+    const background = readFileSync("extension/background.ts", "utf8");
+    const protocol = readFileSync("shared/protocol.md", "utf8");
+    const types = readFileSync("shared/types.ts", "utf8");
+
+    expect(background).toContain("function summarizeDebuggerEvent");
+    expect(background).toContain("function sanitizeDebugText");
+    expect(background).toContain("function sanitizeDebugUrl");
+    expect(background).toContain("function devLogText");
+    expect(background).toContain("function devLogUrl");
+    expect(background).toContain("description: sanitizeDebugText(details.exception.description");
+    expect(background).toContain("args.map((arg) => summarizeRemoteObject(arg))");
+    expect(background).toContain("text: text.value");
+    expect(background).toContain("redacted: text.redacted || url.redacted");
+    expect(background).toContain("redactionReasons: Array.from(new Set([...text.reasons, ...url.reasons]))");
+    expect(protocol).toContain("redacted before they enter the event buffer");
+    expect(types).toContain("redactionReasons?: string[]");
+  });
+
   it("keeps event snapshots persisted and cleared on session finalization", () => {
     const background = readFileSync("extension/background.ts", "utf8");
     const getEventsSchema = browserToolSchemas.find((schema) => schema.name === "browser_get_events");
@@ -658,8 +983,63 @@ describe("browser tool schemas", () => {
     expect(background).toContain("eventBuffer.clear({ sessionId })");
   });
 
+  it("keeps Codex-like page visual status and takeover events wired", () => {
+    const background = readFileSync("extension/background.ts", "utf8");
+    const content = readFileSync("extension/content.ts", "utf8");
+    const protocol = readFileSync("shared/protocol.md", "utf8");
+    const types = readFileSync("shared/types.ts", "utf8");
+
+    expect(content).toContain('message.type === "AGENT_PAGE_STATUS"');
+    expect(content).toContain('"handoff"');
+    expect(content).toContain('"deliverable"');
+    expect(content).toContain('"stopped"');
+    expect(content).toContain('"taken_over"');
+    expect(content).toContain("function updateFaviconBadge");
+    expect(content).toContain('message.type === "AGENT_HIGHLIGHT_RECT"');
+    expect(content).toContain("function showHighlightRect");
+    expect(background).toContain("const expectedDebuggerDetachTabs = new Set<number>();");
+    expect(background).toContain('name: "pageVisualStatus"');
+    expect(background).toContain('name: "userTakeover"');
+    expect(background).toContain('name: "userHandoffRequired"');
+    expect(background).toContain('name: "permissionPromptDetected"');
+    expect(background).toContain("function postPermissionPromptDetectedIfNeeded");
+    expect(background).toContain('classification.reasons.includes("browser_permission")');
+    expect(background).toContain('type: "AGENT_PAGE_STATUS"');
+    expect(background).toContain('type: "AGENT_HIGHLIGHT_RECT"');
+    expect(background).toContain("async function showHighlightRect");
+    expect(background).toContain('await setPageVisualStatus(tabId, "handoff"');
+    expect(background).toContain('await setPageVisualStatus(tabId, "deliverable"');
+    expect(background).toContain('await setPageVisualStatus(tabId, "stopped"');
+    expect(background).toContain('setPageVisualStatus(source.tabId, "taken_over"');
+    expect(background).toContain("await detachTabForLifecycle(tabId)");
+    expect(protocol).toContain("pageVisualStatus");
+    expect(protocol).toContain("userTakeover");
+    expect(protocol).toContain("userHandoffRequired");
+    expect(protocol).toContain("permissionPromptDetected");
+    expect(types).toContain("export type BrowserPermissionPromptDetectedEvent");
+  });
+
+  it("keeps user-handoff safety boundaries wired before click automation", () => {
+    const background = readFileSync("extension/background.ts", "utf8");
+    const protocol = readFileSync("shared/protocol.md", "utf8");
+    const types = readFileSync("shared/types.ts", "utf8");
+
+    expect(background).toContain("CAPTCHA_HANDOFF_PATTERN");
+    expect(background).toContain("SECURITY_INTERSTITIAL_PATTERN");
+    expect(background).toContain("PAYWALL_BYPASS_PATTERN");
+    expect(background).toContain("PASSWORD_CHANGE_ACTION_PATTERN");
+    expect(background).toContain("await assertUserHandoffNotRequired(tabId");
+    expect(background).toContain('throw new Error(`user_handoff_required: ${risk.reason}`)');
+    expect(background).toContain("passwordFieldCount");
+    expect(background).toContain('await setPageVisualStatus(tabId, "handoff"');
+    expect(protocol).toContain("CAPTCHA/human-verification challenges");
+    expect(protocol).toContain("user_handoff_required");
+    expect(types).toContain("export type BrowserUserHandoffRequiredEvent");
+  });
+
   it("keeps diagnostics export wired to health, events, logs, sessions, and native manifest metadata", () => {
     const background = readFileSync("extension/background.ts", "utf8");
+    const types = readFileSync("shared/types.ts", "utf8");
     const diagnosticsSchema = browserToolSchemas.find((schema) => schema.name === "browser_get_diagnostics");
 
     expect(diagnosticsSchema?.parameters.properties).toMatchObject({
@@ -672,12 +1052,13 @@ describe("browser tool schemas", () => {
       }
     });
     expect(background).toContain("async function getDiagnostics");
-    expect(background).toContain("const healthSnapshot = await health()");
+    expect(background).toContain("const healthSnapshot = await health(params)");
     expect(background).toContain("events: eventResult.events");
     expect(background).toContain("devLogs: devLogs.logs");
     expect(background).toContain("activeSessions: healthSnapshot.sessions");
     expect(background).toContain("attachedTabs: healthSnapshot.attachedTabs");
-    expect(background).toContain("nativeManifest: normalizeNativeManifestDiagnostics");
+    expect(background).toContain("nativeManifest: healthSnapshot.nativeManifest");
+    expect(types).toContain("export type BrowserProfileMetadata");
     expect(background).toContain("id: healthSnapshot.extensionId");
     expect(background).toContain("version: healthSnapshot.version");
   });
@@ -724,6 +1105,34 @@ describe("browser tool schemas", () => {
       requiresFileSystemRead: true,
       requiresSensitiveDataReview: true
     });
+    expect(annotationsForAction("setFileChooserFiles")).toMatchObject({
+      sideEffecting: true,
+      requiresHostApproval: true,
+      requiresUserConfirmation: true,
+      requiresFileSystemRead: true,
+      requiresSensitiveDataReview: true
+    });
+    expect(annotationsForAction("downloadMedia")).toMatchObject({
+      sideEffecting: true,
+      requiresHostApproval: true,
+      requiresUserConfirmation: true,
+      requiresSensitiveDataReview: true
+    });
+    expect(annotationsForAction("attachTarget")).toMatchObject({
+      sideEffecting: true,
+      requiresHostApproval: true,
+      requiresUserConfirmation: true,
+      requiresRawCdp: true,
+      requiresSensitiveDataReview: true
+    });
+    expect(annotationsForAction("detachTarget")).toMatchObject({
+      sideEffecting: true,
+      requiresRawCdp: true
+    });
+    expect(annotationsForAction("resolveFrame")).toMatchObject({
+      readOnly: true,
+      requiresSensitiveDataReview: true
+    });
     expect(annotationsForAction("cdp")).toMatchObject({
       sideEffecting: true,
       requiresHostApproval: true,
@@ -761,6 +1170,16 @@ describe("browser tool schemas", () => {
       readOnly: true,
       sideEffecting: false
     });
+  });
+
+  it("keeps runtime errors concise with structured internal details", () => {
+    const background = readFileSync("extension/background.ts", "utf8");
+
+    expect(background).toContain("function structuredError");
+    expect(background).toContain("function userFacingErrorMessage");
+    expect(background).toContain("details: {");
+    expect(background).toContain("internalMessage");
+    expect(background).toContain("The browser action failed. Check structured error details or diagnostics for more information.");
   });
 });
 

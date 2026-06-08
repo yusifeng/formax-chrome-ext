@@ -49,6 +49,7 @@ if (!globalThis.browser) {
   }
   await setupBrowserRuntime({ globals: globalThis });
 }
+const backends = agent.browsers.discover();
 const browser = await agent.browsers.get("extension");
 ```
 
@@ -383,6 +384,7 @@ Never invent search results, prices, ratings, repository stats, or page content.
 ## Snapshot Discipline
 
 Take a fresh `tab.observe()` or equivalent DOM snapshot after navigation, reload, modal changes, locator timeout, strict-mode failure, selector parse error, or unexpected page mutation. Build selectors from the latest relevant snapshot only. Do not retry a failing locator repeatedly without new ground truth.
+`tab.dom_cua.get_visible_dom()` exposes stable `node_id` values for interactable elements when the page structure is unchanged; the runtime still refreshes the latest snapshot before acting and uses the snapshot-scoped `ref` internally.
 
 ## Error Recovery
 
@@ -427,6 +429,10 @@ If a JavaScript error or tool error happens:
 Ask the user for explicit confirmation before file uploads, sensitive typing, deleting or modifying third-party records, sending messages or posts, submitting forms with external side effects, financial transactions, subscription changes, permission grants, raw CDP on arbitrary websites, or mutating `evaluate` calls. Only pass `confirmed: true` or `originApproved: true` after the user has approved that exact action and destination in the current task.
 
 Browser history and clipboard access also require explicit confirmation for every request and have no always-allow path. Treat returned history entries and clipboard text as sensitive telemetry. Only use the minimum query/time range or clipboard operation needed for the task.
+
+Bookmarks are intentionally not exposed by this runtime. Do not claim bookmark
+access, and do not ask for Chrome bookmark data unless a future capability
+explicitly adds it with confirmation and sensitivity handling.
 
 ## File Uploads
 

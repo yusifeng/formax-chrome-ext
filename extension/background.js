@@ -12,9 +12,20 @@ const POLICY_STORAGE_KEY = "formax.browserPolicy.v1";
 const DEFAULT_CDP_TIMEOUT_MS = 10000;
 const MAX_EVENT_SNAPSHOTS = 50;
 const MAX_EVENTS_PER_SESSION_SNAPSHOT = 200;
+const FILE_CHOOSER_TTL_MS = 5 * 60 * 1000;
+const MAX_FILE_CHOOSERS = 100;
 const BACKEND_REVISION = 5;
+const MAX_PROFILE_HINT_LENGTH = 80;
 const DESTRUCTIVE_BROWSER_ACTION_PATTERN = /\b(delete|remove|destroy|cancel|close\s+account|deactivate|terminate|drop)\b/i;
 const EXTERNAL_SIDE_EFFECT_PATTERN = /\b(send|submit|post|publish|comment|reply|create|book|schedule|invite|save|update|confirm|pay|purchase|subscribe|unsubscribe)\b/i;
+const PERMISSION_GRANT_PATTERN = /\b(allow|enable|grant|authorize|request|share|use|start|turn\s+on|access)\b/i;
+const BROWSER_PERMISSION_TARGET_PATTERN = /\b(camera|webcam|microphone|\bmic\b|location|geolocation|notification|notify|screen|display|clipboard|account\s+access|login\s+access|extension\s+install|install\s+extension)\b/i;
+const CAPTCHA_HANDOFF_PATTERN = /\b(captcha|re\s*captcha|hcaptcha|turnstile|i'?m not a robot|verify (that )?you are human|human verification)\b/i;
+const SECURITY_INTERSTITIAL_PATTERN = /\b(your connection is not private|deceptive site ahead|malware|phishing|security warning|certificate error|err_cert_|unsafe site|dangerous site)\b/i;
+const SECURITY_INTERSTITIAL_ACTION_PATTERN = /\b(advanced|proceed|continue|visit|ignore|accept|unsafe)\b/i;
+const PAYWALL_BYPASS_PATTERN = /\b(bypass paywall|remove paywall|disable paywall|unlock (article|content) without (paying|subscription)|read without (paying|subscription)|continue without subscribing)\b/i;
+const PASSWORD_CHANGE_ACTION_PATTERN = /\b(change|update|reset|save|submit|confirm)\b.{0,40}\b(password|passcode)\b|\b(password|passcode)\b.{0,40}\b(change|update|reset|save|submit|confirm)\b/i;
+const PASSWORD_FINAL_BUTTON_PATTERN = /\b(change|update|reset|save|submit|confirm|continue)\b/i;
 const SUPPORTED_ACTIONS = [
     "health",
     "reloadExtension",
@@ -48,6 +59,7 @@ const SUPPORTED_ACTIONS = [
     "locatorQuery",
     "locatorAction",
     "locatorWait",
+    "resolveFrame",
     "click",
     "drag",
     "moveMouse",
@@ -57,7 +69,12 @@ const SUPPORTED_ACTIONS = [
     "pressKey",
     "handleDialog",
     "screenshot",
+    "waitForFileChooser",
+    "setFileChooserFiles",
     "uploadFile",
+    "downloadMedia",
+    "attachTarget",
+    "detachTarget",
     "cdp",
     "listTabs",
     "getTab",
@@ -85,6 +102,8 @@ const claimTokens = new Map();
 const tabOpenedAt = new Map();
 const networkRequestsByTab = new Map();
 const cursorArrivalWaiters = new Map();
+const expectedDebuggerDetachTabs = new Set();
+const fileChoosers = new Map();
 let activeActionContext = null;
 let nextCursorMoveSequence = 0;
 let browserPolicyState = createDefaultBrowserPolicyState();
@@ -161,6 +180,19 @@ function registerTopLevelListeners() {
         debuggerManager.markDetached(source);
         if (typeof source.tabId === "number") {
             networkRequestsByTab.delete(source.tabId);
+            const wasExpected = expectedDebuggerDetachTabs.delete(source.tabId);
+            if (!wasExpected && reason !== "target_closed") {
+                void setPageVisualStatus(source.tabId, "taken_over", {
+                    reason,
+                    sessionId: sessionIdForTab(source.tabId)
+                });
+                safePostEvent({
+                    name: "userTakeover",
+                    sessionId: sessionIdForTab(source.tabId),
+                    tabId: source.tabId,
+                    reason
+                });
+            }
         }
         safePostEvent({
             name: "debuggerDetached",
@@ -352,7 +384,7 @@ async function dispatchAction(action, params, actionId) {
 async function dispatchActionRaw(action, params) {
     switch (action) {
         case "health":
-            return health();
+            return health(params);
         case "reloadExtension":
             return reloadExtension();
         case "getEvents":
@@ -415,6 +447,8 @@ async function dispatchActionRaw(action, params) {
             return locatorAction(params);
         case "locatorWait":
             return locatorWait(params);
+        case "resolveFrame":
+            return resolveFrame(params);
         case "click":
             return click(params);
         case "drag":
@@ -433,8 +467,18 @@ async function dispatchActionRaw(action, params) {
             return handleDialog(params);
         case "screenshot":
             return screenshot(params);
+        case "waitForFileChooser":
+            return waitForFileChooser(params);
+        case "setFileChooserFiles":
+            return setFileChooserFiles(params);
         case "uploadFile":
             return uploadFile(params);
+        case "downloadMedia":
+            return downloadMedia(params);
+        case "attachTarget":
+            return attachTarget(params);
+        case "detachTarget":
+            return detachTarget(params);
         case "cdp":
             return rawCdp(params);
         case "listTabs":
@@ -551,15 +595,15 @@ function actionAuditCategory(action) {
         return "policy";
     if (["openUrl", "goBack", "goForward", "reload", "waitForLoadState", "waitForUrl"].includes(action))
         return "navigation";
-    if (["waitForSelector", "waitForText", "observe", "elementInfo", "locatorQuery", "locatorWait", "screenshot"].includes(action))
+    if (["waitForSelector", "waitForText", "observe", "elementInfo", "locatorQuery", "locatorWait", "resolveFrame", "screenshot"].includes(action))
         return "inspection";
     if (["locatorAction", "click", "drag", "moveMouse", "scroll", "typeText", "pressKey", "handleDialog"].includes(action))
         return "interaction";
     if (["evaluate", "cdp"].includes(action))
         return "diagnostic";
-    if (["uploadFile"].includes(action))
+    if (["waitForFileChooser", "setFileChooserFiles", "uploadFile"].includes(action))
         return "file";
-    if (["listDownloads", "waitForDownload"].includes(action))
+    if (["downloadMedia", "listDownloads", "waitForDownload"].includes(action))
         return "download";
     if (["getHistory"].includes(action))
         return "history";
@@ -588,11 +632,49 @@ function safePostEvent(payload) {
     }
 }
 function structuredError(error) {
-    const message = stringifyError(error);
+    const internalMessage = redactSecretPatterns(stringifyError(error));
+    const explicitCode = error &&
+        typeof error === "object" &&
+        typeof error.code === "string" &&
+        /^[a-z][a-z0-9_]+$/.test(error.code)
+        ? error.code
+        : null;
+    const code = explicitCode ?? errorCodeForMessage(internalMessage);
+    const details = error && typeof error === "object"
+        ? sanitizeStructuredErrorDetails(error.details)
+        : {};
     return {
-        code: errorCodeForMessage(message),
-        message
+        code,
+        message: userFacingErrorMessage(code, internalMessage),
+        details: {
+            ...details,
+            internalMessage
+        }
     };
+}
+function sanitizeStructuredErrorDetails(value, depth = 0) {
+    if (!value || typeof value !== "object" || Array.isArray(value) || depth > 4) {
+        return {};
+    }
+    const result = {};
+    for (const [key, item] of Object.entries(value)) {
+        if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(key) || key === "internalMessage") {
+            continue;
+        }
+        if (item == null || typeof item === "boolean" || typeof item === "number") {
+            result[key] = item;
+        }
+        else if (typeof item === "string") {
+            result[key] = truncateAndRedactString(item, 240);
+        }
+        else if (Array.isArray(item)) {
+            result[key] = item.slice(0, 20).map((entry) => typeof entry === "string" ? truncateAndRedactString(entry, 160) : entry);
+        }
+        else if (typeof item === "object") {
+            result[key] = sanitizeStructuredErrorDetails(item, depth + 1);
+        }
+    }
+    return result;
 }
 function errorCodeForMessage(message) {
     const explicitCode = message.match(/^([a-z][a-z0-9_]+):\s+/)?.[1];
@@ -614,14 +696,40 @@ function errorCodeForMessage(message) {
     if (message.includes("origin_approval_required")) {
         return "origin_approval_required";
     }
+    if (message.includes("user_handoff_required")) {
+        return "user_handoff_required";
+    }
     if (message.includes("must be") || message.includes("requires")) {
         return "invalid_params";
     }
     return "internal_error";
 }
-async function health() {
+function userFacingErrorMessage(code, message) {
+    switch (code) {
+        case "unknown_action":
+            return "The requested browser action is not supported by this extension runtime.";
+        case "requires_host_approval":
+            return "This website requires approval before the browser action can continue.";
+        case "host_blocked":
+            return "This website is blocked by the current browser policy.";
+        case "confirmation_required":
+            return "This browser action requires explicit user confirmation.";
+        case "origin_approval_required":
+            return "Raw browser diagnostics require origin approval before continuing.";
+        case "user_handoff_required":
+            return "This browser action must be handed off to the user.";
+        case "invalid_params":
+            return message.length <= 180 ? message : "The browser action parameters are invalid.";
+        case "internal_error":
+        default:
+            return "The browser action failed. Check structured error details or diagnostics for more information.";
+    }
+}
+async function health(params = {}) {
     const permissionStatus = await chromePermissionStatus();
     const fileUrlAccess = await chromeFileUrlAccessStatus();
+    const nativeManifest = nativeManifestHealth(params.nativeDiagnostics);
+    const profile = browserProfileMetadata(params.nativeDiagnostics);
     return {
         ok: true,
         extensionId: chrome.runtime.id,
@@ -634,9 +742,57 @@ async function health() {
         attachedTabs: debuggerManager.listAttachedTabs(),
         supportedActions: SUPPORTED_ACTIONS,
         backendRevision: BACKEND_REVISION,
+        profile,
         permissions: permissionStatus,
-        fileUrlAccess
+        fileUrlAccess,
+        nativeManifest
     };
+}
+function nativeManifestHealth(value) {
+    const manifest = normalizeNativeManifestDiagnostics(value);
+    const extensionOrigin = `chrome-extension://${chrome.runtime.id}/`;
+    const expectedOrigin = manifest.expectedOrigin;
+    return {
+        ...manifest,
+        extensionOrigin,
+        originMatchesExtensionId: typeof expectedOrigin === "string" && expectedOrigin === extensionOrigin
+    };
+}
+function browserProfileMetadata(value) {
+    const diagnostics = value && typeof value === "object" && !Array.isArray(value)
+        ? value
+        : {};
+    const activeProfileName = firstSafeProfileHint(diagnostics.activeProfileName, diagnostics.profileName, diagnostics.profile);
+    const activeProfileId = firstSafeProfileHint(diagnostics.activeProfileId, diagnostics.profileId, diagnostics.profileDirectory);
+    const lastUsedProfileHint = firstSafeProfileHint(diagnostics.lastUsedProfileHint, diagnostics.lastUsedProfileName, diagnostics.lastUsedProfile);
+    return {
+        activeProfileName,
+        activeProfileId,
+        activeProfileSource: activeProfileName || activeProfileId ? "native_diagnostics" : "unavailable",
+        lastUsedProfileHint,
+        lastUsedProfileSource: lastUsedProfileHint ? "native_diagnostics" : "unavailable",
+        incognito: chrome.extension?.inIncognitoContext === true,
+        extensionInstanceId: sessionManager.getExtensionInstanceId(),
+        readsProfileFiles: false
+    };
+}
+function firstSafeProfileHint(...values) {
+    for (const value of values) {
+        const safe = safeProfileHint(value);
+        if (safe)
+            return safe;
+    }
+    return null;
+}
+function safeProfileHint(value) {
+    if (typeof value !== "string")
+        return null;
+    const trimmed = value.trim();
+    if (!trimmed || trimmed.length > MAX_PROFILE_HINT_LENGTH)
+        return null;
+    if (/[\\/]/.test(trimmed))
+        return null;
+    return trimmed;
 }
 async function chromePermissionStatus() {
     const manifest = chrome.runtime.getManifest();
@@ -760,7 +916,7 @@ async function waitForEvent(params = {}) {
 async function getDiagnostics(params = {}) {
     const eventLimit = normalizeDiagnosticsLimit(params.eventLimit, 100, 500);
     const devLogLimit = normalizeDiagnosticsLimit(params.devLogLimit, 100, 500);
-    const healthSnapshot = await health();
+    const healthSnapshot = await health(params);
     const eventResult = await getEvents({
         sessionId: params.sessionId,
         tabId: params.tabId,
@@ -780,7 +936,7 @@ async function getDiagnostics(params = {}) {
         devLogs: devLogs.logs,
         activeSessions: healthSnapshot.sessions,
         attachedTabs: healthSnapshot.attachedTabs,
-        nativeManifest: normalizeNativeManifestDiagnostics(params.nativeDiagnostics),
+        nativeManifest: healthSnapshot.nativeManifest ?? normalizeNativeManifestDiagnostics(params.nativeDiagnostics),
         extension: {
             id: healthSnapshot.extensionId,
             version: healthSnapshot.version,
@@ -1102,8 +1258,10 @@ async function navigateHistory(params = {}, delta) {
 async function waitForUrl(params = {}) {
     const { session, tabId } = sessionManager.resolveSessionAndTab(params);
     const matcher = normalizeUrlMatcher(params);
+    const waitUntil = params.waitUntil == null ? null : normalizeLoadState(params.waitUntil);
     const timeoutMs = numberOrDefault(params.timeoutMs, 15000);
     const pollMs = Math.max(50, numberOrDefault(params.pollMs, 100));
+    const idleMs = numberOrDefault(params.idleMs, 500);
     const startedAt = Date.now();
     let lastPage = null;
     await debuggerManager.attachTab(tabId);
@@ -1112,15 +1270,26 @@ async function waitForUrl(params = {}) {
         const page = await currentPageLocation(tabId);
         lastPage = page;
         if (urlMatches(page.url, matcher)) {
+            const elapsedMs = Date.now() - startedAt;
+            let loadResult = null;
+            if (waitUntil) {
+                loadResult = await waitForLoadStateInTab(tabId, waitUntil, Math.max(0, timeoutMs - elapsedMs), idleMs, { commitAlreadySatisfied: true });
+            }
             sessionManager.touchSession(session?.sessionId);
             return {
                 sessionId: session?.sessionId ?? null,
                 tabId,
                 matched: true,
-                timedOut: false,
+                timedOut: loadResult?.reason === "timeout",
                 elapsedMs: Date.now() - startedAt,
                 url: page.url,
-                title: page.title
+                title: page.title,
+                ...(waitUntil && loadResult
+                    ? {
+                        waitUntil,
+                        loadReason: loadResult.reason
+                    }
+                    : {})
             };
         }
         await sleep(pollMs);
@@ -1143,27 +1312,7 @@ async function waitForLoadState(params = {}) {
     const idleMs = numberOrDefault(params.idleMs, 500);
     await debuggerManager.attachTab(tabId);
     await showCursorActivity(tabId, "thinking");
-    if (state === "networkidle") {
-        const result = await waitForNetworkIdle(tabId, timeoutMs, idleMs);
-        sessionManager.touchSession(session?.sessionId);
-        return {
-            sessionId: session?.sessionId ?? null,
-            tabId,
-            state,
-            ...result
-        };
-    }
-    if (await loadStateIsSatisfied(tabId, state)) {
-        sessionManager.touchSession(session?.sessionId);
-        return {
-            sessionId: session?.sessionId ?? null,
-            tabId,
-            state,
-            reason: "already_satisfied"
-        };
-    }
-    const event = state === "domcontentloaded" ? "Page.domContentEventFired" : "Page.loadEventFired";
-    const result = await waitForDebuggerEvent(tabId, event, timeoutMs);
+    const result = await waitForLoadStateInTab(tabId, state, timeoutMs, idleMs);
     sessionManager.touchSession(session?.sessionId);
     return {
         sessionId: session?.sessionId ?? null,
@@ -1266,6 +1415,9 @@ async function observe(params = {}) {
     await showCursorActivity(tabId, "thinking");
     const expression = `(() => {
   const MAX_TEXT_LENGTH = 5000;
+  const MAX_BODY_TEXT_INLINE = 1200;
+  const MAX_TEXT_SUMMARY_LENGTH = 2200;
+  const MAX_TEXT_SEGMENTS = 32;
   const MAX_ELEMENTS = 120;
 
   const normalizeText = (value) => String(value || "").replace(/\\s+/g, " ").trim();
@@ -1476,19 +1628,46 @@ async function observe(params = {}) {
     return tag;
   };
 
+  const selectorForFrame = (el) => {
+    if (!isElement(el)) return null;
+    const tag = el.tagName.toLowerCase();
+    if (tag !== "iframe" && tag !== "frame") return null;
+    return selectorForHost(el);
+  };
+
   const shadowMetadataFor = (el) => {
     const root = el.getRootNode?.();
     if (!(root instanceof ShadowRoot)) {
+      if (isUnsupportedClosedShadowHost(el)) {
+        return {
+          shadowRoot: "closed_unsupported",
+          shadowHostSelector: selectorForHost(el),
+          shadowUnsupportedReason: "custom_element_shadow_root_not_accessible"
+        };
+      }
+
       return {
         shadowRoot: null,
-        shadowHostSelector: null
+        shadowHostSelector: null,
+        shadowUnsupportedReason: null
       };
     }
 
     return {
       shadowRoot: "open",
-      shadowHostSelector: selectorForHost(root.host)
+      shadowHostSelector: selectorForHost(root.host),
+      shadowUnsupportedReason: null
     };
+  };
+  const isUnsupportedClosedShadowHost = (el) => {
+    if (!isElement(el) || el.shadowRoot) return false;
+    const tag = el.tagName.toLowerCase();
+    if (!tag.includes("-")) return false;
+    try {
+      return typeof customElements.get(tag) === "function";
+    } catch {
+      return false;
+    }
   };
 
   const elementState = (el) => {
@@ -1524,17 +1703,97 @@ async function observe(params = {}) {
       return "r" + Date.now().toString(36) + Math.random().toString(36).slice(2);
     }
   })();
+  const stableNodeHash = (value) => {
+    let hash = 2166136261;
+    const text = String(value || "");
+    for (let index = 0; index < text.length; index += 1) {
+      hash ^= text.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(36);
+  };
+  const stableNodeBaseFor = (el, frameSelectors) => {
+    const state = elementState(el);
+    const shadow = shadowMetadataFor(el);
+    const selectors = selectorCandidatesFor(el)
+      .slice(0, 3)
+      .map((candidate) => candidate.kind + ":" + candidate.selector)
+      .join("|");
+    const text = [
+      frameSelectors.join(">"),
+      shadow.shadowRoot || "",
+      shadow.shadowHostSelector || "",
+      el.tagName.toLowerCase(),
+      roleOf(el),
+      labelOf(el),
+      normalizeText(el.innerText || el.textContent || "").slice(0, 80),
+      state.testId || "",
+      state.href || "",
+      state.placeholder || "",
+      selectors
+    ].join("\\n");
+    return "n" + stableNodeHash(text);
+  };
 
-  const allCandidates = queryAllPiercingOpenShadow(selector);
-  const candidates = allCandidates
-    .filter((el) => isFileInput(el) || isVisible(el))
-    .slice(0, MAX_ELEMENTS);
-  const allCandidateCount = allCandidates
-    .filter((el) => isFileInput(el) || isVisible(el))
-    .length;
+  const iframeSelector = "iframe,frame";
+  const frameOffsetFor = (frameEl, parentOffset) => {
+    const rect = frameEl.getBoundingClientRect();
+    return {
+      x: parentOffset.x + rect.left,
+      y: parentOffset.y + rect.top
+    };
+  };
+  const collectCandidates = (root, frameSelectors = [], offset = { x: 0, y: 0 }, depth = 0) => {
+    const records = queryAllPiercingOpenShadow(selector, root)
+      .filter((el) => isFileInput(el) || isVisible(el))
+      .map((el) => ({
+        el,
+        frameSelectors,
+        offset
+      }));
 
-  const elements = candidates.map((el, index) => {
+    if (depth >= 4) {
+      return records;
+    }
+
+    for (const frameEl of queryAllPiercingOpenShadow(iframeSelector, root)) {
+      const frameSelector = selectorForFrame(frameEl);
+      if (!frameSelector) continue;
+
+      let frameDocument = null;
+      try {
+        frameDocument = frameEl.contentDocument;
+      } catch {
+        frameDocument = null;
+      }
+
+      if (!frameDocument) continue;
+
+      records.push(
+        ...collectCandidates(
+          frameDocument,
+          frameSelectors.concat(frameSelector),
+          frameOffsetFor(frameEl, offset),
+          depth + 1
+        )
+      );
+    }
+
+    return records;
+  };
+
+  const allCandidates = collectCandidates(document);
+  const candidates = allCandidates.slice(0, MAX_ELEMENTS);
+  const allCandidateCount = allCandidates.length;
+  const stableNodeCounts = new Map();
+
+  const elements = candidates.map((record, index) => {
+    const { el, frameSelectors, offset } = record;
     const ref = refScope + "-e" + index;
+    const stableNodeBase = stableNodeBaseFor(el, frameSelectors);
+    const stableNodeCount = stableNodeCounts.get(stableNodeBase) || 0;
+    stableNodeCounts.set(stableNodeBase, stableNodeCount + 1);
+    const stableNodeId = stableNodeCount === 0 ? stableNodeBase : stableNodeBase + "-" + stableNodeCount;
     const rect = el.getBoundingClientRect();
     const sensitive = isSensitive(el);
     const visibleText = normalizeText(el.innerText || el.textContent || "").slice(0, 160);
@@ -1544,26 +1803,82 @@ async function observe(params = {}) {
 
     return {
       ref,
-      nodeId: ref,
+      nodeId: stableNodeId,
+      stableNodeId,
       role: roleOf(el),
       label: labelOf(el),
       visibleText,
       sensitive,
       tagName: el.tagName.toLowerCase(),
       ...shadowMetadataFor(el),
+      ...(frameSelectors.length ? { frameSelectors } : {}),
       selectorCandidates: selectorCandidatesFor(el),
       ...elementState(el),
-      x: Math.round(rect.left + rect.width / 2),
-      y: Math.round(rect.top + rect.height / 2),
+      x: Math.round(offset.x + rect.left + rect.width / 2),
+      y: Math.round(offset.y + rect.top + rect.height / 2),
       rect: {
-        x: Math.round(rect.left),
-        y: Math.round(rect.top),
+        x: Math.round(offset.x + rect.left),
+        y: Math.round(offset.y + rect.top),
         width: Math.round(rect.width),
         height: Math.round(rect.height)
       }
     };
   });
   const bodyText = normalizeText(document.body?.innerText || "");
+  const buildTextSummary = () => {
+    if (bodyText.length <= MAX_BODY_TEXT_INLINE) {
+      return {
+        text: bodyText,
+        source: "body",
+        summarized: false
+      };
+    }
+
+    const segments = [];
+    const seen = new Set();
+    const pushSegment = (value, maxLength = 240) => {
+      const text = normalizeText(value).slice(0, maxLength);
+      if (!text || seen.has(text.toLowerCase())) return;
+      seen.add(text.toLowerCase());
+      segments.push(text);
+    };
+
+    pushSegment(document.title, 160);
+
+    const contentSelector = [
+      "main",
+      "article",
+      "[role='main']",
+      "h1",
+      "h2",
+      "h3",
+      "[role='heading']",
+      "p",
+      "li",
+      "summary",
+      "figcaption"
+    ].join(",");
+
+    for (const el of queryAllPiercingOpenShadow(contentSelector)) {
+      if (segments.length >= MAX_TEXT_SEGMENTS) break;
+      if (!isVisible(el) || isSensitive(el)) continue;
+      const text = normalizeText(el.innerText || el.textContent || "");
+      if (!text) continue;
+      pushSegment(text, text.length > 500 ? 240 : 320);
+    }
+
+    for (const element of elements) {
+      if (segments.length >= MAX_TEXT_SEGMENTS) break;
+      pushSegment([element.role, element.label, element.visibleText].filter(Boolean).join(": "), 220);
+    }
+
+    return {
+      text: segments.join("\\n").slice(0, MAX_TEXT_SUMMARY_LENGTH),
+      source: "summary",
+      summarized: true
+    };
+  };
+  const pageTextSummary = buildTextSummary();
   const active = isElement(document.activeElement) ? document.activeElement : null;
   const activeRect = active?.getBoundingClientRect();
   const selectedText = normalizeText(window.getSelection?.().toString() || "");
@@ -1618,13 +1933,16 @@ async function observe(params = {}) {
       dialogs
     },
     truncation: {
-      text: bodyText.length > MAX_TEXT_LENGTH,
+      text: pageTextSummary.text.length >= MAX_TEXT_SUMMARY_LENGTH || bodyText.length > MAX_BODY_TEXT_INLINE,
       textMaxLength: MAX_TEXT_LENGTH,
+      textSource: pageTextSummary.source,
+      textSummarized: pageTextSummary.summarized,
+      bodyTextLength: bodyText.length,
       elements: allCandidateCount > MAX_ELEMENTS,
       elementCount: allCandidateCount,
       elementMaxCount: MAX_ELEMENTS
     },
-    text: bodyText.slice(0, MAX_TEXT_LENGTH),
+    text: pageTextSummary.text,
     elements
   };
 })()`;
@@ -1660,9 +1978,10 @@ async function observe(params = {}) {
     if (params.includeAccessibility === true) {
         observation.accessibilityTree = accessibilityTree;
     }
+    observation.frameTree = await getPageFrameTree(tabId);
     if (params.includeDomSnapshot === true) {
         const domSnapshot = await getDomSnapshot(tabId);
-        observation.domSnapshot = domSnapshot;
+        observation.domSnapshot = sanitizeDomSnapshot(domSnapshot);
         observation.domSnapshotSummary = summarizeDomSnapshot(domSnapshot);
     }
     sessionManager.touchSession(session?.sessionId);
@@ -1842,16 +2161,36 @@ async function elementInfo(params = {}) {
   const shadowMetadataFor = (el) => {
     const root = el.getRootNode?.();
     if (!(root instanceof ShadowRoot)) {
+      if (isUnsupportedClosedShadowHost(el)) {
+        return {
+          shadowRoot: "closed_unsupported",
+          shadowHostSelector: selectorForHost(el),
+          shadowUnsupportedReason: "custom_element_shadow_root_not_accessible"
+        };
+      }
+
       return {
         shadowRoot: null,
-        shadowHostSelector: null
+        shadowHostSelector: null,
+        shadowUnsupportedReason: null
       };
     }
 
     return {
       shadowRoot: "open",
-      shadowHostSelector: selectorForHost(root.host)
+      shadowHostSelector: selectorForHost(root.host),
+      shadowUnsupportedReason: null
     };
+  };
+  const isUnsupportedClosedShadowHost = (el) => {
+    if (!isElement(el) || el.shadowRoot) return false;
+    const tag = el.tagName.toLowerCase();
+    if (!tag.includes("-")) return false;
+    try {
+      return typeof customElements.get(tag) === "function";
+    } catch {
+      return false;
+    }
   };
   const selectorCandidatesFor = (el) => {
     if (!isElement(el)) return [];
@@ -1980,10 +2319,26 @@ async function locatorQuery(params = {}) {
     const locator = normalizeLocatorPlan(params.locator);
     const kind = normalizeLocatorQueryKind(params.kind);
     await debuggerManager.attachTab(tabId);
+    const useFrameScopedContext = kind !== "boundingBox";
+    const target = useFrameScopedContext
+        ? await locatorExecutionTarget(tabId, locator, {
+            sessionId: session?.sessionId,
+            timeoutMs: numberOrDefault(params.timeoutMs, DEFAULT_CDP_TIMEOUT_MS)
+        })
+        : {
+            locator,
+            frameId: null,
+            targetId: null,
+            executionContextId: null
+        };
     const evaluated = await cdp(tabId, "Runtime.evaluate", {
-        expression: locatorQueryExpression(locator, kind, params.args),
+        expression: locatorQueryExpression(target.locator, kind, params.args),
+        ...(target.executionContextId != null ? { contextId: target.executionContextId } : {}),
         returnByValue: true,
         awaitPromise: true
+    }, {
+        targetId: target.targetId,
+        timeoutMs: numberOrDefault(params.timeoutMs, DEFAULT_CDP_TIMEOUT_MS)
     });
     const value = readRuntimeValue(evaluated);
     if (!value || value.ok !== true) {
@@ -1994,6 +2349,8 @@ async function locatorQuery(params = {}) {
         sessionId: session?.sessionId ?? null,
         tabId,
         kind,
+        frameId: target.frameId,
+        targetId: target.targetId,
         value: value.value,
         count: value.count
     };
@@ -2013,7 +2370,9 @@ async function locatorAction(params = {}) {
             ref: target.ref,
             clickCount: kind === "dblclick" ? 2 : numberOrDefault(args.clickCount, 1),
             button: args.button,
-            waitMs
+            waitMs,
+            confirmed: args.confirmed,
+            confirmationId: args.confirmationId
         });
     }
     if (kind === "fill" || kind === "type") {
@@ -2085,8 +2444,16 @@ async function locatorWait(params = {}) {
     const startedAt = Date.now();
     let lastMatch = null;
     await debuggerManager.attachTab(tabId);
+    const target = await locatorExecutionTarget(tabId, locator, {
+        sessionId: session?.sessionId,
+        timeoutMs
+    });
     while (Date.now() - startedAt <= timeoutMs) {
-        const match = await locatorState(tabId, locator);
+        const match = await locatorState(tabId, target.locator, {
+            executionContextId: target.executionContextId,
+            targetId: target.targetId,
+            timeoutMs
+        });
         lastMatch = match;
         if (selectorStateIsSatisfied(match, state)) {
             sessionManager.touchSession(session?.sessionId);
@@ -2094,6 +2461,8 @@ async function locatorWait(params = {}) {
                 sessionId: session?.sessionId ?? null,
                 tabId,
                 state,
+                frameId: target.frameId,
+                targetId: target.targetId,
                 matched: true,
                 timedOut: false,
                 elapsedMs: Date.now() - startedAt,
@@ -2107,10 +2476,120 @@ async function locatorWait(params = {}) {
         sessionId: session?.sessionId ?? null,
         tabId,
         state,
+        frameId: target.frameId,
+        targetId: target.targetId,
         matched: false,
         timedOut: true,
         elapsedMs: Date.now() - startedAt,
         count: lastMatch?.attached ? 1 : 0
+    };
+}
+async function resolveFrame(params = {}) {
+    const { session, tabId } = sessionManager.resolveSessionAndTab(params);
+    const frameSelectors = Array.isArray(params.frameSelectors)
+        ? params.frameSelectors.map((selector, selectorIndex) => requireString(selector, `resolveFrame.params.frameSelectors[${selectorIndex}]`))
+        : [];
+    const targetId = typeof params.targetId === "string" && params.targetId.trim()
+        ? params.targetId.trim()
+        : null;
+    const timeoutMs = numberOrDefault(params.timeoutMs, DEFAULT_CDP_TIMEOUT_MS);
+    if (frameSelectors.length === 0) {
+        throw new Error("resolveFrame.params.frameSelectors must contain at least one selector");
+    }
+    await debuggerManager.attachTab(tabId);
+    const evaluated = await cdp(tabId, "Runtime.evaluate", {
+        expression: resolveFrameSelectorPathExpression(frameSelectors),
+        returnByValue: true,
+        awaitPromise: true
+    }, {
+        targetId,
+        timeoutMs
+    });
+    const resolved = readRuntimeValue(evaluated);
+    if (!resolved || resolved.ok !== true) {
+        throw new Error(resolved?.error || "Unable to resolve frame selector path");
+    }
+    const frameTree = await cdp(tabId, "Page.getFrameTree", {}, { targetId, timeoutMs });
+    const match = matchResolvedFramePathToFrameTree(resolved.path, frameTree?.frameTree);
+    sessionManager.touchSession(session?.sessionId);
+    return {
+        sessionId: session?.sessionId ?? null,
+        tabId,
+        targetId,
+        frameSelectors,
+        matched: match.frame != null,
+        accessible: resolved.accessible === true,
+        frameId: match.frame?.id ?? null,
+        frame: match.node ? summarizePageFrameTreeNode(match.node) : null,
+        path: (Array.isArray(resolved.path) ? resolved.path : []).map((step, index) => ({
+            selector: typeof step.selector === "string" ? step.selector : frameSelectors[index] ?? "",
+            index,
+            accessible: step.accessible === true,
+            id: typeof step.id === "string" ? step.id : null,
+            name: typeof step.name === "string" ? step.name : null,
+            title: typeof step.title === "string" ? step.title : null,
+            src: typeof step.src === "string" ? sanitizeDebugUrl(step.src) : null,
+            url: typeof step.url === "string" ? sanitizeDebugUrl(step.url) : null,
+            frameId: match.path[index]?.frame?.id ?? null
+        }))
+    };
+}
+async function locatorExecutionTarget(tabId, locator, options = {}) {
+    const frameSelectors = Array.isArray(locator.frameSelectors)
+        ? locator.frameSelectors.filter((selector) => typeof selector === "string" && selector.trim().length > 0)
+        : [];
+    if (frameSelectors.length === 0) {
+        return {
+            locator,
+            frameId: null,
+            targetId: null,
+            executionContextId: null
+        };
+    }
+    const resolved = await resolveFrame({
+        sessionId: options.sessionId,
+        tabId,
+        frameSelectors,
+        timeoutMs: options.timeoutMs
+    });
+    const frameId = typeof resolved.frameId === "string" && resolved.frameId.trim()
+        ? resolved.frameId.trim()
+        : null;
+    const targetId = typeof resolved.targetId === "string" && resolved.targetId.trim()
+        ? resolved.targetId.trim()
+        : null;
+    if (!frameId && resolved.accessible === true) {
+        return {
+            locator,
+            frameId: null,
+            targetId: null,
+            executionContextId: null
+        };
+    }
+    if (!frameId) {
+        throw new Error(`Unable to resolve frame context for locator frameSelectors: ${frameSelectors.join(" -> ")}`);
+    }
+    return {
+        locator: stripLocatorFrameSelectors(locator),
+        frameId,
+        targetId,
+        executionContextId: await createEvaluationContextForFrame(tabId, frameId, {
+            targetId,
+            timeoutMs: options.timeoutMs
+        })
+    };
+}
+function stripLocatorFrameSelectors(locator) {
+    if (!locator || typeof locator !== "object") {
+        return locator;
+    }
+    const { frameSelectors: _frameSelectors, and, or, has, hasNot, ...rest } = locator;
+    return {
+        ...rest,
+        ...(and ? { and: stripLocatorFrameSelectors(and) } : {}),
+        ...(or ? { or: stripLocatorFrameSelectors(or) } : {}),
+        ...(has ? { has: stripLocatorFrameSelectors(has) } : {}),
+        ...(hasNot ? { hasNot: stripLocatorFrameSelectors(hasNot) } : {})
     };
 }
 async function click(params = {}) {
@@ -2120,11 +2599,33 @@ async function click(params = {}) {
     await assertBrowserPolicyForTab("click", tabId, session?.sessionId, {
         ...params,
         label: typeof target.label === "string" ? target.label : undefined,
-        text: typeof target.text === "string" ? target.text : undefined
+        text: typeof target.text === "string" ? target.text : undefined,
+        tagName: typeof target.tagName === "string" ? target.tagName : undefined
     });
+    await assertUserHandoffNotRequired(tabId, session?.sessionId ?? null, target);
     await showCursor(tabId, target.x, target.y);
-    await dispatchMouseClick(tabId, target.x, target.y, params);
-    await showCursorClick(tabId, target.x, target.y);
+    if (target.fileChooser) {
+        await showCursorClick(tabId, target.x, target.y);
+        const fileChooser = registerFileChooser({
+            sessionId: session?.sessionId ?? null,
+            tabId,
+            fileChooser: target.fileChooser
+        });
+        safePostEvent({
+            name: "fileChooserOpened",
+            sessionId: session?.sessionId ?? null,
+            tabId,
+            fileChooserId: fileChooser.fileChooserId,
+            file_chooser_id: fileChooser.file_chooser_id,
+            isMultiple: fileChooser.isMultiple,
+            is_multiple: fileChooser.is_multiple,
+            fileChooser
+        });
+    }
+    else {
+        await dispatchMouseClick(tabId, target.x, target.y, params);
+        await showCursorClick(tabId, target.x, target.y);
+    }
     await sleep(numberOrDefault(params.waitMs, 500));
     return observe({
         sessionId: session?.sessionId,
@@ -2239,6 +2740,12 @@ async function typeText(params = {}) {
 async function evaluate(params = {}) {
     const { session, tabId } = sessionManager.resolveSessionAndTab(params);
     const script = requireString(params.script, "evaluate.params.script");
+    const targetId = typeof params.targetId === "string" && params.targetId.trim()
+        ? params.targetId.trim()
+        : null;
+    const frameId = typeof params.frameId === "string" && params.frameId.trim()
+        ? params.frameId.trim()
+        : null;
     const timeoutMs = numberOrDefault(params.timeoutMs, DEFAULT_CDP_TIMEOUT_MS);
     await assertBrowserPolicyForTab("evaluate", tabId, session?.sessionId, {
         ...params,
@@ -2254,19 +2761,42 @@ async function evaluate(params = {}) {
         readOnly: params.mode !== "write" && !looksLikeMutatingScript(script)
     });
     await showCursorActivity(tabId, "thinking");
+    const executionContextId = frameId
+        ? await createEvaluationContextForFrame(tabId, frameId, {
+            targetId,
+            timeoutMs
+        })
+        : null;
     const evaluated = await cdp(tabId, "Runtime.evaluate", {
         expression: script,
+        ...(executionContextId != null ? { contextId: executionContextId } : {}),
         returnByValue: true,
         awaitPromise: params.awaitPromise !== false
     }, {
-        timeoutMs
+        timeoutMs,
+        targetId
     });
     sessionManager.touchSession(session?.sessionId);
     return {
         sessionId: session?.sessionId ?? null,
         tabId,
+        targetId,
+        frameId,
+        executionContextId,
         value: readRuntimeValue(evaluated)
     };
+}
+async function createEvaluationContextForFrame(tabId, frameId, options = {}) {
+    const result = await cdp(tabId, "Page.createIsolatedWorld", {
+        frameId,
+        worldName: "formax-evaluate",
+        grantUniveralAccess: false
+    }, options);
+    const executionContextId = result?.executionContextId;
+    if (typeof executionContextId !== "number" || !Number.isInteger(executionContextId)) {
+        throw new Error(`Could not create an evaluation execution context for frame ${frameId}`);
+    }
+    return executionContextId;
 }
 async function pressKey(params = {}) {
     const { session, tabId } = sessionManager.resolveSessionAndTab(params);
@@ -2355,6 +2885,13 @@ async function screenshot(params = {}) {
             scale: 1
         };
     }
+    if (params.highlight === true || params.highlightClip) {
+        await showHighlightRect(tabId, normalizeScreenshotHighlightClip(params.highlightClip ?? params.clip), {
+            color: typeof params.highlightColor === "string" ? params.highlightColor : undefined,
+            durationMs: numberOrDefault(params.highlightDurationMs, 900)
+        });
+        await sleep(80);
+    }
     const result = await cdp(tabId, "Page.captureScreenshot", captureParams);
     sessionManager.touchSession(session?.sessionId);
     return {
@@ -2385,6 +2922,165 @@ function normalizeScreenshotClip(value) {
         height,
         scale: 1
     };
+}
+function normalizeScreenshotHighlightClip(value) {
+    const clip = normalizeScreenshotClip(value);
+    if (!clip) {
+        throw new Error("screenshot.params.highlightClip or clip is required when highlight is enabled");
+    }
+    return {
+        x: clip.x,
+        y: clip.y,
+        width: clip.width,
+        height: clip.height
+    };
+}
+function registerFileChooser(options) {
+    pruneFileChoosers();
+    const id = `fc-${crypto.randomUUID()}`;
+    const multiple = options.fileChooser.multiple === true || options.fileChooser.isMultiple === true;
+    const fileChooser = {
+        ...options.fileChooser,
+        fileChooserId: id,
+        file_chooser_id: id,
+        multiple,
+        isMultiple: multiple,
+        is_multiple: multiple
+    };
+    fileChoosers.set(id, {
+        id,
+        createdAt: Date.now(),
+        sessionId: options.sessionId,
+        tabId: options.tabId,
+        fileChooser
+    });
+    return fileChooser;
+}
+function pruneFileChoosers() {
+    const now = Date.now();
+    for (const [id, record] of fileChoosers.entries()) {
+        if (now - record.createdAt > FILE_CHOOSER_TTL_MS) {
+            fileChoosers.delete(id);
+        }
+    }
+    while (fileChoosers.size > MAX_FILE_CHOOSERS) {
+        const oldest = fileChoosers.keys().next().value;
+        if (!oldest)
+            break;
+        fileChoosers.delete(oldest);
+    }
+}
+function normalizeFileChooserId(params, action = "setFileChooserFiles") {
+    const value = typeof params.fileChooserId === "string" && params.fileChooserId.trim()
+        ? params.fileChooserId.trim()
+        : typeof params.file_chooser_id === "string" && params.file_chooser_id.trim()
+            ? params.file_chooser_id.trim()
+            : "";
+    if (!value) {
+        throw new Error(`${action}.params requires fileChooserId or file_chooser_id`);
+    }
+    return value;
+}
+function fileChooserResultFromEvent(event, elapsedMs) {
+    if (!event) {
+        return {
+            sessionId: null,
+            tabId: null,
+            matched: false,
+            timedOut: true,
+            elapsedMs,
+            fileChooserId: null,
+            file_chooser_id: null,
+            isMultiple: null,
+            is_multiple: null,
+            fileChooser: null,
+            event: null
+        };
+    }
+    const fileChooser = event.fileChooser && typeof event.fileChooser === "object"
+        ? event.fileChooser
+        : {};
+    const fileChooserId = typeof event.fileChooserId === "string" && event.fileChooserId.trim()
+        ? event.fileChooserId.trim()
+        : typeof event.file_chooser_id === "string" && event.file_chooser_id.trim()
+            ? event.file_chooser_id.trim()
+            : typeof fileChooser.fileChooserId === "string" && fileChooser.fileChooserId.trim()
+                ? fileChooser.fileChooserId.trim()
+                : typeof fileChooser.file_chooser_id === "string" && fileChooser.file_chooser_id.trim()
+                    ? fileChooser.file_chooser_id.trim()
+                    : null;
+    const isMultiple = event.isMultiple === true ||
+        event.is_multiple === true ||
+        fileChooser.multiple === true ||
+        fileChooser.isMultiple === true ||
+        fileChooser.is_multiple === true;
+    return {
+        sessionId: typeof event.sessionId === "string" ? event.sessionId : null,
+        tabId: typeof event.tabId === "number" ? event.tabId : null,
+        matched: true,
+        timedOut: false,
+        elapsedMs,
+        fileChooserId,
+        file_chooser_id: fileChooserId,
+        isMultiple,
+        is_multiple: isMultiple,
+        fileChooser: {
+            ...fileChooser,
+            ...(fileChooserId ? { fileChooserId, file_chooser_id: fileChooserId } : {}),
+            multiple: isMultiple,
+            isMultiple,
+            is_multiple: isMultiple
+        },
+        event
+    };
+}
+async function waitForFileChooser(params = {}) {
+    const timeoutMs = numberOrDefault(params.timeoutMs, 15000);
+    const pollMs = Math.max(50, numberOrDefault(params.pollMs, 100));
+    const startedAt = Date.now();
+    while (Date.now() - startedAt <= timeoutMs) {
+        const events = eventBuffer.list({
+            sessionId: params.sessionId,
+            tabId: params.tabId,
+            name: "fileChooserOpened",
+            sinceSequence: params.sinceSequence,
+            limit: 1
+        });
+        if (events.length > 0) {
+            const result = fileChooserResultFromEvent(events[0], Date.now() - startedAt);
+            if (result.sessionId) {
+                sessionManager.touchSession(result.sessionId);
+            }
+            return result;
+        }
+        await sleep(pollMs);
+    }
+    return fileChooserResultFromEvent(null, Date.now() - startedAt);
+}
+async function setFileChooserFiles(params = {}) {
+    pruneFileChoosers();
+    const fileChooserId = normalizeFileChooserId(params);
+    const record = fileChoosers.get(fileChooserId);
+    if (!record) {
+        throw new Error(`setFileChooserFiles.params.fileChooserId not found or expired: ${fileChooserId}`);
+    }
+    if (record.sessionId && typeof params.sessionId === "string" && params.sessionId.trim() && record.sessionId !== params.sessionId.trim()) {
+        throw new Error("setFileChooserFiles.params.sessionId does not match file chooser session");
+    }
+    if (typeof params.tabId === "number" && record.tabId !== params.tabId) {
+        throw new Error("setFileChooserFiles.params.tabId does not match file chooser tab");
+    }
+    const filePaths = normalizeUploadFilePaths(params, "setFileChooserFiles");
+    return uploadFile({
+        ...params,
+        sessionId: record.sessionId ?? params.sessionId,
+        tabId: record.tabId,
+        ref: record.fileChooser.ref,
+        selector: record.fileChooser.selector,
+        filePath: undefined,
+        files: undefined,
+        filePaths
+    });
 }
 async function uploadFile(params = {}) {
     const { session, tabId } = sessionManager.resolveSessionAndTab(params);
@@ -2439,15 +3135,18 @@ async function uploadFile(params = {}) {
         tabId
     });
 }
-function normalizeUploadFilePaths(params) {
-    const filePaths = Array.isArray(params.filePaths)
-        ? params.filePaths.map((item, index) => requireString(item, `uploadFile.params.filePaths[${index}]`))
+function normalizeUploadFilePaths(params, action = "uploadFile") {
+    const filePaths = Array.isArray(params.files)
+        ? params.files.map((item, index) => requireString(item, `${action}.params.files[${index}]`))
         : [];
+    if (Array.isArray(params.filePaths)) {
+        filePaths.push(...params.filePaths.map((item, index) => requireString(item, `${action}.params.filePaths[${index}]`)));
+    }
     if (typeof params.filePath === "string" && params.filePath.trim()) {
         filePaths.unshift(params.filePath.trim());
     }
     if (filePaths.length === 0) {
-        throw new Error("uploadFile.params requires filePath or filePaths");
+        throw new Error(`${action}.params requires files, filePath, or filePaths`);
     }
     return filePaths;
 }
@@ -2749,6 +3448,133 @@ async function waitForDownload(params = {}) {
         download: lastDownload ? summarizeDownload(lastDownload) : null
     };
 }
+async function downloadMedia(params = {}) {
+    const { session, tabId } = sessionManager.resolveSessionAndTab(params);
+    const locator = normalizeLocatorPlan(params.locator);
+    const attribute = normalizeMediaDownloadAttribute(params.attribute);
+    const fallbackFetch = params.fallbackFetch === true;
+    const fallbackMaxBytes = normalizeDownloadFallbackMaxBytes(params.fallbackMaxBytes);
+    await debuggerManager.attachTab(tabId);
+    const evaluated = await cdp(tabId, "Runtime.evaluate", {
+        expression: mediaDownloadTargetExpression(locator, attribute),
+        returnByValue: true,
+        awaitPromise: true
+    });
+    const media = readRuntimeValue(evaluated);
+    if (!media || media.ok !== true || typeof media.url !== "string") {
+        throw new Error(media?.error || `Unable to resolve downloadable media for locator: ${locator.selector}`);
+    }
+    const filename = normalizeDownloadFilename(params.filename);
+    await assertBrowserPolicyForUrl("download", media.url, session?.sessionId, {
+        ...params,
+        filename,
+        label: media.label,
+        text: media.text
+    });
+    const downloadOptions = mediaDownloadOptions({
+        url: media.url,
+        filename,
+        saveAs: params.saveAs,
+        conflictAction: params.conflictAction
+    });
+    const { downloadId, method, finalUrl, filename: actualFilename } = await startMediaDownload({
+        mediaUrl: media.url,
+        downloadOptions,
+        fallbackFetch,
+        fallbackMaxBytes,
+        sessionId: session?.sessionId,
+        params,
+        label: media.label,
+        text: media.text
+    });
+    const started = await chrome.downloads.search({ id: downloadId }).then((items) => items[0] ?? null);
+    const baseResult = {
+        sessionId: session?.sessionId ?? null,
+        tabId,
+        media: {
+            url: finalUrl,
+            originalUrl: media.url,
+            kind: media.kind,
+            tagName: media.tagName,
+            attribute: media.attribute,
+            filename: actualFilename,
+            method
+        },
+        download: started ? summarizeDownload(started) : null
+    };
+    if (params.waitForCompletion !== true) {
+        sessionManager.touchSession(session?.sessionId);
+        return baseResult;
+    }
+    const waitResult = await waitForDownload({
+        sessionId: session?.sessionId,
+        tabId,
+        id: downloadId,
+        state: "complete",
+        timeoutMs: params.timeoutMs,
+        pollMs: params.pollMs
+    });
+    sessionManager.touchSession(session?.sessionId);
+    return {
+        ...baseResult,
+        matched: waitResult.matched,
+        timedOut: waitResult.timedOut,
+        elapsedMs: waitResult.elapsedMs,
+        download: waitResult.download
+    };
+}
+function mediaDownloadOptions(options) {
+    const downloadOptions = {
+        url: options.url,
+        saveAs: options.saveAs === true
+    };
+    const conflictAction = normalizeDownloadConflictAction(options.conflictAction);
+    if (options.filename) {
+        downloadOptions.filename = options.filename;
+    }
+    if (conflictAction) {
+        downloadOptions.conflictAction = conflictAction;
+    }
+    return downloadOptions;
+}
+async function startMediaDownload(options) {
+    try {
+        return {
+            downloadId: await chrome.downloads.download(options.downloadOptions),
+            method: "chrome_downloads",
+            finalUrl: options.mediaUrl,
+            filename: typeof options.downloadOptions.filename === "string" ? options.downloadOptions.filename : null
+        };
+    }
+    catch (error) {
+        if (!options.fallbackFetch) {
+            throw error;
+        }
+    }
+    const fetched = await fetchMediaAsDataUrl(options.mediaUrl, options.fallbackMaxBytes);
+    if (fetched.finalUrl !== options.mediaUrl) {
+        await assertBrowserPolicyForUrl("download", fetched.finalUrl, options.sessionId, {
+            ...options.params,
+            filename: options.downloadOptions.filename,
+            label: options.label,
+            text: options.text
+        });
+    }
+    const fallbackFilename = typeof options.downloadOptions.filename === "string" && options.downloadOptions.filename.trim()
+        ? options.downloadOptions.filename
+        : filenameFromMediaUrl(fetched.finalUrl, fetched.contentType);
+    const fallbackOptions = {
+        ...options.downloadOptions,
+        url: fetched.dataUrl,
+        filename: fallbackFilename
+    };
+    return {
+        downloadId: await chrome.downloads.download(fallbackOptions),
+        method: "fetch_blob",
+        finalUrl: fetched.finalUrl,
+        filename: fallbackFilename
+    };
+}
 async function rawCdp(params = {}) {
     const { session, tabId } = sessionManager.resolveSessionAndTab(params);
     const method = requireString(params.method, "cdp.params.method");
@@ -2761,7 +3587,8 @@ async function rawCdp(params = {}) {
     const timeoutMs = numberOrDefault(params.timeoutMs, DEFAULT_CDP_TIMEOUT_MS);
     await assertBrowserPolicyForTab("rawCdp", tabId, session?.sessionId, {
         ...params,
-        method
+        method,
+        params: commandParams
     });
     await postDiagnosticActionAudit({
         action: "rawCdp",
@@ -2781,6 +3608,54 @@ async function rawCdp(params = {}) {
         targetId,
         method,
         result
+    };
+}
+async function attachTarget(params = {}) {
+    const { session, tabId } = sessionManager.resolveSessionAndTab(params);
+    const targetId = requireString(params.targetId, "attachTarget.params.targetId").trim();
+    if (!targetId) {
+        throw new Error("attachTarget.params.targetId must be a non-empty string");
+    }
+    await assertBrowserPolicyForTab("rawCdp", tabId, session?.sessionId, {
+        ...params,
+        method: "Target.attachToTarget"
+    });
+    await postDiagnosticActionAudit({
+        action: "rawCdp",
+        tabId,
+        sessionId: session?.sessionId ?? null,
+        method: "Target.attachToTarget",
+        reason: auditReason(params.reason, "attach_target")
+    });
+    await debuggerManager.attachTarget(targetId);
+    sessionManager.touchSession(session?.sessionId);
+    return {
+        attached: true,
+        sessionId: session?.sessionId ?? null,
+        tabId,
+        targetId
+    };
+}
+async function detachTarget(params = {}) {
+    const { session, tabId } = sessionManager.resolveSessionAndTab(params);
+    const targetId = requireString(params.targetId, "detachTarget.params.targetId").trim();
+    if (!targetId) {
+        throw new Error("detachTarget.params.targetId must be a non-empty string");
+    }
+    await postDiagnosticActionAudit({
+        action: "rawCdp",
+        tabId,
+        sessionId: session?.sessionId ?? null,
+        method: "Target.detachFromTarget",
+        reason: auditReason(params.reason, "detach_target")
+    });
+    await debuggerManager.detachTarget(targetId);
+    sessionManager.touchSession(session?.sessionId);
+    return {
+        attached: false,
+        sessionId: session?.sessionId ?? null,
+        tabId,
+        targetId
     };
 }
 async function backendNodeForPoint(tabId, x, y, includeNonInteractable) {
@@ -2888,7 +3763,7 @@ function originForAudit(url) {
 }
 async function closeTab(params = {}) {
     const { session, tabId } = sessionManager.resolveSessionAndTab(params);
-    await debuggerManager.detachTab(tabId);
+    await detachTabForLifecycle(tabId);
     const changedSessions = sessionManager.removeTab(tabId);
     let closed = false;
     try {
@@ -2933,7 +3808,16 @@ async function finalizeSession(params = {}) {
     const releasedTabs = [];
     for (const tabId of tabIds) {
         const lease = sessionManager.getTabLease(tabId);
-        await debuggerManager.detachTab(tabId);
+        if (handoff.has(tabId)) {
+            await setPageVisualStatus(tabId, "handoff", { sessionId, reason: "finalizeSession" });
+        }
+        else if (deliverable.has(tabId)) {
+            await setPageVisualStatus(tabId, "deliverable", { sessionId, reason: "finalizeSession" });
+        }
+        else if (!closeRest || lease?.origin === "user") {
+            await setPageVisualStatus(tabId, "stopped", { sessionId, reason: "finalizeSession" });
+        }
+        await detachTabForLifecycle(tabId);
         cursorOverlayStateByTab.delete(tabId);
         if (handoff.has(tabId)) {
             keptTabs.push(tabId);
@@ -2996,7 +3880,8 @@ async function endTurn(params = {}) {
     }
     const releasedTabs = sessionManager.releaseActiveTurn(sessionId, turnId);
     for (const tabId of releasedTabs) {
-        await debuggerManager.detachTab(tabId);
+        await setPageVisualStatus(tabId, "stopped", { sessionId, turnId, reason: "endTurn" });
+        await detachTabForLifecycle(tabId);
         cursorOverlayStateByTab.delete(tabId);
     }
     if (session.tabIds.length === 0) {
@@ -3023,7 +3908,10 @@ async function stopSession(params = {}) {
     const closedTabs = [];
     const tabIds = [...session.tabIds];
     for (const tabId of tabIds) {
-        await debuggerManager.detachTab(tabId);
+        if (params.closeTabs !== true) {
+            await setPageVisualStatus(tabId, "stopped", { sessionId, reason: "stopSession" });
+        }
+        await detachTabForLifecycle(tabId);
         cursorOverlayStateByTab.delete(tabId);
         if (params.closeTabs === true) {
             try {
@@ -3050,10 +3938,12 @@ async function resolvePointerTarget(tabId, params, actionName) {
     if (typeof params.x === "number" || typeof params.y === "number") {
         const x = requireFiniteNumber(params.x, `${actionName}.params.x`);
         const y = requireFiniteNumber(params.y, `${actionName}.params.y`);
+        const context = await pointerTargetContext(tabId, x, y);
         return {
             ok: true,
             x,
             y,
+            ...context,
             rect: {
                 x: x - 2,
                 y: y - 2,
@@ -3063,6 +3953,155 @@ async function resolvePointerTarget(tabId, params, actionName) {
         };
     }
     return locateElementTarget(tabId, params, actionName);
+}
+async function pointerTargetContext(tabId, x, y) {
+    try {
+        const evaluated = await cdp(tabId, "Runtime.evaluate", {
+            expression: pointerTargetContextExpression(x, y),
+            returnByValue: true,
+            awaitPromise: true
+        });
+        const value = readRuntimeValue(evaluated);
+        if (value && value.ok === true) {
+            return {
+                label: typeof value.label === "string" ? value.label : undefined,
+                text: typeof value.text === "string" ? value.text : undefined,
+                tagName: typeof value.tagName === "string" ? value.tagName : undefined,
+                riskContext: value.riskContext && typeof value.riskContext === "object"
+                    ? value.riskContext
+                    : undefined
+            };
+        }
+    }
+    catch {
+        // Coordinate clicks should still work on pages where context inspection fails.
+    }
+    return {};
+}
+function pointerTargetContextExpression(x, y) {
+    return `(() => {
+  const el = document.elementFromPoint(${JSON.stringify(x)}, ${JSON.stringify(y)});
+  if (!el) {
+    return { ok: false };
+  }
+
+  const normalizeText = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+  const textForName = (candidate) => {
+    if (!candidate) return "";
+    if (candidate.nodeType === Node.TEXT_NODE) return candidate.nodeValue || "";
+    if (!(candidate instanceof Element)) return "";
+    if (candidate.hidden || candidate.getAttribute("aria-hidden") === "true") return "";
+    const style = getComputedStyle(candidate);
+    if (style.display === "none" || style.visibility === "hidden") return "";
+    const tag = candidate.tagName.toLowerCase();
+    if (tag === "script" || tag === "style") return "";
+    return Array.from(candidate.childNodes).map((child) => textForName(child)).join(" ");
+  };
+  const labelledBy = el.getAttribute?.("aria-labelledby");
+  const labelledText = labelledBy
+    ? labelledBy
+        .split(/\\s+/)
+        .map((id) => textForName(document.getElementById(id)))
+        .join(" ")
+    : "";
+  const labelText = normalizeText(
+    labelledText ||
+    el.getAttribute?.("aria-label") ||
+    Array.from(el.labels || []).map((label) => textForName(label)).join(" ") ||
+    el.getAttribute?.("alt") ||
+    el.getAttribute?.("title") ||
+    el.getAttribute?.("placeholder") ||
+    textForName(el) ||
+    el.getAttribute?.("name") ||
+    el.getAttribute?.("id")
+  );
+  const visibleText = normalizeText(el.innerText || el.textContent || "");
+  const nearestForm = el.closest?.("form, [role='form']");
+  const formText = normalizeText(nearestForm?.innerText || nearestForm?.textContent || "");
+  const pageText = normalizeText(document.body?.innerText || "");
+  const passwordFieldCount = nearestForm
+    ? nearestForm.querySelectorAll?.("input[type=password]").length || 0
+    : document.querySelectorAll("input[type=password]").length;
+
+  return {
+    ok: true,
+    tagName: el.tagName,
+    label: labelText.slice(0, 160),
+    text: visibleText.slice(0, 160),
+    riskContext: {
+      pageTitle: document.title.slice(0, 160),
+      formText: formText.slice(0, 500),
+      pageText: pageText.slice(0, 1000),
+      passwordFieldCount
+    }
+  };
+})()`;
+}
+async function assertUserHandoffNotRequired(tabId, sessionId, target) {
+    const risk = userHandoffRiskForTarget(target);
+    if (!risk) {
+        return;
+    }
+    await setPageVisualStatus(tabId, "handoff", {
+        sessionId,
+        reason: risk.category
+    });
+    safePostEvent({
+        name: "userHandoffRequired",
+        sessionId,
+        tabId,
+        action: "click",
+        category: risk.category,
+        reason: risk.reason,
+        target: {
+            label: truncateAndRedactString(typeof target.label === "string" ? target.label : "", 120),
+            text: truncateAndRedactString(typeof target.text === "string" ? target.text : "", 120),
+            tagName: typeof target.tagName === "string" ? target.tagName.toLowerCase() : null
+        }
+    });
+    throw new Error(`user_handoff_required: ${risk.reason}`);
+}
+function userHandoffRiskForTarget(target) {
+    const riskContext = target.riskContext && typeof target.riskContext === "object"
+        ? target.riskContext
+        : {};
+    const label = typeof target.label === "string" ? target.label : "";
+    const text = typeof target.text === "string" ? target.text : "";
+    const actionText = `${label} ${text}`.trim();
+    const pageTitle = typeof riskContext.pageTitle === "string" ? riskContext.pageTitle : "";
+    const formText = typeof riskContext.formText === "string" ? riskContext.formText : "";
+    const pageText = typeof riskContext.pageText === "string" ? riskContext.pageText : "";
+    const source = `${actionText} ${pageTitle} ${formText} ${pageText}`.trim();
+    const passwordFieldCount = typeof riskContext.passwordFieldCount === "number" && Number.isFinite(riskContext.passwordFieldCount)
+        ? riskContext.passwordFieldCount
+        : 0;
+    if (CAPTCHA_HANDOFF_PATTERN.test(source)) {
+        return {
+            category: "captcha",
+            reason: "CAPTCHA or human-verification challenge requires user handoff."
+        };
+    }
+    if (SECURITY_INTERSTITIAL_PATTERN.test(source) && SECURITY_INTERSTITIAL_ACTION_PATTERN.test(actionText)) {
+        return {
+            category: "browser_security_interstitial",
+            reason: "Browser security interstitial bypass requires user handoff."
+        };
+    }
+    if (PAYWALL_BYPASS_PATTERN.test(source)) {
+        return {
+            category: "paywall_bypass",
+            reason: "Paywall bypass requires user handoff."
+        };
+    }
+    if (passwordFieldCount > 0 &&
+        PASSWORD_CHANGE_ACTION_PATTERN.test(source) &&
+        PASSWORD_FINAL_BUTTON_PATTERN.test(actionText)) {
+        return {
+            category: "password_change_final_submission",
+            reason: "Password-change final submission requires user handoff."
+        };
+    }
+    return null;
 }
 async function locateElementTarget(tabId, params, actionName) {
     const ref = typeof params.ref === "string" && params.ref.trim()
@@ -3234,7 +4273,53 @@ function elementTargetExpression(ref, selector, clear) {
 
     return "";
   };
+  const fileChooserFor = (node) => {
+    const resolveFileInput = (candidate) => {
+      if (!candidate || !(candidate instanceof Element)) return null;
+      const tag = candidate.tagName.toLowerCase();
+      const type = (candidate.getAttribute("type") || "").toLowerCase();
+
+      if (tag === "input" && type === "file") {
+        return candidate;
+      }
+
+      if (tag === "label") {
+        if (candidate.control && candidate.control.matches?.("input[type=file]")) {
+          return candidate.control;
+        }
+
+        const nested = candidate.querySelector?.("input[type=file]");
+        if (nested) return nested;
+      }
+
+      if (candidate.hasAttribute?.("for")) {
+        const control = document.getElementById(candidate.getAttribute("for") || "");
+        if (control?.matches?.("input[type=file]")) return control;
+      }
+
+      const childInput = candidate.querySelector?.("input[type=file]");
+      if (childInput) return childInput;
+
+      return null;
+    };
+    const input = resolveFileInput(node);
+    if (!input) return null;
+    return {
+      ref,
+      selector,
+      multiple: input.multiple === true,
+      accept: input.getAttribute("accept") || "",
+      name: input.getAttribute("name") || "",
+      inputId: input.getAttribute("id") || ""
+    };
+  };
   const visibleText = normalizeText(el.innerText || el.textContent || "");
+  const nearestForm = el.closest?.("form, [role='form']");
+  const formText = normalizeText(nearestForm?.innerText || nearestForm?.textContent || "");
+  const pageText = normalizeText(document.body?.innerText || "");
+  const passwordFieldCount = nearestForm
+    ? nearestForm.querySelectorAll?.("input[type=password]").length || 0
+    : document.querySelectorAll("input[type=password]").length;
 
   return {
     ok: true,
@@ -3243,6 +4328,13 @@ function elementTargetExpression(ref, selector, clear) {
     label: labelOf(el).slice(0, 160),
     text: visibleText.slice(0, 160),
     tagName: el.tagName,
+    riskContext: {
+      pageTitle: document.title.slice(0, 160),
+      formText: formText.slice(0, 500),
+      pageText: pageText.slice(0, 1000),
+      passwordFieldCount
+    },
+    fileChooser: fileChooserFor(el),
     rect: {
       x: rect.left,
       y: rect.top,
@@ -3423,6 +4515,170 @@ function locatorTargetExpression(locator, ref, actionKind = "click", actionArgs 
     }
   };
 })()`;
+}
+function resolveFrameSelectorPathExpression(frameSelectors) {
+    return `(() => {
+  const frameSelectors = ${JSON.stringify(frameSelectors)};
+  const queryAllPiercingOpenShadow = (query, root = document) => {
+    const out = [];
+    const seen = new Set();
+    const visit = (scope) => {
+      let matches = [];
+      try {
+        matches = Array.from(scope.querySelectorAll(query));
+      } catch {
+        matches = [];
+      }
+
+      for (const el of matches) {
+        if (!seen.has(el)) {
+          seen.add(el);
+          out.push(el);
+        }
+      }
+
+      let descendants = [];
+      try {
+        descendants = Array.from(scope.querySelectorAll("*"));
+      } catch {
+        descendants = [];
+      }
+
+      for (const el of descendants) {
+        if (el.shadowRoot) visit(el.shadowRoot);
+      }
+    };
+
+    visit(root);
+    return out;
+  };
+  const absoluteUrl = (value, base) => {
+    if (!value) return null;
+    try {
+      return new URL(value, base || document.baseURI).href;
+    } catch {
+      return String(value);
+    }
+  };
+  let currentRoot = document;
+  const path = [];
+
+  for (let index = 0; index < frameSelectors.length; index += 1) {
+    const selector = frameSelectors[index];
+    const frame = queryAllPiercingOpenShadow(selector, currentRoot)
+      .find((candidate) => candidate instanceof HTMLIFrameElement || candidate instanceof HTMLFrameElement);
+
+    if (!frame) {
+      return {
+        ok: false,
+        error: "Frame locator could not find frame: " + selector,
+        path
+      };
+    }
+
+    let frameDocument = null;
+    try {
+      frameDocument = frame.contentDocument;
+    } catch {
+      frameDocument = null;
+    }
+
+    const src = frame.getAttribute("src") || frame.src || null;
+    const url = frameDocument?.location?.href || absoluteUrl(src, currentRoot?.baseURI || document.baseURI);
+    path.push({
+      selector,
+      id: frame.getAttribute("id") || null,
+      name: frame.getAttribute("name") || frame.name || null,
+      title: frame.getAttribute("title") || null,
+      src: src ? absoluteUrl(src, currentRoot?.baseURI || document.baseURI) : null,
+      url,
+      accessible: frameDocument != null
+    });
+
+    if (!frameDocument && index < frameSelectors.length - 1) {
+      return {
+        ok: false,
+        error: "Frame locator cannot traverse cross-origin or unavailable frame: " + selector,
+        path
+      };
+    }
+
+    if (frameDocument) {
+      currentRoot = frameDocument;
+    }
+  }
+
+  return {
+    ok: true,
+    accessible: path.length > 0 ? path[path.length - 1].accessible === true : false,
+    path
+  };
+})()`;
+}
+function matchResolvedFramePathToFrameTree(path, frameTree) {
+    let current = frameTree && typeof frameTree === "object" ? frameTree : null;
+    const matchedPath = [];
+    if (!current || !Array.isArray(path)) {
+        return {
+            node: null,
+            frame: null,
+            path: matchedPath
+        };
+    }
+    for (const step of path) {
+        const children = Array.isArray(current.childFrames) ? current.childFrames : [];
+        const best = children
+            .map((candidate) => ({
+            candidate,
+            score: scoreResolvedFrameCandidate(step, candidate?.frame)
+        }))
+            .filter((entry) => entry.score > 0)
+            .sort((left, right) => right.score - left.score)[0]?.candidate ?? null;
+        if (!best) {
+            return {
+                node: null,
+                frame: null,
+                path: matchedPath
+            };
+        }
+        matchedPath.push(best);
+        current = best;
+    }
+    return {
+        node: current,
+        frame: current?.frame ?? null,
+        path: matchedPath
+    };
+}
+function scoreResolvedFrameCandidate(step, frame) {
+    if (!frame || typeof frame !== "object") {
+        return 0;
+    }
+    let score = 0;
+    const stepUrl = typeof step.url === "string" ? stripUrlHash(step.url) : null;
+    const stepSrc = typeof step.src === "string" ? stripUrlHash(step.src) : null;
+    const frameUrl = typeof frame.url === "string" ? stripUrlHash(frame.url) : null;
+    const stepName = typeof step.name === "string" && step.name.trim() ? step.name.trim() : null;
+    const frameName = typeof frame.name === "string" && frame.name.trim() ? frame.name.trim() : null;
+    if (stepUrl && frameUrl && stepUrl === frameUrl)
+        score += 8;
+    if (stepSrc && frameUrl && stepSrc === frameUrl)
+        score += 6;
+    if (stepName && frameName && stepName === frameName)
+        score += 4;
+    if (typeof frame.id === "string" && frame.id)
+        score += 1;
+    return score;
+}
+function stripUrlHash(value) {
+    try {
+        const parsed = new URL(value);
+        parsed.hash = "";
+        return parsed.href;
+    }
+    catch {
+        return value.split("#", 1)[0];
+    }
 }
 function locatorActionabilitySource(actionKind, actionArgs = {}) {
     const requiresEditable = ["fill", "type", "clear"].includes(actionKind);
@@ -4251,6 +5507,84 @@ function locatorQueryExpression(locator, kind, args) {
   };
 })()`;
 }
+function mediaDownloadTargetExpression(locator, attribute) {
+    return `(() => {
+  const requestedAttribute = ${JSON.stringify(attribute)};
+  ${locatorResolverSource(locator)}
+  const resolved = resolveLocator();
+  if (!resolved.ok) return resolved;
+
+  const el = resolved.element;
+  const tagName = el?.tagName?.toLowerCase?.() || "";
+  const normalizeText = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+  const absoluteUrl = (value) => {
+    if (typeof value !== "string" || !value.trim()) return null;
+    try {
+      const parsed = new URL(value.trim(), document.baseURI);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+      return parsed.href;
+    } catch {
+      return null;
+    }
+  };
+  const cssBackgroundUrl = (node) => {
+    const value = getComputedStyle(node).backgroundImage || "";
+    const match = value.match(/url\\((['"]?)(.*?)\\1\\)/);
+    return match ? match[2] : null;
+  };
+  const fromAttribute = (name) => absoluteUrl(el?.getAttribute?.(name));
+  const directCurrentSrc = () => absoluteUrl(el?.currentSrc) || absoluteUrl(el?.src);
+  const candidates = [];
+
+  if (requestedAttribute === "src") {
+    candidates.push({ attribute: "src", url: directCurrentSrc() || fromAttribute("src") });
+  } else if (requestedAttribute === "href") {
+    candidates.push({ attribute: "href", url: fromAttribute("href") });
+  } else if (requestedAttribute === "poster") {
+    candidates.push({ attribute: "poster", url: fromAttribute("poster") });
+  } else if (requestedAttribute === "backgroundImage") {
+    candidates.push({ attribute: "backgroundImage", url: absoluteUrl(cssBackgroundUrl(el)) });
+  } else {
+    if (["img", "source", "video", "audio", "track", "embed", "iframe"].includes(tagName)) {
+      candidates.push({ attribute: "src", url: directCurrentSrc() || fromAttribute("src") });
+    }
+    if (tagName === "input" && (el.getAttribute("type") || "").toLowerCase() === "image") {
+      candidates.push({ attribute: "src", url: directCurrentSrc() || fromAttribute("src") });
+    }
+    if (["a", "area", "link"].includes(tagName)) {
+      candidates.push({ attribute: "href", url: fromAttribute("href") });
+    }
+    if (["video", "audio"].includes(tagName)) {
+      const source = Array.from(el.querySelectorAll?.("source[src]") || [])
+        .map((sourceEl) => absoluteUrl(sourceEl.currentSrc || sourceEl.src || sourceEl.getAttribute("src")))
+        .find(Boolean);
+      candidates.push({ attribute: "source[src]", url: source || null });
+    }
+    if (tagName === "video") {
+      candidates.push({ attribute: "poster", url: fromAttribute("poster") });
+    }
+    candidates.push({ attribute: "backgroundImage", url: absoluteUrl(cssBackgroundUrl(el)) });
+  }
+
+  const selected = candidates.find((candidate) => candidate.url);
+  if (!selected) {
+    return {
+      ok: false,
+      error: "Locator target does not expose an http/https media URL"
+    };
+  }
+
+  return {
+    ok: true,
+    url: selected.url,
+    kind: requestedAttribute === "auto" ? tagName || selected.attribute : requestedAttribute,
+    tagName,
+    attribute: selected.attribute,
+    label: normalizeText(el?.getAttribute?.("aria-label") || el?.getAttribute?.("alt") || el?.getAttribute?.("title") || ""),
+    text: normalizeText(el?.innerText || el?.textContent || "")
+  };
+})()`;
+}
 function locatorMutationExpression(locator, kind, args) {
     return `(async () => {
   const kind = ${JSON.stringify(kind)};
@@ -4567,6 +5901,85 @@ async function getDomSnapshot(tabId) {
         computedStyles: []
     });
 }
+async function getPageFrameTree(tabId) {
+    try {
+        const result = await cdp(tabId, "Page.getFrameTree");
+        const root = summarizePageFrameTreeNode(result?.frameTree);
+        return {
+            source: "cdp",
+            frameCount: countFrameTreeNodes(root),
+            root
+        };
+    }
+    catch (error) {
+        return {
+            source: "cdp",
+            frameCount: 0,
+            root: null,
+            error: stringifyError(error)
+        };
+    }
+}
+function summarizePageFrameTreeNode(value) {
+    if (!value || typeof value !== "object") {
+        return null;
+    }
+    const frame = value.frame && typeof value.frame === "object" ? value.frame : {};
+    const childFrames = Array.isArray(value.childFrames)
+        ? value.childFrames
+            .map((child) => summarizePageFrameTreeNode(child))
+            .filter((child) => child != null)
+        : [];
+    return {
+        id: typeof frame.id === "string" ? frame.id : null,
+        parentId: typeof frame.parentId === "string" ? frame.parentId : null,
+        name: typeof frame.name === "string" ? truncateAndRedactString(frame.name, 160) : null,
+        url: typeof frame.url === "string" ? sanitizeDebugUrl(frame.url) : null,
+        securityOrigin: typeof frame.securityOrigin === "string"
+            ? truncateAndRedactString(frame.securityOrigin, 240)
+            : null,
+        mimeType: typeof frame.mimeType === "string" ? frame.mimeType : null,
+        unreachableUrl: typeof frame.unreachableUrl === "string"
+            ? sanitizeDebugUrl(frame.unreachableUrl)
+            : null,
+        childFrames
+    };
+}
+function countFrameTreeNodes(node) {
+    if (!node) {
+        return 0;
+    }
+    const children = Array.isArray(node.childFrames) ? node.childFrames : [];
+    return 1 + children.reduce((count, child) => count + countFrameTreeNodes(child), 0);
+}
+function sanitizeDomSnapshot(snapshot) {
+    if (!snapshot || typeof snapshot !== "object") {
+        return snapshot;
+    }
+    const clone = {
+        ...snapshot
+    };
+    if (Array.isArray(snapshot.strings)) {
+        clone.strings = snapshot.strings.map((value) => typeof value === "string" ? sanitizeDomSnapshotString(value) : value);
+    }
+    return clone;
+}
+function sanitizeDomSnapshotString(value) {
+    const redacted = redactSecretPatterns(value);
+    if (redacted !== value ||
+        /\b(password|passwd|pwd|token|secret|csrf|credential|session|api[_-]?key|access[_-]?token|refresh[_-]?token)\b/i.test(value)) {
+        return "[redacted]";
+    }
+    const trimmed = value.trim();
+    if (value.length > 300 &&
+        (/^[[{]/.test(trimmed) || /"(__NEXT_DATA__|props|pageProps|apolloState|redux|hydration|dehydratedState)"/i.test(trimmed))) {
+        return `[redacted-large-json length=${value.length}]`;
+    }
+    if (value.length > 1000) {
+        return `${value.slice(0, 1000)}...[truncated length=${value.length}]`;
+    }
+    return value;
+}
 function summarizeAccessibilityNodes(nodes, maxNodes) {
     return nodes
         .filter((node) => node && node.ignored !== true)
@@ -4769,6 +6182,60 @@ async function showCursorClick(tabId, x, y) {
         // Visual feedback is best effort.
     }
 }
+async function showHighlightRect(tabId, rect, options = {}) {
+    try {
+        if (!(await prepareContentScript(tabId))) {
+            return;
+        }
+        await withChromeMessageTimeout(chrome.tabs.sendMessage(tabId, {
+            type: "AGENT_HIGHLIGHT_RECT",
+            color: options.color,
+            durationMs: options.durationMs,
+            rect
+        }), 250);
+    }
+    catch {
+        // Highlight overlays are best-effort and should not block screenshots.
+    }
+}
+async function setPageVisualStatus(tabId, phase, meta = {}) {
+    const sessionId = meta.sessionId ?? sessionIdForTab(tabId);
+    const turnId = meta.turnId ?? activeActionContext?.turnId ?? null;
+    safePostEvent({
+        name: "pageVisualStatus",
+        sessionId,
+        tabId,
+        phase,
+        reason: meta.reason ?? null,
+        turnId
+    });
+    try {
+        if (!(await prepareContentScript(tabId))) {
+            return;
+        }
+        await withChromeMessageTimeout(chrome.tabs.sendMessage(tabId, {
+            type: "AGENT_PAGE_STATUS",
+            phase,
+            reason: meta.reason ?? null,
+            sessionId,
+            turnId
+        }), 250);
+    }
+    catch {
+        // Restricted pages may not accept content scripts or runtime messages.
+    }
+}
+async function detachTabForLifecycle(tabId) {
+    expectedDebuggerDetachTabs.add(tabId);
+    try {
+        await debuggerManager.detachTab(tabId);
+    }
+    finally {
+        self.setTimeout(() => {
+            expectedDebuggerDetachTabs.delete(tabId);
+        }, 1000);
+    }
+}
 async function prepareContentScript(tabId) {
     if (await pingContentScript(tabId)) {
         return true;
@@ -4813,6 +6280,11 @@ function withChromeMessageTimeout(promise, timeoutMs) {
     });
 }
 async function cdp(tabId, method, params = {}, options = {}) {
+    if (method === "Target.getTargets") {
+        return {
+            targetInfos: await chrome.debugger.getTargets()
+        };
+    }
     if (typeof options.targetId === "string" && options.targetId.trim()) {
         return debuggerManager.sendToTarget(options.targetId, method, params, options);
     }
@@ -4824,15 +6296,17 @@ function waitForPageLoad(tabId, timeoutMs) {
 function waitForNavigationSettled(tabId, timeoutMs) {
     return waitForDebuggerEvents(tabId, ["Page.loadEventFired", "Page.navigatedWithinDocument"], timeoutMs);
 }
-function waitForDebuggerEvent(tabId, eventName, timeoutMs) {
-    return waitForDebuggerEvents(tabId, [eventName], timeoutMs);
+function waitForDebuggerEvent(tabId, eventName, timeoutMs, predicate) {
+    return waitForDebuggerEvents(tabId, [eventName], timeoutMs, predicate);
 }
-function waitForDebuggerEvents(tabId, eventNames, timeoutMs) {
+function waitForDebuggerEvents(tabId, eventNames, timeoutMs, predicate) {
     return new Promise((resolve) => {
         let done = false;
         const timer = setTimeout(() => finish("timeout"), timeoutMs);
-        const listener = (source, method) => {
-            if (source.tabId === tabId && eventNames.includes(method)) {
+        const listener = (source, method, params) => {
+            if (source.tabId === tabId &&
+                eventNames.includes(method) &&
+                (!predicate || predicate(method, params))) {
                 finish(method);
             }
         };
@@ -4847,6 +6321,27 @@ function waitForDebuggerEvents(tabId, eventNames, timeoutMs) {
         }
         chrome.debugger.onEvent.addListener(listener);
     });
+}
+function waitForMainFrameCommit(tabId, timeoutMs) {
+    return waitForDebuggerEvent(tabId, "Page.frameNavigated", timeoutMs, (_method, params) => params?.frame && !params.frame.parentId);
+}
+async function waitForLoadStateInTab(tabId, state, timeoutMs, idleMs, options = {}) {
+    if (state === "commit") {
+        return options.commitAlreadySatisfied
+            ? { reason: "url_matched" }
+            : waitForMainFrameCommit(tabId, timeoutMs);
+    }
+    if (state !== "networkidle" && await loadStateIsSatisfied(tabId, state)) {
+        return { reason: "already_satisfied" };
+    }
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+        return { reason: "timeout" };
+    }
+    if (state === "networkidle") {
+        return waitForNetworkIdle(tabId, timeoutMs, idleMs);
+    }
+    const event = state === "domcontentloaded" ? "Page.domContentEventFired" : "Page.loadEventFired";
+    return waitForDebuggerEvent(tabId, event, timeoutMs);
 }
 function waitForNetworkIdle(tabId, timeoutMs, idleMs) {
     const boundedTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 15000;
@@ -4976,7 +6471,7 @@ async function selectorState(tabId, selector) {
     }
     return value;
 }
-async function locatorState(tabId, locator) {
+async function locatorState(tabId, locator, options = {}) {
     const evaluated = await cdp(tabId, "Runtime.evaluate", {
         expression: `(() => {
   ${locatorResolverSource(locator)}
@@ -5027,8 +6522,12 @@ async function locatorState(tabId, locator) {
     }
   };
 })()`,
+        ...(options.executionContextId != null ? { contextId: options.executionContextId } : {}),
         returnByValue: true,
         awaitPromise: true
+    }, {
+        targetId: options.targetId,
+        timeoutMs: options.timeoutMs
     });
     const value = readRuntimeValue(evaluated);
     if (!value || value.ok !== true) {
@@ -5125,15 +6624,19 @@ function listCapabilities() {
         browserCapability("rawCdp", "Send raw Chrome DevTools Protocol commands.", true),
         browserCapability("clipboard", "Read and write browser clipboard text with explicit per-request confirmation.", true),
         browserCapability("browser.user.history", "Read user browsing history with explicit per-request confirmation.", true),
+        browserCapability("browser.user.bookmarks", "Browser bookmarks are intentionally not exposed by this runtime.", false, "unsupported_sensitive_browser_state"),
         tabCapability("tab.navigation", "Navigate, reload, and read URL/title for tabs.", true),
         tabCapability("tab.cua", "Coordinate mouse, keyboard, and scroll interactions.", true),
         tabCapability("tab.domSnapshot", "Capture DOMSnapshot output through CDP.", true),
         tabCapability("tab.accessibility", "Read accessibility tree data through CDP.", true),
         tabCapability("tab.cdp.target", "Send raw CDP commands to a specific DevTools targetId under a controlled tab.", true),
+        tabCapability("tab.cdp.target.attach", "Attach and detach Chrome debugger control for DevTools targets under a controlled tab.", true),
         tabCapability("tab.locator.css", "Use CSS selector based waits/actions.", true),
         tabCapability("tab.locator.semantic", "Use role/label/text/test-id locator engine.", true),
         tabCapability("tab.upload.locator", "Upload files through selector or locator targets.", true),
-        tabCapability("tab.frameLocator", "Target nested frames with locator chains.", false, "not_implemented"),
+        tabCapability("locator.downloadMedia", "Download image, video, audio, or linked media resolved from a locator with origin approval.", true),
+        tabCapability("tab.frameLocator", "Target nested frames with locator chains.", true),
+        tabCapability("tab.frameLocator.resolve", "Resolve frame locator selector paths to CDP frame metadata.", true),
         tabCapability("native.connected", "Native host connection is available.", nativeAvailable, nativeAvailable ? undefined : "native_disconnected")
     ];
 }
@@ -5184,6 +6687,117 @@ function summarizeDownloadDelta(delta) {
         endTime: delta.endTime?.current,
         error: delta.error?.current
     };
+}
+function normalizeMediaDownloadAttribute(value) {
+    const attribute = typeof value === "string" && value.trim() ? value.trim() : "auto";
+    const allowed = ["auto", "src", "href", "poster", "backgroundImage"];
+    if (!allowed.includes(attribute)) {
+        throw new Error(`downloadMedia.params.attribute must be one of: ${allowed.join(", ")}`);
+    }
+    return attribute;
+}
+function normalizeDownloadConflictAction(value) {
+    if (value == null || value === "") {
+        return null;
+    }
+    const conflictAction = requireString(value, "downloadMedia.params.conflictAction");
+    const allowed = ["uniquify", "overwrite", "prompt"];
+    if (!allowed.includes(conflictAction)) {
+        throw new Error(`downloadMedia.params.conflictAction must be one of: ${allowed.join(", ")}`);
+    }
+    return conflictAction;
+}
+function normalizeDownloadFilename(value) {
+    if (value == null || value === "") {
+        return null;
+    }
+    const filename = requireString(value, "downloadMedia.params.filename").replace(/\\/g, "/");
+    if (filename.startsWith("/") || /^[a-zA-Z]:\//.test(filename) || filename.split("/").includes("..")) {
+        throw new Error("downloadMedia.params.filename must be a relative download filename without .. segments");
+    }
+    return filename;
+}
+function normalizeDownloadFallbackMaxBytes(value) {
+    if (value == null) {
+        return 25 * 1024 * 1024;
+    }
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+        throw new Error("downloadMedia.params.fallbackMaxBytes must be a positive number");
+    }
+    return Math.max(1, Math.min(Math.floor(value), 100 * 1024 * 1024));
+}
+async function fetchMediaAsDataUrl(url, maxBytes) {
+    const response = await fetch(url, {
+        credentials: "include",
+        redirect: "follow"
+    });
+    if (!response.ok) {
+        throw new Error(`downloadMedia fallback fetch failed with HTTP ${response.status}`);
+    }
+    const contentLength = Number(response.headers.get("content-length") || "");
+    if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+        throw new Error(`downloadMedia fallback fetch exceeded ${maxBytes} byte limit`);
+    }
+    const buffer = await response.arrayBuffer();
+    if (buffer.byteLength > maxBytes) {
+        throw new Error(`downloadMedia fallback fetch exceeded ${maxBytes} byte limit`);
+    }
+    const contentType = sanitizeMediaContentType(response.headers.get("content-type"));
+    return {
+        finalUrl: response.url || url,
+        contentType,
+        dataUrl: `data:${contentType};base64,${arrayBufferToBase64(buffer)}`
+    };
+}
+function sanitizeMediaContentType(value) {
+    const contentType = typeof value === "string" ? value.split(";")[0].trim().toLowerCase() : "";
+    return /^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/i.test(contentType)
+        ? contentType
+        : "application/octet-stream";
+}
+function arrayBufferToBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    const chunkSize = 0x8000;
+    let binary = "";
+    for (let index = 0; index < bytes.length; index += chunkSize) {
+        const chunk = bytes.subarray(index, Math.min(index + chunkSize, bytes.length));
+        binary += String.fromCharCode(...chunk);
+    }
+    return btoa(binary);
+}
+function filenameFromMediaUrl(url, contentType) {
+    let basename = "download";
+    try {
+        const parsed = new URL(url);
+        const pathPart = decodeURIComponent(parsed.pathname.split("/").filter(Boolean).pop() || "");
+        if (pathPart && !pathPart.includes("..")) {
+            basename = pathPart.replace(/[\\/:*?"<>|]+/g, "-");
+        }
+    }
+    catch {
+        // Keep the generic filename when the final URL cannot be parsed.
+    }
+    if (!/\.[a-z0-9]{1,12}$/i.test(basename)) {
+        basename += extensionForContentType(contentType);
+    }
+    return basename;
+}
+function extensionForContentType(contentType) {
+    const mapping = {
+        "image/jpeg": ".jpg",
+        "image/png": ".png",
+        "image/gif": ".gif",
+        "image/webp": ".webp",
+        "image/svg+xml": ".svg",
+        "video/mp4": ".mp4",
+        "video/webm": ".webm",
+        "audio/mpeg": ".mp3",
+        "audio/mp4": ".m4a",
+        "audio/ogg": ".ogg",
+        "text/plain": ".txt",
+        "application/pdf": ".pdf"
+    };
+    return mapping[contentType] || ".bin";
 }
 async function findDownloads(params = {}) {
     const limit = Math.max(1, Math.min(Math.floor(numberOrDefault(params.limit, 50)), 500));
@@ -5301,7 +6915,7 @@ function summarizeDebuggerEvent(method, params) {
     if (method === "Page.navigatedWithinDocument") {
         return {
             frameId: params.frameId,
-            url: params.url,
+            url: sanitizeDebugUrl(params.url),
             navigationType: params.navigationType
         };
     }
@@ -5313,30 +6927,30 @@ function summarizeDebuggerEvent(method, params) {
     }
     if (method === "Page.javascriptDialogOpening") {
         return {
-            url: params.url,
-            message: truncateString(params.message, 500),
+            url: sanitizeDebugUrl(params.url),
+            message: sanitizeDebugText(params.message, 500),
             type: params.type,
             hasBrowserHandler: params.hasBrowserHandler,
-            defaultPrompt: truncateString(params.defaultPrompt, 500)
+            defaultPrompt: sanitizeDebugText(params.defaultPrompt, 500)
         };
     }
     if (method === "Page.javascriptDialogClosed") {
         return {
             result: params.result,
-            userInput: truncateString(params.userInput, 500)
+            userInput: sanitizeDebugText(params.userInput, 500)
         };
     }
     if (method === "Runtime.exceptionThrown") {
         const details = params.exceptionDetails || {};
         return {
             timestamp: params.timestamp,
-            text: truncateString(details.text, 500),
-            url: details.url,
+            text: sanitizeDebugText(details.text, 500),
+            url: sanitizeDebugUrl(details.url),
             lineNumber: details.lineNumber,
             columnNumber: details.columnNumber,
             exception: details.exception && typeof details.exception === "object"
                 ? {
-                    description: truncateString(details.exception.description, 1000),
+                    description: sanitizeDebugText(details.exception.description, 1000),
                     className: details.exception.className
                 }
                 : undefined
@@ -5357,8 +6971,8 @@ function summarizeDebuggerEvent(method, params) {
         return {
             source: entry.source,
             level: entry.level,
-            text: truncateString(entry.text, 1000),
-            url: entry.url,
+            text: sanitizeDebugText(entry.text, 1000),
+            url: sanitizeDebugUrl(entry.url),
             lineNumber: entry.lineNumber,
             columnNumber: entry.columnNumber
         };
@@ -5367,15 +6981,15 @@ function summarizeDebuggerEvent(method, params) {
 }
 function summarizeRemoteObject(value) {
     if (!value || typeof value !== "object") {
-        return value;
+        return typeof value === "string" ? sanitizeDebugText(value, 1000) : value;
     }
     return {
         type: value.type,
         subtype: value.subtype,
         value: typeof value.value === "string"
-            ? truncateString(value.value, 1000)
+            ? sanitizeDebugText(value.value, 1000)
             : value.value,
-        description: truncateString(value.description, 1000)
+        description: sanitizeDebugText(value.description, 1000)
     };
 }
 function summarizeStackTrace(stackTrace) {
@@ -5386,10 +7000,10 @@ function summarizeStackTrace(stackTrace) {
         ? stackTrace.callFrames.slice(0, 5)
         : [];
     return {
-        description: stackTrace.description,
+        description: sanitizeDebugText(stackTrace.description, 500),
         callFrames: callFrames.map((frame) => ({
-            functionName: frame.functionName,
-            url: frame.url,
+            functionName: sanitizeDebugText(frame.functionName, 160),
+            url: sanitizeDebugUrl(frame.url),
             lineNumber: frame.lineNumber,
             columnNumber: frame.columnNumber
         }))
@@ -5403,12 +7017,24 @@ function summarizeFrame(frame) {
         id: frame.id,
         parentId: frame.parentId,
         loaderId: frame.loaderId,
-        url: frame.url,
+        url: sanitizeDebugUrl(frame.url),
         domainAndRegistry: frame.domainAndRegistry,
         securityOrigin: frame.securityOrigin,
         mimeType: frame.mimeType,
-        unreachableUrl: frame.unreachableUrl
+        unreachableUrl: sanitizeDebugUrl(frame.unreachableUrl)
     };
+}
+function sanitizeDebugText(value, maxLength) {
+    if (typeof value !== "string") {
+        return value;
+    }
+    return truncateAndRedactString(value, maxLength);
+}
+function sanitizeDebugUrl(value) {
+    if (typeof value !== "string") {
+        return value;
+    }
+    return redactSensitiveUrl(value).value;
 }
 function sessionIdForTab(tabId) {
     if (typeof tabId !== "number") {
@@ -5486,6 +7112,8 @@ function devLogFromEvent(event) {
             })
                 .filter(Boolean)
             : [];
+        const text = devLogText(args.join(" "), 1000);
+        const url = devLogUrl(firstStackFrameUrl(params.stackTrace));
         return {
             sequence: event.sequence,
             time: event.time,
@@ -5494,13 +7122,17 @@ function devLogFromEvent(event) {
             tabId: event.tabId ?? null,
             source: "console",
             level: normalizeDevLogLevel(params.type),
-            text: truncateAndRedactString(args.join(" "), 1000),
-            url: firstStackFrameUrl(params.stackTrace),
+            text: text.value,
+            redacted: text.redacted || url.redacted,
+            redactionReasons: Array.from(new Set([...text.reasons, ...url.reasons])),
+            url: url.value,
             lineNumber: firstStackFrameNumber(params.stackTrace, "lineNumber"),
             columnNumber: firstStackFrameNumber(params.stackTrace, "columnNumber")
         };
     }
     if (method === "Log.entryAdded") {
+        const text = devLogText(params.text, 1000);
+        const url = devLogUrl(params.url);
         return {
             sequence: event.sequence,
             time: event.time,
@@ -5509,13 +7141,20 @@ function devLogFromEvent(event) {
             tabId: event.tabId ?? null,
             source: "log",
             level: normalizeDevLogLevel(params.level),
-            text: truncateAndRedactString(params.text, 1000),
-            url: params.url,
+            text: text.value,
+            redacted: text.redacted || url.redacted,
+            redactionReasons: Array.from(new Set([...text.reasons, ...url.reasons])),
+            url: url.value,
             lineNumber: params.lineNumber,
             columnNumber: params.columnNumber
         };
     }
     if (method === "Runtime.exceptionThrown") {
+        const text = devLogText(params.text ||
+            (params.exception && typeof params.exception === "object"
+                ? params.exception.description
+                : undefined), 1000);
+        const url = devLogUrl(params.url);
         return {
             sequence: event.sequence,
             time: event.time,
@@ -5524,16 +7163,40 @@ function devLogFromEvent(event) {
             tabId: event.tabId ?? null,
             source: "exception",
             level: "error",
-            text: truncateAndRedactString(params.text ||
-                (params.exception && typeof params.exception === "object"
-                    ? params.exception.description
-                    : undefined), 1000),
-            url: params.url,
+            text: text.value,
+            redacted: text.redacted || url.redacted,
+            redactionReasons: Array.from(new Set([...text.reasons, ...url.reasons])),
+            url: url.value,
             lineNumber: params.lineNumber,
             columnNumber: params.columnNumber
         };
     }
     return null;
+}
+function devLogText(value, maxLength) {
+    const raw = value == null ? "" : String(value);
+    const valueText = truncateAndRedactString(raw, maxLength);
+    const redacted = valueText !== raw;
+    return {
+        value: valueText,
+        redacted,
+        reasons: redacted ? ["secret_pattern_or_truncation"] : []
+    };
+}
+function devLogUrl(value) {
+    if (typeof value !== "string" || !value.trim()) {
+        return {
+            value: undefined,
+            redacted: false,
+            reasons: []
+        };
+    }
+    const redacted = redactSensitiveUrl(value);
+    return {
+        value: redacted.value,
+        redacted: redacted.reasons.length > 0,
+        reasons: redacted.reasons
+    };
 }
 function normalizeDevLogLevel(level) {
     if (level === "warning") {
@@ -5586,6 +7249,7 @@ function normalizeKey(key) {
         Escape: { key: "Escape", code: "Escape", keyCode: 27 },
         Backspace: { key: "Backspace", code: "Backspace", keyCode: 8 },
         Delete: { key: "Delete", code: "Delete", keyCode: 46 },
+        Insert: { key: "Insert", code: "Insert", keyCode: 45 },
         Space: { key: " ", code: "Space", keyCode: 32 },
         Home: { key: "Home", code: "Home", keyCode: 36 },
         End: { key: "End", code: "End", keyCode: 35 },
@@ -5595,6 +7259,11 @@ function normalizeKey(key) {
         ArrowDown: { key: "ArrowDown", code: "ArrowDown", keyCode: 40 },
         ArrowLeft: { key: "ArrowLeft", code: "ArrowLeft", keyCode: 37 },
         ArrowRight: { key: "ArrowRight", code: "ArrowRight", keyCode: 39 },
+        Pause: { key: "Pause", code: "Pause", keyCode: 19 },
+        CapsLock: { key: "CapsLock", code: "CapsLock", keyCode: 20 },
+        NumLock: { key: "NumLock", code: "NumLock", keyCode: 144 },
+        ScrollLock: { key: "ScrollLock", code: "ScrollLock", keyCode: 145 },
+        ContextMenu: { key: "ContextMenu", code: "ContextMenu", keyCode: 93 },
         Alt: { key: "Alt", code: "AltLeft", keyCode: 18 },
         Control: { key: "Control", code: "ControlLeft", keyCode: 17 },
         ControlOrMeta: isMacLikePlatform()
@@ -5603,7 +7272,14 @@ function normalizeKey(key) {
         Meta: { key: "Meta", code: "MetaLeft", keyCode: 91 },
         Shift: { key: "Shift", code: "ShiftLeft", keyCode: 16 }
     };
-    const normalized = map[parsed.key];
+    for (let index = 1; index <= 12; index += 1) {
+        map[`F${index}`] = {
+            key: `F${index}`,
+            code: `F${index}`,
+            keyCode: 111 + index
+        };
+    }
+    const normalized = map[canonicalKeyName(parsed.key)] ?? printableKey(parsed.key);
     if (!normalized) {
         throw new Error(`Unsupported key: ${key}`);
     }
@@ -5611,6 +7287,61 @@ function normalizeKey(key) {
         ...normalized,
         modifiers: modifierBitmask(parsed.modifiers)
     };
+}
+function canonicalKeyName(key) {
+    const aliases = {
+        Esc: "Escape",
+        Del: "Delete",
+        Spacebar: "Space",
+        Left: "ArrowLeft",
+        Right: "ArrowRight",
+        Up: "ArrowUp",
+        Down: "ArrowDown",
+        Pageup: "PageUp",
+        Pagedown: "PageDown",
+        PgUp: "PageUp",
+        PgDown: "PageDown",
+        Cmd: "Meta",
+        Command: "Meta",
+        Option: "Alt",
+        Ctrl: "Control",
+        Return: "Enter",
+        Apps: "ContextMenu",
+        Menu: "ContextMenu"
+    };
+    return aliases[key] ?? key;
+}
+function printableKey(key) {
+    if (/^[a-zA-Z]$/.test(key)) {
+        const upper = key.toUpperCase();
+        return {
+            key,
+            code: `Key${upper}`,
+            keyCode: upper.charCodeAt(0)
+        };
+    }
+    if (/^[0-9]$/.test(key)) {
+        return {
+            key,
+            code: `Digit${key}`,
+            keyCode: key.charCodeAt(0)
+        };
+    }
+    const printable = {
+        "`": { code: "Backquote", keyCode: 192 },
+        "-": { code: "Minus", keyCode: 189 },
+        "=": { code: "Equal", keyCode: 187 },
+        "[": { code: "BracketLeft", keyCode: 219 },
+        "]": { code: "BracketRight", keyCode: 221 },
+        "\\": { code: "Backslash", keyCode: 220 },
+        ";": { code: "Semicolon", keyCode: 186 },
+        "'": { code: "Quote", keyCode: 222 },
+        ",": { code: "Comma", keyCode: 188 },
+        ".": { code: "Period", keyCode: 190 },
+        "/": { code: "Slash", keyCode: 191 }
+    };
+    const mapped = printable[key];
+    return mapped ? { key, ...mapped } : null;
 }
 function parseKeyCombo(key) {
     const parts = key.split("+").map((part) => part.trim()).filter(Boolean);
@@ -5631,9 +7362,10 @@ function parseKeyCombo(key) {
 function modifierBitmask(modifiers) {
     let value = 0;
     for (const modifier of modifiers) {
-        const normalized = modifier === "ControlOrMeta"
+        const canonicalModifier = canonicalKeyName(modifier);
+        const normalized = canonicalModifier === "ControlOrMeta"
             ? isMacLikePlatform() ? "Meta" : "Control"
-            : modifier;
+            : canonicalModifier;
         if (normalized === "Alt") {
             value |= 1;
         }
@@ -5718,7 +7450,10 @@ function normalizeLoadState(state) {
     if (state == null) {
         return "load";
     }
-    if (state === "load" || state === "domcontentloaded" || state === "networkidle") {
+    if (state === "commit" ||
+        state === "load" ||
+        state === "domcontentloaded" ||
+        state === "networkidle") {
         return state;
     }
     throw new Error(`Unsupported load state: ${state}`);
@@ -5918,7 +7653,10 @@ function applyHostAccessDecision(state, args) {
 }
 async function assertBrowserPolicyForTab(action, tabId, sessionId, params = {}) {
     const tab = await chrome.tabs.get(tabId);
-    await assertBrowserPolicyForUrl(action, tab.url ?? null, sessionId, params);
+    await assertBrowserPolicyForUrl(action, tab.url ?? null, sessionId, {
+        ...params,
+        tabId
+    });
 }
 async function assertBrowserPolicyForUrl(action, url, sessionId, params = {}) {
     await ensureBrowserPolicyLoaded();
@@ -5928,9 +7666,24 @@ async function assertBrowserPolicyForUrl(action, url, sessionId, params = {}) {
         url
     });
     if (!verdict.allowed) {
+        if (verdict.code === "requires_host_approval" && verdict.host) {
+            const details = hostApprovalPromptDetails(action, verdict, sessionId, params);
+            postHostApprovalRequiredEvent(details);
+            safePostEvent({
+                name: "policyBlocked",
+                sessionId: details.sessionId,
+                tabId: details.tabId,
+                host: verdict.host,
+                action,
+                code: verdict.code,
+                approvalId: details.approvalId
+            });
+            throw browserActionError("requires_host_approval", verdict.message, details);
+        }
         safePostEvent({
             name: "policyBlocked",
             sessionId: typeof sessionId === "string" ? sessionId : null,
+            tabId: typeof params.tabId === "number" ? params.tabId : null,
             host: verdict.host,
             action,
             code: verdict.code
@@ -5938,14 +7691,177 @@ async function assertBrowserPolicyForUrl(action, url, sessionId, params = {}) {
         throw new Error(`${verdict.code}: ${verdict.message}`);
     }
     const classification = classifyBrowserPolicyAction(action, url, params);
+    postPermissionPromptDetectedIfNeeded(action, sessionId, params, classification);
     if (classification.requiresOriginApproval && params.originApproved !== true) {
-        throw new Error(`origin_approval_required: Browser action ${action} on ${classification.host} requires originApproved=true.`);
+        const details = browserOriginApprovalDetails(action, classification, sessionId, params);
+        postBrowserOriginApprovalRequiredEvent(details);
+        throw browserActionError("origin_approval_required", details.message, details);
     }
+    const originApprovalSatisfiesConfirmation = action === "rawCdp" && !classification.reasons.includes("sensitive_browser_state");
     const confirmed = params.confirmed === true ||
-        (classification.requiresOriginApproval && params.originApproved === true);
+        (originApprovalSatisfiesConfirmation && classification.requiresOriginApproval && params.originApproved === true);
     if (classification.requiresConfirmation && !confirmed) {
-        throw new Error(`confirmation_required: Browser action ${action} requires confirmation (${classification.reasons.join(", ")}).`);
+        const details = browserActionConfirmationDetails(action, classification, sessionId, params);
+        postBrowserActionConfirmationRequiredEvent(details);
+        throw browserActionError("confirmation_required", details.message, details);
     }
+}
+function browserActionError(code, message, details) {
+    const error = new Error(`${code}: ${message}`);
+    error.code = code;
+    error.details = details;
+    return error;
+}
+function hostApprovalPromptDetails(action, verdict, sessionId, params) {
+    const host = verdict.host ?? "unknown";
+    const normalizedSessionId = typeof sessionId === "string" && sessionId.trim()
+        ? sessionId.trim()
+        : null;
+    const approvalId = hostApprovalId(host, normalizedSessionId, action);
+    const allowForSession = normalizedSessionId
+        ? {
+            decision: "allow",
+            host,
+            sessionId: normalizedSessionId
+        }
+        : null;
+    return {
+        action,
+        approvalId,
+        host,
+        message: verdict.message,
+        sessionId: normalizedSessionId,
+        tabId: typeof params.tabId === "number" ? params.tabId : null,
+        suggestedDecisions: {
+            allowForSession,
+            alwaysAllow: {
+                decision: "always_allow",
+                host
+            },
+            deny: {
+                decision: "deny",
+                host
+            }
+        }
+    };
+}
+function postHostApprovalRequiredEvent(details) {
+    safePostEvent({
+        name: "hostApprovalRequired",
+        sessionId: details.sessionId,
+        tabId: details.tabId,
+        action: details.action,
+        host: details.host,
+        approvalId: details.approvalId,
+        message: details.message,
+        suggestedDecisions: details.suggestedDecisions
+    });
+}
+function hostApprovalId(host, sessionId, action) {
+    return `host:${sessionId ?? "global"}:${host}:${action}`;
+}
+function browserOriginApprovalDetails(action, classification, sessionId, params) {
+    const reasons = Array.isArray(classification.reasons)
+        ? classification.reasons.filter((reason) => typeof reason === "string")
+        : [];
+    const host = typeof classification.host === "string" ? classification.host : null;
+    const normalizedSessionId = typeof sessionId === "string" && sessionId.trim()
+        ? sessionId.trim()
+        : null;
+    const approvalId = browserOriginApprovalId(action, host, normalizedSessionId);
+    return {
+        action,
+        approvalId,
+        host,
+        message: `Browser action ${action} on ${host ?? "unknown origin"} requires originApproved=true.`,
+        reasons,
+        sessionId: normalizedSessionId,
+        tabId: typeof params.tabId === "number" ? params.tabId : null,
+        requiredParams: {
+            originApproved: true
+        }
+    };
+}
+function postBrowserOriginApprovalRequiredEvent(details) {
+    safePostEvent({
+        name: "browserOriginApprovalRequired",
+        sessionId: details.sessionId,
+        tabId: details.tabId,
+        action: details.action,
+        host: details.host,
+        approvalId: details.approvalId,
+        message: details.message,
+        reasons: details.reasons,
+        requiredParams: details.requiredParams
+    });
+}
+function browserOriginApprovalId(action, host, sessionId) {
+    return `origin:${sessionId ?? "global"}:${host ?? "unknown"}:${action}`;
+}
+function browserActionConfirmationDetails(action, classification, sessionId, params) {
+    const reasons = Array.isArray(classification.reasons)
+        ? classification.reasons.filter((reason) => typeof reason === "string")
+        : [];
+    const normalizedSessionId = typeof sessionId === "string" && sessionId.trim()
+        ? sessionId.trim()
+        : null;
+    const host = typeof classification.host === "string" ? classification.host : null;
+    const confirmationId = browserActionConfirmationId(action, host, normalizedSessionId, reasons);
+    return {
+        action,
+        confirmationId,
+        host,
+        message: `Browser action ${action} requires confirmation (${reasons.join(", ")}).`,
+        reasons,
+        sessionId: normalizedSessionId,
+        tabId: typeof params.tabId === "number" ? params.tabId : null,
+        target: {
+            label: truncateAndRedactString(typeof params.label === "string" ? params.label : "", 120),
+            text: truncateAndRedactString(typeof params.text === "string" ? params.text : "", 120),
+            tagName: typeof params.tagName === "string" ? params.tagName.toLowerCase() : null
+        },
+        requiredParams: {
+            confirmed: true,
+            confirmationId
+        }
+    };
+}
+function postBrowserActionConfirmationRequiredEvent(details) {
+    safePostEvent({
+        name: "browserActionConfirmationRequired",
+        sessionId: details.sessionId,
+        tabId: details.tabId,
+        action: details.action,
+        host: details.host,
+        confirmationId: details.confirmationId,
+        message: details.message,
+        reasons: details.reasons,
+        target: details.target,
+        requiredParams: details.requiredParams
+    });
+}
+function browserActionConfirmationId(action, host, sessionId, reasons) {
+    const reasonKey = reasons.length > 0 ? reasons.slice().sort().join(".") : "unspecified";
+    return `confirm:${sessionId ?? "global"}:${host ?? "unknown"}:${action}:${reasonKey}`;
+}
+function postPermissionPromptDetectedIfNeeded(action, sessionId, params, classification) {
+    if (!Array.isArray(classification.reasons) || !classification.reasons.includes("browser_permission")) {
+        return;
+    }
+    safePostEvent({
+        name: "permissionPromptDetected",
+        sessionId: typeof sessionId === "string" ? sessionId : null,
+        tabId: typeof params.tabId === "number" ? params.tabId : null,
+        action,
+        host: typeof classification.host === "string" ? classification.host : null,
+        confirmed: params.confirmed === true,
+        reasons: classification.reasons,
+        target: {
+            label: truncateAndRedactString(typeof params.label === "string" ? params.label : "", 120),
+            text: truncateAndRedactString(typeof params.text === "string" ? params.text : "", 120),
+            tagName: typeof params.tagName === "string" ? params.tagName.toLowerCase() : null
+        }
+    });
 }
 async function assertBrowserBlocklistForUrl(action, url, sessionId) {
     await ensureBrowserPolicyLoaded();
@@ -6023,6 +7939,9 @@ function evaluateBrowserHostAccess(state, check) {
 function classifyBrowserPolicyAction(action, url, params) {
     const reasons = new Set();
     const script = typeof params.script === "string" ? params.script : "";
+    const rawCdpText = action === "rawCdp"
+        ? `${typeof params.method === "string" ? params.method : ""} ${stringifyPolicyParams(params.params)}`
+        : "";
     const readOnlyEvaluate = action === "evaluate" &&
         params.mode !== "write" &&
         !looksLikeMutatingScript(script);
@@ -6031,8 +7950,8 @@ function classifyBrowserPolicyAction(action, url, params) {
     if (action === "upload") {
         reasons.add("file_upload");
     }
-    if (action === "download") {
-        reasons.add("download");
+    if (action === "download" && looksLikeRunnableDownload(url, params.filename ?? params.filePath)) {
+        reasons.add("download_run_or_install");
     }
     if (action === "history") {
         reasons.add("browser_history");
@@ -6051,11 +7970,15 @@ function classifyBrowserPolicyAction(action, url, params) {
         EXTERNAL_SIDE_EFFECT_PATTERN.test(text)) {
         reasons.add("external_side_effect");
     }
-    if (action === "permission") {
+    if (action === "permission" || looksLikeBrowserPermissionPrompt(label, text)) {
         reasons.add("browser_permission");
     }
     if (action === "rawCdp") {
         reasons.add("raw_cdp");
+    }
+    if ((action === "evaluate" && looksLikeSensitiveBrowserStateAccess(script)) ||
+        (action === "rawCdp" && looksLikeSensitiveBrowserStateAccess(rawCdpText))) {
+        reasons.add("sensitive_browser_state");
     }
     if (action === "evaluate" && !readOnlyEvaluate) {
         reasons.add("mutating_evaluate");
@@ -6064,12 +7987,37 @@ function classifyBrowserPolicyAction(action, url, params) {
         host: normalizePolicyHost(url),
         readOnly: readOnlyEvaluate,
         requiresConfirmation: reasons.size > 0,
-        requiresOriginApproval: action === "rawCdp",
+        requiresOriginApproval: action === "rawCdp" || action === "download",
         reasons: Array.from(reasons)
     };
 }
+function looksLikeRunnableDownload(url, filename) {
+    const source = `${typeof filename === "string" ? filename : ""} ${typeof url === "string" ? url : ""}`.toLowerCase();
+    return /\.(app|apk|bat|bin|cmd|com|deb|dmg|exe|msi|pkg|ps1|rpm|run|scr|sh)(?:[?#\s]|$)/i.test(source);
+}
+function looksLikeBrowserPermissionPrompt(label, text) {
+    const source = `${label} ${text}`.trim();
+    return PERMISSION_GRANT_PATTERN.test(source) && BROWSER_PERMISSION_TARGET_PATTERN.test(source);
+}
 function looksLikeMutatingScript(script) {
-    return /\b(click|submit|remove|setAttribute|removeAttribute|appendChild|insertBefore|replaceChild|dispatchEvent|localStorage|sessionStorage|indexedDB|cookie\s*=)\b|\.value\s*=|\.checked\s*=|\.textContent\s*=|\.innerHTML\s*=/i.test(script);
+    return /\b(click|submit|remove|setAttribute|removeAttribute|appendChild|insertBefore|replaceChild|dispatchEvent|deleteDatabase|localStorage\s*\.\s*(setItem|removeItem|clear)|sessionStorage\s*\.\s*(setItem|removeItem|clear)|document\s*\.\s*cookie\s*=|cookie\s*=)\b|\.value\s*=|\.checked\s*=|\.textContent\s*=|\.innerHTML\s*=/i.test(script);
+}
+function looksLikeSensitiveBrowserStateAccess(text) {
+    return /\b(document\s*\.\s*cookie|cookieStore|localStorage|sessionStorage|indexedDB|chrome\s*\.\s*storage|Storage\.|Network\.get(All)?Cookies|password|passwd|pwd|credential|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|session[_-]?(id|token)?|csrf)\b/i.test(text);
+}
+function stringifyPolicyParams(params) {
+    if (params == null) {
+        return "";
+    }
+    if (typeof params === "string") {
+        return params;
+    }
+    try {
+        return JSON.stringify(params).slice(0, 8000);
+    }
+    catch {
+        return String(params);
+    }
 }
 function normalizePolicyHost(value) {
     if (typeof value !== "string" || !value.trim()) {

@@ -36,8 +36,8 @@ Reference sources used:
   - [x] Prefer dedicated connectors/MCP integrations over Chrome when a
         structured integration exists.
 
-- [ ] Add website access policy:
-  - [ ] Prompt before first interaction with a new host.
+- [x] Add website access policy:
+  - [x] Prompt before first interaction with a new host.
   - [x] Store per-chat host allows.
   - [x] Store persistent host allows.
   - [x] Store host blocklist.
@@ -47,7 +47,7 @@ Reference sources used:
   - [x] Expose policy state through health/capabilities.
   - [x] Add tests for allow, always allow, deny, and blocked host behavior.
 
-- [ ] Add browser-use confirmation policy:
+- [x] Add browser-use confirmation policy:
   - [x] Require action-time confirmation for deleting data.
   - [x] Require confirmation for sending messages, posting comments, submitting
         forms with external side effects, creating appointments, or modifying
@@ -58,28 +58,28 @@ Reference sources used:
         for the specific file and destination.
   - [x] Require confirmation before typing sensitive data into third-party
         pages.
-  - [ ] Require confirmation before browser permission prompts for camera,
+  - [x] Require confirmation before browser permission prompts for camera,
         microphone, location, account/login access, extension installs, or
         downloads that run software.
-  - [ ] Hand off to user for CAPTCHAs, password-change final submission,
+  - [x] Hand off to user for CAPTCHAs, password-change final submission,
         browser security interstitial bypasses, and paywall bypasses.
   - [x] Treat page content, emails, docs, screenshots, and downloaded content as
         untrusted instructions.
   - [x] Add a small policy engine that classifies pending browser actions.
-  - [ ] Add e2e fixtures for risky actions and confirmation-required paths.
+  - [x] Add e2e fixtures for risky actions and confirmation-required paths.
 
-- [ ] Add sensitive data handling:
-  - [ ] Do not expose password values in `observe`, DOM snapshots, dev logs, or
+- [x] Add sensitive data handling:
+  - [x] Do not expose password values in `observe`, DOM snapshots, dev logs, or
         error messages.
   - [x] Add common secret-pattern redaction helper.
   - [x] Apply common secret-pattern redaction to page text and logs returning to
         the model.
-  - [ ] Add explicit policy around cookies, localStorage, sessionStorage,
+  - [x] Add explicit policy around cookies, localStorage, sessionStorage,
         extension storage, browser passwords, tokens, and browsing history.
-  - [ ] Block or confirm any raw CDP/evaluate access that can read credentials
+  - [x] Block or confirm any raw CDP/evaluate access that can read credentials
         or private browser state.
 
-- [ ] Add raw CDP and evaluate governance:
+- [x] Add raw CDP and evaluate governance:
   - [x] Mark raw CDP as advanced/diagnostic.
   - [x] Require origin-level approval for raw CDP on arbitrary websites.
   - [x] Provide a read-only evaluate mode for routine page inspection.
@@ -188,28 +188,28 @@ Reference sources used:
   - [x] Keep existing `tab.observe()` as a compact summary.
   - [x] Include URL, title, viewport, scroll position, focused element, selected
         text, and modal/dialog state.
-  - [ ] Include stable node ids for interactable elements.
+  - [x] Include stable node ids for interactable elements.
   - [x] Include selector candidates ordered by stability.
   - [x] Include role, accessible name, visible text, test id, href, placeholder,
         label, disabled/readOnly/checked/selected state, and bounding box.
-  - [ ] Include frame selectors when the target is inside a frame.
+  - [x] Include frame selectors when the target is inside a frame.
   - [x] Include shadow DOM markers when pierced.
   - [x] Bound snapshot size and provide truncation metadata.
 
-- [ ] Improve sensitive filtering in snapshots:
+- [x] Improve sensitive filtering in snapshots:
   - [x] Redact password fields.
   - [x] Redact input values that match secret-like patterns.
-  - [ ] Exclude hidden tokens and non-visible app state by default.
-  - [ ] Avoid dumping large `body.innerText` as exploratory context.
-  - [ ] Avoid returning large embedded JSON such as app hydration payloads by
+  - [x] Exclude hidden tokens and non-visible app state by default.
+  - [x] Avoid dumping large `body.innerText` as exploratory context.
+  - [x] Avoid returning large embedded JSON such as app hydration payloads by
         default.
 
-- [ ] Add element inspection helpers:
+- [x] Add element inspection helpers:
   - [x] `elementInfo({ x, y, includeNonInteractable })`
   - [x] Suggested selector candidates at a point.
   - [x] ARIA role/name at a point.
   - [x] Bounding box and backend DOM node id.
-  - [ ] Optional highlighted screenshot for a target element.
+  - [x] Optional highlighted screenshot for a target element.
 
 - [x] Add snapshot discipline to docs and skill:
   - [x] Use a fresh snapshot after navigation.
@@ -293,12 +293,13 @@ Reference sources used:
   - [x] ARIA role mapping closer to browser accessibility semantics.
 
 - [ ] Add frame and shadow DOM support:
-  - [ ] Discover frame tree through CDP.
-  - [ ] Attach to targets/OOPIFs when required.
-  - [ ] Evaluate within selected frame execution context.
-  - [ ] Generate frame selector paths.
+  - [x] Discover frame tree through CDP.
+  - [x] Attach to targets/OOPIFs when required.
+  - [x] Evaluate within selected frame execution context.
+  - [x] Resolve frame selector paths to CDP frame ids.
+  - [x] Generate frame selector paths.
   - [x] Pierce open shadow roots for snapshots and locators.
-  - [ ] Clearly report unsupported closed shadow roots.
+  - [x] Clearly report unsupported closed shadow roots.
 
 ## P1 - CUA And DOM CUA Parity
 
@@ -316,7 +317,7 @@ Reference sources used:
   - [x] Support more keys than the current minimal key set.
   - [x] Support mouse buttons: left, right, middle, back, forward.
 
-- [ ] Add `tab.dom_cua` namespace:
+- [x] Add `tab.dom_cua` namespace:
   - [x] `get_visible_dom()`.
   - [x] `click({ node_id })`.
   - [x] `double_click({ node_id })`.
@@ -324,15 +325,15 @@ Reference sources used:
   - [x] `type({ text })`.
   - [x] `keypress({ keys })` for backend-supported single keys and modifier
         combos.
-  - [ ] Map node ids back to current snapshot only.
-  - [ ] Invalidate node ids after navigation or snapshot refresh.
+  - [x] Map node ids back to current snapshot only.
+  - [x] Invalidate node ids after navigation or snapshot refresh.
 
-- [ ] Improve visual cursor behavior:
-  - [ ] Keep existing animated cursor.
-  - [ ] Add stopped/taken-over state.
-  - [ ] Add page/action status events.
-  - [ ] Avoid injecting cursor on pages where content scripts are blocked.
-  - [ ] Expose cursor events for diagnostics.
+- [x] Improve visual cursor behavior:
+  - [x] Keep existing animated cursor.
+  - [x] Add stopped/taken-over state.
+  - [x] Add page/action status events.
+  - [x] Avoid injecting cursor on pages where content scripts are blocked.
+  - [x] Expose cursor events for diagnostics.
 
 ## P1 - Navigation, Waiting, And Events
 
@@ -340,19 +341,19 @@ Reference sources used:
   - [x] `load`.
   - [x] `domcontentloaded`.
   - [x] `networkidle`.
-  - [ ] `commit`.
+  - [x] `commit`.
 
-- [ ] Add `expectNavigation(action, options)`:
-  - [ ] Start navigation watcher before action.
-  - [ ] Execute action.
-  - [ ] Wait for target URL/load state.
-  - [ ] Return action result or structured timeout error.
+- [x] Add `expectNavigation(action, options)`:
+  - [x] Start navigation watcher before action.
+  - [x] Execute action.
+  - [x] Wait for target URL/load state.
+  - [x] Return action result or structured timeout error.
 
 - [ ] Improve URL waits:
   - [x] Exact URL.
   - [x] substring.
   - [x] regex.
-  - [ ] waitUntil load state.
+  - [x] waitUntil load state.
   - [x] same-document navigation.
   - [x] hash changes.
 
@@ -361,12 +362,12 @@ Reference sources used:
   - [x] Dialog events.
   - [x] Console and exception events.
   - [x] Download events.
-  - [ ] File chooser events.
-  - [ ] Permission prompt events when observable.
+  - [x] File chooser events.
+  - [x] Permission prompt events when observable.
   - [x] Debugger detach.
   - [x] Tab close/removal.
-  - [ ] User takeover/interruption.
-  - [ ] Event buffer persistence policy.
+  - [x] User takeover/interruption.
+  - [x] Event buffer persistence policy.
 
 ## P1 - Screenshots And Visual Inspection
 
@@ -378,28 +379,29 @@ Reference sources used:
   - [x] Optional save-to-file helper.
   - [x] Inline render guidance in skill docs.
 
-- [ ] Add element screenshots:
+- [x] Add element screenshots:
   - [x] Screenshot around element by node id or locator.
-  - [ ] Optional highlight overlay.
-  - [ ] Optional non-interactable element highlighting.
+  - [x] Optional highlight overlay.
+  - [x] Optional non-interactable element highlighting.
 
-- [ ] Add screenshot QA tests:
-  - [ ] Viewport screenshot nonblank.
-  - [ ] Full-page screenshot includes below-the-fold content.
-  - [ ] Clip screenshot dimensions match requested rectangle.
-  - [ ] High-DPI behavior.
+- [x] Add screenshot QA tests:
+  - [x] Viewport screenshot nonblank.
+  - [x] Full-page screenshot includes below-the-fold content.
+  - [x] Clip screenshot dimensions match requested rectangle.
+  - [x] High-DPI behavior.
 
 ## P1 - File Uploads, Downloads, And Media
 
-- [ ] Replace direct-only upload with file chooser flow:
-  - [ ] `tab.playwright.waitForEvent("filechooser")`.
-  - [ ] File chooser object with `setFiles(paths)` and `isMultiple()`.
-  - [ ] Start wait before clicking upload control.
+- [x] Replace direct-only upload with file chooser flow:
+  - [x] `tab.playwright.waitForEvent("filechooser")`.
+  - [x] File chooser object with `setFiles(paths)` and `isMultiple()`.
+  - [x] Align chooser state with Codex-style `file_chooser_id` ownership in extension background.
+  - [x] Start wait before clicking upload control.
   - [x] Support visible upload buttons/labels that open the chooser.
   - [x] Keep direct `input[type=file]` fallback for simple cases.
   - [x] Support multiple files when input allows it.
   - [x] Validate absolute local paths in native host.
-  - [ ] Provide clear Chrome "Allow access to file URLs" setup guidance.
+  - [x] Provide clear Chrome "Allow access to file URLs" setup guidance.
 
 - [ ] Improve downloads:
   - [x] `tab.playwright.waitForEvent("download")`.
@@ -407,14 +409,14 @@ Reference sources used:
   - [x] `download.path()` equivalent where safe.
   - [x] `download.suggestedFilename()` equivalent.
   - [x] Support download timeout and filtering.
-  - [ ] Confirm or policy-check asset downloads when needed.
-  - [ ] Keep inbound Internet downloads no-confirm by default unless the file is
+  - [x] Confirm or policy-check asset downloads when needed.
+  - [x] Keep inbound Internet downloads no-confirm by default unless the file is
         going to be run/installed.
 
-- [ ] Add media download helper:
-  - [ ] `locator.downloadMedia(options)` for image/video/audio targets.
-  - [ ] Origin approval for page asset downloads.
-  - [ ] Fallback fetch with origin policy checks.
+- [x] Add media download helper:
+  - [x] `locator.downloadMedia(options)` for image/video/audio targets.
+  - [x] Origin approval for page asset downloads.
+  - [x] Fallback fetch with origin policy checks.
 
 ## P1 - Clipboard And Browser History
 
@@ -448,9 +450,9 @@ Reference sources used:
 - [ ] Improve health checks:
   - [x] Extension installed.
   - [x] Native host installed.
-  - [ ] Native manifest origin matches extension id.
+  - [x] Native manifest origin matches extension id.
   - [x] Extension connected.
-  - [ ] Chrome profile name and active profile where possible.
+  - [x] Chrome profile name and active profile where possible.
   - [x] Backend revision and supported actions.
   - [x] Chrome permission status.
   - [x] File URL access status if detectable.
@@ -467,10 +469,10 @@ Reference sources used:
   - [x] Debugger detached or user takeover.
   - [x] Chrome extension UI blocking automation.
 
-- [ ] Improve runtime errors:
-  - [ ] Avoid exposing raw internal errors to end users.
-  - [ ] Map common failures to concise messages.
-  - [ ] Keep structured details for logs/tests.
+- [x] Improve runtime errors:
+  - [x] Avoid exposing raw internal errors to end users.
+  - [x] Map common failures to concise messages.
+  - [x] Keep structured details for logs/tests.
 
 ## P1 - Docs And Skill Parity
 
@@ -542,17 +544,18 @@ Reference sources used:
   - [x] Modal dialog.
   - [x] Menu/dropdown.
   - [x] Toast confirmation.
-  - [ ] Virtualized list.
+  - [x] Virtualized list.
   - [x] Contenteditable editor.
   - [x] Iframe.
   - [x] Nested iframe.
   - [x] Open shadow DOM.
   - [x] Canvas or visual-only target.
+  - [x] Drag/drop target.
   - [x] File chooser via visible button.
   - [x] Multiple file upload.
   - [x] Download success and failure.
   - [x] Browser alert/confirm/prompt.
-  - [ ] Permission prompt if feasible.
+  - [x] Permission prompt if feasible.
   - [x] Same-document navigation.
   - [x] Networkidle wait.
   - [x] Full-page screenshot.
@@ -625,25 +628,29 @@ Reference sources used:
 
 ## P3 - Advanced Browser Capabilities
 
-- [ ] Browser profile metadata:
-  - [ ] Active profile name where safe.
-  - [ ] Last-used profile hint where safe.
-  - [ ] Extension instance id mapping.
-  - [ ] Avoid reading arbitrary profile data.
+- [x] Browser profile metadata:
+  - [x] Active profile name where safe.
+  - [x] Last-used profile hint where safe.
+  - [x] Extension instance id mapping.
+  - [x] Avoid reading arbitrary profile data.
 
-- [ ] Bookmarks if needed:
-  - [ ] Decide whether to expose bookmarks at all.
-  - [ ] If exposed, require explicit confirmation and document sensitivity.
+- [x] Bookmarks if needed:
+  - [x] Decide whether to expose bookmarks at all.
+  - [x] Do not expose bookmarks; keep the `bookmarks` permission absent and
+        advertise `browser.user.bookmarks` as unavailable.
+  - [x] If exposed in a future feature, require explicit confirmation and
+        document sensitivity before adding any bookmarks action.
 
 - [ ] Notifications if needed:
-  - [ ] Detect permission prompts.
-  - [ ] Confirm before enabling notification permissions.
+  - [x] Detect permission prompts.
+  - [x] Confirm before enabling notification permissions.
 
-- [ ] Multi-backend support:
-  - [ ] Discover extension backend.
-  - [ ] Discover optional in-app/local backend.
-  - [ ] Route by requested browser id.
-  - [ ] Close unused backend connections.
+- [x] Multi-backend support:
+  - [x] Discover extension backend.
+  - [x] Discover optional in-app/local backend as unavailable.
+  - [x] Route by requested browser id.
+  - [x] Close unused backend connections; currently a no-op because only the
+        extension backend is available.
 
 - [ ] Browser content comments/annotations if building an in-app browser:
   - [ ] Element/area comments.
@@ -654,36 +661,40 @@ Reference sources used:
 
 These are explicitly not equivalent to Codex yet:
 
-- [ ] Host allowlist/blocklist exists, but first-host prompt UI and download
-      gating are incomplete.
-- [ ] Browser-use confirmation policy exists for uploads, sensitive typing, raw
-      CDP, and mutating evaluate, but lacks UI prompts and broad risky-action
-      coverage.
+- [ ] Host allowlist/blocklist and first-host prompt request events exist, but
+      first-host prompt UI is still incomplete.
+- [ ] Browser-use confirmation policy and prompt request events exist for broad
+      risky-action coverage, but the approval UI is still incomplete.
 - [x] Browser history access exists with per-request confirmation, with policy
       redaction rules for sensitive entries.
 - [ ] Clipboard text and typed-item APIs exist with per-request confirmation,
       but browser permission-prompt UI and broad native format parity are still
       incomplete.
-- [ ] Same-origin `frameLocator` and nested frame locator support exists, but
-      cross-origin frames, OOPIF attachment, and CDP frame tree discovery are
-      still incomplete.
-- [ ] Open shadow DOM-aware locator/snapshot support exists, but closed shadow
-      roots remain opaque and are not targetable.
+- [ ] Same-origin `frameLocator`, nested frame locator support, CDP frame tree
+      discovery, explicit target attach/detach, frame selector path resolution,
+      explicit `evaluate({ targetId, frameId })`, and
+      `frameLocator(...).evaluate()` exist; locator query/wait can use
+      frame-scoped execution contexts when a CDP frame id is resolvable, but
+      automatic locator action routing into selected cross-origin frame
+      contexts is still incomplete.
+- [x] Open shadow DOM-aware locator/snapshot support exists; closed shadow
+      roots remain opaque and are clearly reported as unsupported when
+      observable as custom-element hosts.
 - [ ] No Playwright-style full locator surface.
 - [ ] Playwright-style actionability checks and structured strict/timeout
       errors exist for locator actions, but full Playwright edge cases are still
       incomplete.
 - [ ] Read-only evaluate mode exists, but not a hardened sandbox.
-- [ ] Raw CDP origin approval and audit logging exist, but diagnostic UX is
-      incomplete.
-- [ ] No file chooser event flow.
-- [ ] Full-page, clipped, and element screenshot APIs exist with SDK data
-      URL/bytes and save-to-file helpers, but element highlight overlays and
-      screenshot QA tests are still missing.
-- [ ] CUA drag and pointer/scroll modifier-key support exist, but need
+- [ ] Raw CDP origin approval, prompt request events, and audit logging exist,
+      but approval UI is still incomplete.
+- [x] File chooser event flow exists for controlled upload targets; no OS-level
+      native chooser automation is attempted.
+- [x] Full-page, clipped, and element screenshot APIs exist with SDK data
+      URL/bytes, save-to-file helpers, and optional element highlight overlays.
+- [x] CUA drag and pointer/scroll modifier-key support exist with
       real-browser drag/drop fixture coverage.
-- [ ] Keypress supports expanded keys and modifier combos, but not arbitrary
-      browser/Playwright key syntax.
+- [ ] Keypress supports common Playwright-style key names, aliases, printable
+      keys, and modifier combos, but not IME/media/numpad-specific variants.
 - [ ] Codex-compatible namespace split exists, but `tab.playwright`,
       `tab.cua`, `tab.dom_cua`, and `tab.clipboard` are still partial facades,
       not full Codex behavior.

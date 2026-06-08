@@ -66,10 +66,19 @@ Extension error:
   "ok": false,
   "error": {
     "code": "requires_host_approval",
-    "message": "Human-readable error"
+    "message": "Concise user-facing error",
+    "details": {
+      "internalMessage": "Sanitized internal detail for logs/tests"
+    }
   }
 }
 ```
+
+`error.message` is intended for end users and should stay concise. Diagnostic
+or assertion code should read structured fields such as `error.code` and
+`error.details.internalMessage`; the latter is sanitized and must not contain
+request payloads, script bodies, credentials, or untrusted page content beyond
+what the specific action already returned.
 
 Native host HTTP RPC errors keep the legacy text field and include a structured
 code:
@@ -119,8 +128,8 @@ Extension event:
 Events are also kept in a bounded in-memory extension buffer so an agent can
 query them later with `getEvents`. Buffered events include debugger detach,
 controlled tab removal, selected CDP page lifecycle events, JavaScript dialog
-events, runtime exceptions, action audit events, and download lifecycle events
-while any browser control session is active.
+events, runtime exceptions, host approval requests, action audit events, and
+download lifecycle events while any browser control session is active.
 
 Every dispatched browser action emits a low-sensitive `browserActionAudit`
 event after completion or failure. It does not include request params, script
@@ -159,6 +168,102 @@ Action audit event example:
 
 For failed actions, `status` is `"error"` and `errorCode` contains the
 structured error code returned by the extension response envelope.
+
+Host approval request event example:
+
+```json
+{
+  "type": "event",
+  "name": "hostApprovalRequired",
+  "sequence": 45,
+  "time": 1760000000000,
+  "sessionId": "uuid",
+  "tabId": 456,
+  "action": "openUrl",
+  "host": "example.com",
+  "approvalId": "host:uuid:example.com:openUrl",
+  "message": "Browser access to example.com requires approval before navigate.",
+  "suggestedDecisions": {
+    "allowForSession": {
+      "decision": "allow",
+      "host": "example.com",
+      "sessionId": "uuid"
+    },
+    "alwaysAllow": {
+      "decision": "always_allow",
+      "host": "example.com"
+    },
+    "deny": {
+      "decision": "deny",
+      "host": "example.com"
+    }
+  }
+}
+```
+
+The triggering action still fails with `requires_host_approval`. The MCP client
+or host UI should present the request to the user, call `updatePolicy` with one
+of the suggested decisions after approval, and then retry the original action.
+
+Action confirmation request event example:
+
+```json
+{
+  "type": "event",
+  "name": "browserActionConfirmationRequired",
+  "sequence": 46,
+  "time": 1760000000000,
+  "sessionId": "uuid",
+  "tabId": 456,
+  "action": "click",
+  "host": "example.com",
+  "confirmationId": "confirm:uuid:example.com:click:destructive_action",
+  "message": "Browser action click requires confirmation (destructive_action).",
+  "reasons": ["destructive_action"],
+  "target": {
+    "label": "Delete account",
+    "text": "Delete account",
+    "tagName": "button"
+  },
+  "requiredParams": {
+    "confirmed": true,
+    "confirmationId": "confirm:uuid:example.com:click:destructive_action"
+  }
+}
+```
+
+The triggering action still fails with `confirmation_required`. The MCP client
+or host UI should present the action, host, reasons, and redacted target summary
+to the user. After approval, retry the exact action with `confirmed: true` and
+the supplied `confirmationId`; this does not create a persistent approval.
+
+Origin approval request event example:
+
+```json
+{
+  "type": "event",
+  "name": "browserOriginApprovalRequired",
+  "sequence": 47,
+  "time": 1760000000000,
+  "sessionId": "uuid",
+  "tabId": 456,
+  "action": "rawCdp",
+  "host": "example.com",
+  "approvalId": "origin:uuid:example.com:rawCdp",
+  "message": "Browser action rawCdp on example.com requires originApproved=true.",
+  "reasons": ["raw_cdp"],
+  "requiredParams": {
+    "originApproved": true
+  }
+}
+```
+
+The triggering action still fails with `origin_approval_required`. The MCP
+client or host UI should present the action and origin to the user. After
+approval, retry the exact raw CDP or page asset download action with
+`originApproved: true`. If the action also exposes sensitive browser state, a
+separate `browserActionConfirmationRequired` event may still require
+`confirmed: true`.
 
 Download event example:
 
@@ -218,12 +323,15 @@ Selected CDP page/runtime event example:
 ```json
 {
   "ref": "e0",
+  "nodeId": "n1k9q0pu",
+  "stableNodeId": "n1k9q0pu",
   "role": "button",
   "label": "Submit",
   "sensitive": false,
   "tagName": "button",
   "shadowRoot": null,
   "shadowHostSelector": null,
+  "frameSelectors": ["iframe#fixture"],
   "x": 120,
   "y": 240,
   "rect": {
@@ -235,12 +343,30 @@ Selected CDP page/runtime event example:
 }
 ```
 
-`ref` is valid only for the latest observation of the same page/frame. Agents
-must observe again after navigation, refresh, or failed clicks.
+`nodeId` / `stableNodeId` are generated from relatively stable element features
+such as frame path, role/name/text, test id, href, placeholder, shadow host, and
+selector candidates. They are intended to stay stable across repeated snapshots
+while the relevant page structure is unchanged. `ref` remains a snapshot-scoped
+current-observation handle used by the extension to resolve the actual element.
+
+The Node SDK's `tab.dom_cua` facade exposes `node_id` from `stableNodeId` when
+available, but keeps `ref` internally. Node-targeted `click`, `double_click`,
+`type`, `scroll`, and `screenshot` refresh the visible DOM snapshot before
+acting and fail if the requested `node_id` is not present in that latest
+snapshot.
 
 Elements discovered inside an open shadow root include
 `"shadowRoot": "open"` and a best-effort `shadowHostSelector`. Closed shadow
-roots are not pierced and their internals are not reported.
+roots are not pierced and their internals are not reported. Registered custom
+element hosts that look like closed-shadow hosts are reported with
+`"shadowRoot": "closed_unsupported"` and
+`"shadowUnsupportedReason": "custom_element_shadow_root_not_accessible"` so
+callers can avoid retrying impossible selectors.
+
+Elements discovered inside same-origin iframes include `frameSelectors`, a
+top-to-inner selector path such as `["iframe#outer", "iframe#inner"]`. The
+coordinates and rect are translated into the top viewport coordinate space.
+Cross-origin frames and OOPIFs remain opaque to `observe`.
 
 `label` is a lightweight accessible-name approximation used for agent-facing
 summaries. It prefers `aria-labelledby`, `aria-label`, native form labels,
@@ -263,13 +389,44 @@ visible text while skipping hidden/`aria-hidden` subtrees. `name` in
     "height": 720,
     "devicePixelRatio": 2
   },
-  "text": "Visible page text",
+  "text": "Visible page summary",
+  "frameTree": {
+    "source": "cdp",
+    "frameCount": 2,
+    "root": {
+      "id": "main-frame-id",
+      "parentId": null,
+      "name": null,
+      "url": "https://example.com/",
+      "securityOrigin": "https://example.com",
+      "mimeType": "text/html",
+      "childFrames": []
+    }
+  },
+  "truncation": {
+    "text": true,
+    "textMaxLength": 5000,
+    "textSource": "summary",
+    "textSummarized": true,
+    "bodyTextLength": 12420,
+    "elements": false,
+    "elementCount": 12,
+    "elementMaxCount": 120
+  },
   "elements": []
 }
 ```
 
-Page text is untrusted web content. It must never override system or developer
-instructions, and sensitive browser state must not be returned to the model.
+`text` is untrusted web content. It must never override system or developer
+instructions, and sensitive browser state must not be returned to the model. On
+large pages, `text` is a model-oriented visible summary built from title,
+headings, main/article content, short visible text, and interactable element
+labels. It intentionally avoids returning raw `document.body.innerText` as
+exploratory context. `truncation.textSource`, `textSummarized`, and
+`bodyTextLength` describe whether the field came from a small body text or a
+summary. `frameTree` is discovered through CDP `Page.getFrameTree`; it is
+metadata only, has sensitive URL parameters redacted, and does not imply that
+cross-origin frame execution or OOPIF attachment is supported.
 
 ### BrowserPolicyState
 
@@ -283,7 +440,9 @@ instructions, and sensitive browser state must not be returned to the model.
 }
 ```
 
-Unknown hosts require approval before navigation or browser interaction.
+Unknown hosts require approval before navigation or browser interaction. The
+extension emits `hostApprovalRequired` with safe suggested `updatePolicy`
+arguments, then fails the original action with `requires_host_approval`.
 Session allows apply only to one browser session. Persistent allows and blocked
 hosts are stored in extension storage. Blocked hosts take precedence over all
 allows.
@@ -364,6 +523,16 @@ Result:
   "attachedTabs": [],
   "supportedActions": ["health", "reloadExtension"],
   "backendRevision": 5,
+  "profile": {
+    "activeProfileName": null,
+    "activeProfileId": null,
+    "activeProfileSource": "unavailable",
+    "lastUsedProfileHint": null,
+    "lastUsedProfileSource": "unavailable",
+    "incognito": false,
+    "extensionInstanceId": "local extension instance uuid",
+    "readsProfileFiles": false
+  },
   "permissions": {
     "required": ["debugger", "tabs"],
     "granted": true,
@@ -375,9 +544,27 @@ Result:
   "fileUrlAccess": {
     "detectable": true,
     "allowed": false
+  },
+  "nativeManifest": {
+    "path": "/Users/example/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.formax.browserhost.json",
+    "expectedOrigin": "chrome-extension://dchkbbjmkheilkmencpckilhmmcppdne/",
+    "hostName": "com.formax.browserhost",
+    "extensionId": "dchkbbjmkheilkmencpckilhmmcppdne",
+    "extensionOrigin": "chrome-extension://dchkbbjmkheilkmencpckilhmmcppdne/",
+    "originMatchesExtensionId": true
   }
 }
 ```
+
+`nativeManifest.originMatchesExtensionId` reports whether the native messaging
+manifest origin expected by the native host matches the active extension id.
+This is especially useful when testing a local unpacked extension whose Chrome
+extension id differs from the Web Store id.
+
+`profile` reports only safe runtime metadata. The extension does not read Chrome
+profile files. `activeProfileName`, `activeProfileId`, and `lastUsedProfileHint`
+are `null` with source `unavailable` unless native diagnostics supplies a short
+non-path hint; `incognito` is the current extension context.
 
 Envelope metadata for `health` uses `sessionId: null` and `tabId: null`.
 
@@ -504,7 +691,35 @@ Params:
 }
 ```
 
-Waits for a buffered extension event matching the optional filters.
+Waits for a buffered extension event matching the optional filters. Common
+event names include `cdpEvent`, `downloadCreated`, `downloadChanged`,
+`dialogOpened`, `fileChooserOpened`, `cursorMove`, `cursorArrived`,
+`pageVisualStatus`, `debuggerDetached`, `userTakeover`,
+`permissionPromptDetected`, `userHandoffRequired`, and `tabRemoved`.
+`fileChooserOpened` is emitted after a controlled click targets an
+`input[type=file]`, associated label, or wrapper that resolves to a file input.
+The extension does not automate the native operating-system file dialog; it
+suppresses the unsafe native chooser path and expects callers to use the
+returned SDK handle's `setFiles()` method.
+
+`pageVisualStatus` is a Codex-style visual status event mirrored to the page
+content script. Supported phases are `active`, `thinking`, `handoff`,
+`deliverable`, `stopped`, and `taken_over`. The content script renders these as
+best-effort favicon badges and cursor state. `userTakeover` is emitted when the
+debugger detaches unexpectedly, for example because the user opened DevTools or
+otherwise interrupted automation.
+
+`userHandoffRequired` is emitted when the extension refuses to automate actions
+that must be completed by the user, including CAPTCHA/human-verification
+challenges, password-change final submission, browser security interstitial
+bypasses, and paywall bypasses. The page visual status is set to `handoff`
+before the action fails with `user_handoff_required`.
+
+`permissionPromptDetected` is emitted when an observable browser action target
+looks like a browser/site permission grant, such as camera, microphone,
+location, notification, account/login access, or extension install. This covers
+page-visible permission grant targets; native Chrome permission bubbles are
+still browser UI and may require manual user action.
 
 Result payload:
 
@@ -517,6 +732,34 @@ Result payload:
     "type": "event",
     "name": "cdpEvent",
     "sequence": 45
+  }
+}
+```
+
+For file chooser events, the extension owns a short-lived chooser record and
+returns both camelCase and Codex-style snake_case ids. Use
+`waitForFileChooser`/`setFileChooserFiles` or the SDK handle's `setFiles()`
+instead of re-targeting the element from the client:
+
+```json
+{
+  "name": "fileChooserOpened",
+  "tabId": 456,
+  "fileChooserId": "fc-uuid",
+  "file_chooser_id": "fc-uuid",
+  "isMultiple": true,
+  "is_multiple": true,
+  "fileChooser": {
+    "fileChooserId": "fc-uuid",
+    "file_chooser_id": "fc-uuid",
+    "ref": "e12",
+    "selector": null,
+    "multiple": true,
+    "isMultiple": true,
+    "is_multiple": true,
+    "accept": ".png,.jpg",
+    "name": "assets",
+    "inputId": "asset-upload"
   }
 }
 ```
@@ -538,7 +781,9 @@ Params:
 Exports a bounded diagnostics snapshot for support and bug reports. The native
 host injects non-secret native manifest metadata before forwarding the request
 to the extension. The extension does not read Chrome profile files or native
-manifest files directly.
+manifest files directly. If the host or doctor layer supplies safe profile
+hints, health includes them in `profile`; otherwise the fields stay null with
+source `unavailable`.
 
 The result includes health, recent events, optional event snapshots, recent dev
 logs, active sessions, attached debugger tabs, native manifest metadata when the
@@ -558,7 +803,9 @@ Result payload:
     "path": "/Users/example/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.formax.browserhost.json",
     "expectedOrigin": "chrome-extension://dchkbbjmkheilkmencpckilhmmcppdne/",
     "hostName": "com.formax.browserhost",
-    "extensionId": "dchkbbjmkheilkmencpckilhmmcppdne"
+    "extensionId": "dchkbbjmkheilkmencpckilhmmcppdne",
+    "extensionOrigin": "chrome-extension://dchkbbjmkheilkmencpckilhmmcppdne/",
+    "originMatchesExtensionId": true
   },
   "extension": {
     "id": "dchkbbjmkheilkmencpckilhmmcppdne",
@@ -730,6 +977,13 @@ and `limit` is bounded by the extension. Returned URLs redact sensitive query
 parameter values such as tokens, passwords, API keys, auth/session ids, and
 credential codes. Titles are also passed through common secret-pattern
 redaction. Redacted entries include `redacted: true` and `redactionReasons`.
+
+Bookmarks are intentionally not exposed. The extension does not request the
+Chrome `bookmarks` permission, there is no bookmarks action in the protocol, and
+`getCapabilities` reports `browser.user.bookmarks` as unavailable with reason
+`unsupported_sensitive_browser_state`. This avoids returning long-lived personal
+navigation preferences unless a future explicit feature adds a separate
+confirmation and sensitivity policy.
 
 Result payload:
 
@@ -1101,10 +1355,12 @@ Params:
 }
 ```
 
-Supported states are `domcontentloaded`, `load`, and `networkidle`. If the
-current document already satisfies `domcontentloaded` or `load`, the action
-returns immediately. `networkidle` waits until Chrome reports no in-flight
-network requests for `idleMs` milliseconds, defaulting to 500ms.
+Supported states are `commit`, `domcontentloaded`, `load`, and `networkidle`.
+If the current document already satisfies `domcontentloaded` or `load`, the
+action returns immediately. `commit` waits for the next main-frame
+`Page.frameNavigated` event after the call starts; it is not treated as already
+satisfied by the current document. `networkidle` waits until Chrome reports no
+in-flight network requests for `idleMs` milliseconds, defaulting to 500ms.
 
 Result payload:
 
@@ -1117,8 +1373,10 @@ Result payload:
 }
 ```
 
-For `networkidle`, `reason` is `networkidle` on success or `timeout` when the
-network does not become idle before `timeoutMs`.
+For `commit`, `reason` is `Page.frameNavigated` on success or `timeout` when no
+main-frame navigation commits before `timeoutMs`. For `networkidle`, `reason`
+is `networkidle` on success or `timeout` when the network does not become idle
+before `timeoutMs`.
 
 ### waitForUrl
 
@@ -1131,13 +1389,20 @@ Params:
   "url": "https://example.com/complete",
   "urlContains": "/complete",
   "urlRegex": "/complete(?:$|[?#])",
+  "waitUntil": "load",
   "timeoutMs": 15000,
-  "pollMs": 100
+  "pollMs": 100,
+  "idleMs": 500
 }
 ```
 
 At least one of `url`, `urlContains`, or `urlRegex` is required. If multiple
-matchers are supplied, all must match. Timeout is reported in the result payload.
+matchers are supplied, all must match. `waitUntil` optionally waits for a load
+state after the URL matches. Supported values are `commit`, `domcontentloaded`,
+`load`, and `networkidle`. `commit` is considered satisfied by the URL match
+itself because the matching URL is observable only after navigation has
+committed. `networkidle` uses `idleMs`, defaulting to 500ms. Timeout is reported
+in the result payload.
 
 Result payload:
 
@@ -1149,7 +1414,9 @@ Result payload:
   "timedOut": false,
   "elapsedMs": 300,
   "url": "https://example.com/complete",
-  "title": "Complete"
+  "title": "Complete",
+  "waitUntil": "load",
+  "loadReason": "already_satisfied"
 }
 ```
 
@@ -1241,13 +1508,19 @@ Params:
 
 Result payload: `BrowserObservation`
 
-By default, `observe` returns a lightweight DOM-derived summary. When
+By default, `observe` returns a lightweight DOM-derived summary rather than a
+full `body.innerText` dump. When
 `includeAccessibility` is true, the extension adds a truncated
 `accessibilityTree` from `Accessibility.getFullAXTree`. When `includeDomSnapshot`
-is true, it adds the raw `DOMSnapshot.captureSnapshot` payload. The lightweight
-summary recursively pierces open shadow roots for interactable elements and
+is true, it adds a sanitized `DOMSnapshot.captureSnapshot` payload. Snapshot
+strings are secret-redacted, large JSON-like payloads are replaced with compact
+placeholders, and very large strings are truncated before returning to the
+model. The lightweight summary recursively pierces open shadow roots for
+interactable elements and
 marks those elements with `shadowRoot: "open"` plus a best-effort
-`shadowHostSelector`; closed shadow roots remain opaque.
+`shadowHostSelector`; likely closed-shadow custom-element hosts are marked with
+`shadowRoot: "closed_unsupported"` and remain opaque.
+Every observation also includes a CDP-derived `frameTree` when available.
 
 ### elementInfo
 
@@ -1279,7 +1552,8 @@ Result payload:
   "x": 42,
   "y": 64,
   "found": true,
-  "nodeId": "e0",
+  "nodeId": "n1k9q0pu",
+  "stableNodeId": "n1k9q0pu",
   "backendNodeId": 123,
   "role": "button",
   "name": "Submit",
@@ -1324,9 +1598,16 @@ Params:
 First-pass locator primitive for SDK facades. Locator kinds are `css`, `text`,
 `role`, `label`, `placeholder`, and `testId`. Same-origin frame targeting is
 represented by `frameSelectors`, for example
-`["iframe#outer", "iframe#inner"]`. Cross-origin frames and OOPIF attachment are
-not implemented. Locator resolution recursively pierces open shadow roots for
-each selector/query root. Closed shadow roots are opaque and cannot be targeted.
+`["iframe#outer", "iframe#inner"]`. Locator read paths such as `locatorQuery`
+and `locatorWait` attempt to resolve frame selectors to a CDP `frameId` and run
+inside that frame's isolated execution context. `boundingBox` stays on the
+top-level same-origin DOM traversal path so screenshots keep top-viewport clip
+coordinates. Locator actions still resolve `frameSelectors` through same-origin
+DOM access. Use `resolveFrame` and frame-scoped
+`evaluate({ frameId, targetId })` for explicit CDP frame context targeting;
+automatic locator action routing into cross-origin/OOPIF frames is not yet
+complete. Locator resolution recursively pierces open shadow roots for each
+selector/query root. Closed shadow roots are opaque and cannot be targeted.
 `index` selects a zero-based match for
 first-element queries; `strict: true` requires exactly one match. Supported query kinds are `count`,
 `allTextContents`, `textContent`, `innerText`, `getAttribute`, `isVisible`,
@@ -1336,6 +1617,61 @@ Semantic role and label locators use the same lightweight accessible-name
 approximation as `observe` and `elementInfo`: `aria-labelledby`, `aria-label`,
 native labels, image alt text, SVG title text, button-like input values, and
 visible text with hidden/`aria-hidden` subtrees omitted.
+
+### resolveFrame
+
+Params:
+
+```json
+{
+  "sessionId": "uuid",
+  "tabId": 456,
+  "frameSelectors": ["iframe#fixture", "iframe#nested"],
+  "targetId": "optional-devtools-target-id",
+  "timeoutMs": 10000
+}
+```
+
+`resolveFrame` resolves a `frameLocator` selector path into CDP frame metadata.
+The extension first walks the selector path in the page to collect iframe
+attributes and same-origin document URLs, then compares that path with
+`Page.getFrameTree` child frames to find the selected CDP `frameId`. If
+`targetId` is supplied, discovery runs against that DevTools target. This
+primitive is intentionally read-only and returns `matched: false` rather than
+inventing a frame id when the DOM path cannot be matched to CDP metadata.
+
+Result payload:
+
+```json
+{
+  "sessionId": "uuid",
+  "tabId": 456,
+  "targetId": null,
+  "frameSelectors": ["iframe#fixture"],
+  "matched": true,
+  "accessible": true,
+  "frameId": "CDP_FRAME_ID",
+  "frame": {
+    "id": "CDP_FRAME_ID",
+    "parentId": "ROOT_FRAME_ID",
+    "name": "fixture",
+    "url": "https://example.test/frame",
+    "childFrames": []
+  },
+  "path": [
+    {
+      "selector": "iframe#fixture",
+      "index": 0,
+      "accessible": true,
+      "id": "fixture",
+      "name": "fixture",
+      "src": "https://example.test/frame",
+      "url": "https://example.test/frame",
+      "frameId": "CDP_FRAME_ID"
+    }
+  ]
+}
+```
 
 Locator plans may also include filters:
 
@@ -1612,6 +1948,8 @@ Params:
 {
   "sessionId": "uuid",
   "tabId": 456,
+  "targetId": "optional-devtools-target-id",
+  "frameId": "optional-cdp-frame-id",
   "script": "document.title",
   "awaitPromise": true,
   "timeoutMs": 10000,
@@ -1627,7 +1965,12 @@ require `confirmed: true`. In addition to the generic action audit event, the
 extension emits a diagnostic `browserActionAudit` event with
 `auditKind: "diagnostic"` for each evaluate call with origin, method, action id,
 turn id, session id, and reason; the script body is not included in either audit
-event.
+event. When `frameId` is supplied, the extension creates an isolated execution
+world for that CDP frame through `Page.createIsolatedWorld` and passes the
+returned `executionContextId` to `Runtime.evaluate`. When `targetId` is also
+supplied, both `Page.createIsolatedWorld` and `Runtime.evaluate` are sent to
+that DevTools target, allowing callers that discovered OOPIF/page targets to
+evaluate in the selected target's frame context.
 
 Result payload:
 
@@ -1635,6 +1978,9 @@ Result payload:
 {
   "sessionId": "uuid",
   "tabId": 456,
+  "targetId": null,
+  "frameId": "optional-cdp-frame-id",
+  "executionContextId": 42,
   "value": "Example Domain"
 }
 ```
@@ -1652,10 +1998,15 @@ Params:
 }
 ```
 
-Supported keys: `Enter`, `Tab`, `Escape`, `Backspace`, `Delete`, `Space`,
-`Home`, `End`, `PageUp`, `PageDown`, `ArrowUp`, `ArrowDown`, `ArrowLeft`,
-`ArrowRight`, modifier-only keys `Alt`, `Control`, `ControlOrMeta`, `Meta`,
-`Shift`, and modifier combos such as `ControlOrMeta+Shift+Space`.
+Supported keys include common Playwright-style key names: `Enter`, `Tab`,
+`Escape`, `Backspace`, `Delete`, `Insert`, `Space`, `Home`, `End`, `PageUp`,
+`PageDown`, arrow keys, `Pause`, `CapsLock`, `NumLock`, `ScrollLock`,
+`ContextMenu`, `F1` through `F12`, single ASCII letters/digits, and simple
+US-keyboard punctuation such as `/`, `-`, and `.`. Common aliases such as
+`Esc`, `Del`, `Spacebar`, `Left`, `Right`, `PgUp`, `PgDown`, `Return`, `Ctrl`,
+`Cmd`, `Command`, and `Option` are accepted. Modifier-only keys `Alt`,
+`Control`, `ControlOrMeta`, `Meta`, and `Shift` are supported, as are modifier
+combos such as `ControlOrMeta+Shift+Space` and `Ctrl+A`.
 
 Result payload: `BrowserObservation`
 
@@ -1717,9 +2068,90 @@ to the extension.
 Element screenshots are SDK helpers built on top of existing protocol actions:
 `locator.screenshot()` first calls `locatorQuery` with `kind: "boundingBox"` and
 then calls `screenshot` with a `clip`; `tab.dom_cua.screenshot({ node_id })`
-uses a fresh visible DOM snapshot to find the node box before calling
-`screenshot`. Both helpers support `padding`, `format`, and the SDK-only
-`path`/`saveToFile` output options.
+uses the latest visible DOM snapshot to find the node box before calling
+`screenshot`, failing if the node id is stale. Both helpers support `padding`,
+`format`, `highlight: true`, `highlightColor`, `highlightDurationMs`, and the
+SDK-only `path`/`saveToFile` output options. Highlighting draws a best-effort
+content-script overlay around the target before the screenshot is captured;
+restricted pages may still return a screenshot without the overlay.
+
+`tab.playwright.expectNavigation(action, options)` is also an SDK helper. It
+starts a navigation watcher before invoking the supplied action callback, then
+returns both the action result and navigation result. With URL matchers it uses
+`waitForUrl({ waitUntil })`; without URL matchers it waits for a main-frame
+`commit` first and then the requested `waitUntil`/`state` load state.
+
+### waitForFileChooser
+
+Params:
+
+```json
+{
+  "sessionId": "uuid",
+  "tabId": 456,
+  "timeoutMs": 15000,
+  "pollMs": 100,
+  "sinceSequence": 42
+}
+```
+
+Waits for a `fileChooserOpened` event created by a controlled click. This is a
+Codex-style convenience over the generic event buffer: the result exposes
+`fileChooserId` and `file_chooser_id` so callers can set files without
+reconstructing or guessing the DOM target.
+
+Result payload:
+
+```json
+{
+  "matched": true,
+  "timedOut": false,
+  "elapsedMs": 12,
+  "fileChooserId": "fc-uuid",
+  "file_chooser_id": "fc-uuid",
+  "isMultiple": true,
+  "is_multiple": true,
+  "fileChooser": {
+    "fileChooserId": "fc-uuid",
+    "file_chooser_id": "fc-uuid",
+    "multiple": true,
+    "isMultiple": true,
+    "is_multiple": true,
+    "accept": ".png,.jpg"
+  },
+  "event": {
+    "name": "fileChooserOpened"
+  }
+}
+```
+
+### setFileChooserFiles
+
+Params:
+
+```json
+{
+  "sessionId": "uuid",
+  "tabId": 456,
+  "fileChooserId": "fc-uuid",
+  "file_chooser_id": "fc-uuid",
+  "files": [
+    "/absolute/path/to/first.png",
+    "/absolute/path/to/second.png"
+  ],
+  "timeoutMs": 15000,
+  "waitMs": 1000,
+  "confirmed": true
+}
+```
+
+Sets local files on a chooser returned by `waitForFileChooser`. `files` is the
+Codex-style shape; `filePath` and `filePaths` remain accepted for local
+compatibility. The native host validates every local file before the extension
+uses the background-owned chooser record to resolve the original page target and
+call CDP `DOM.setFileInputFiles`.
+
+Result payload: `BrowserObservation`
 
 ### uploadFile
 
@@ -1757,6 +2189,22 @@ host validates every local file before the extension calls CDP. Uploads require
 and destination.
 
 Result payload: `BrowserObservation`
+
+The Node browser-client SDK also supports the Playwright-style chooser flow:
+
+```ts
+const chooserPromise = tab.playwright.waitForEvent("filechooser");
+await tab.locator('label[for="asset-upload"]').click();
+const chooser = await chooserPromise;
+await chooser.setFiles(["/absolute/path/a.png", "/absolute/path/b.jpg"], {
+  confirmed: true
+});
+```
+
+`chooser.isMultiple()` reflects the target input's `multiple` state.
+`chooser.setFiles()` uses `setFileChooserFiles` with the background-owned
+`file_chooser_id`, so native-host absolute path and allowed-root validation
+still applies while the extension retains ownership of the page target.
 
 ### listDownloads
 
@@ -1846,6 +2294,147 @@ Result payload:
 }
 ```
 
+### downloadMedia
+
+Params:
+
+```json
+{
+  "sessionId": "uuid",
+  "tabId": 456,
+  "locator": {
+    "kind": "css",
+    "selector": "img.hero",
+    "strict": true
+  },
+  "attribute": "auto",
+  "filename": "assets/hero.png",
+  "conflictAction": "uniquify",
+  "saveAs": false,
+  "waitForCompletion": true,
+  "fallbackFetch": true,
+  "fallbackMaxBytes": 26214400,
+  "originApproved": true,
+  "confirmed": false
+}
+```
+
+Downloads an image/video/audio/source/link asset resolved from a locator. The
+extension resolves the media URL in the page context, requires the URL to be
+HTTP(S), checks the asset origin through browser policy, and then calls Chrome's
+downloads API. `attribute` can be `auto`, `src`, `href`, `poster`, or
+`backgroundImage`. `filename`, when supplied, must be a relative Chrome download
+filename with no `..` segments.
+
+By default the backend uses `chrome.downloads.download()` directly. If
+`fallbackFetch: true` is supplied and direct download startup fails, the
+extension fetches the media with browser credentials, bounds the response by
+`fallbackMaxBytes` (default 25 MiB, hard-capped by the extension), re-checks
+browser policy for any final redirected URL, and downloads the fetched bytes as a
+data URL. This fallback is intended for page assets that need browser session
+context; it is not a large-file downloader.
+
+Page asset downloads require `originApproved: true`. Ordinary inbound media
+downloads do not require `confirmed: true`; runnable or installable downloads
+such as `.dmg`, `.exe`, `.pkg`, or `.sh` still require confirmation.
+
+The Node browser-client SDK exposes this as:
+
+```ts
+const result = await tab.locator("img.hero").downloadMedia({
+  originApproved: true,
+  waitForCompletion: true
+});
+console.log(result.download?.suggestedFilename(), result.download?.path());
+```
+
+Result payload:
+
+```json
+{
+  "sessionId": "uuid",
+  "tabId": 456,
+  "media": {
+    "url": "https://example.com/assets/hero.png",
+    "kind": "img",
+    "tagName": "img",
+    "attribute": "src",
+    "filename": "assets/hero.png",
+    "method": "chrome_downloads"
+  },
+  "download": {
+    "id": 12,
+    "filename": "/Users/me/Downloads/assets/hero.png",
+    "state": "complete"
+  },
+  "matched": true,
+  "timedOut": false,
+  "elapsedMs": 1400
+}
+```
+
+### attachTarget
+
+Params:
+
+```json
+{
+  "sessionId": "uuid",
+  "tabId": 456,
+  "targetId": "devtools-target-id",
+  "originApproved": true,
+  "confirmed": true,
+  "reason": "inspect out-of-process iframe target"
+}
+```
+
+`attachTarget` explicitly attaches the Chrome debugger to a DevTools target that
+belongs to a controlled tab. This mirrors Codex resource 1.1.5's
+background-level `attachTarget` lifecycle entry point instead of only relying
+on implicit attachment during `cdp({ targetId })`. Because attaching gives the
+runtime raw CDP control of that target, it uses the same host/origin approval
+path as raw `cdp`.
+
+Result payload:
+
+```json
+{
+  "attached": true,
+  "sessionId": "uuid",
+  "tabId": 456,
+  "targetId": "devtools-target-id"
+}
+```
+
+### detachTarget
+
+Params:
+
+```json
+{
+  "sessionId": "uuid",
+  "tabId": 456,
+  "targetId": "devtools-target-id",
+  "reason": "cleanup target debugger attachment"
+}
+```
+
+`detachTarget` releases an explicit target-level debugger attachment while
+preserving the controlled tab/session bookkeeping. It is best-effort from the
+caller perspective: detaching an already detached target clears local attachment
+state and returns `attached: false`.
+
+Result payload:
+
+```json
+{
+  "attached": false,
+  "sessionId": "uuid",
+  "tabId": 456,
+  "targetId": "devtools-target-id"
+}
+```
+
 ### cdp
 
 Params:
@@ -1869,7 +2458,9 @@ extension attaches the debugger if needed, serializes concurrent attach work for
 the same tab, and applies a per-command timeout. When `targetId` is supplied,
 the extension sends the command to that specific DevTools target instead of the
 top-level tab target while still using the controlled tab for session, origin,
-and audit context. Raw CDP requires origin-level approval through
+and audit context. `Target.getTargets` is special-cased through
+`chrome.debugger.getTargets()` so callers can discover DevTools targets before
+choosing whether to attach. Raw CDP requires origin-level approval through
 `originApproved: true`. Raw CDP is advanced diagnostic tooling, not a normal
 browsing primitive. In addition to the generic action audit event, the
 extension emits a diagnostic `browserActionAudit` event with
@@ -1906,6 +2497,9 @@ Params:
 Returns console, log, and runtime exception entries derived from buffered CDP
 events. The extension currently buffers `Runtime.consoleAPICalled`,
 `Runtime.exceptionThrown`, and `Log.entryAdded` while the debugger is attached.
+Console arguments, log text, exception descriptions, stack traces, dialog text,
+and URLs are secret-redacted before they enter the event buffer; dev log entries
+include `redacted` and `redactionReasons` when text or URL values were changed.
 
 Result payload:
 
@@ -1919,7 +2513,9 @@ Result payload:
       "tabId": 456,
       "source": "console",
       "level": "error",
-      "text": "Example error"
+      "text": "Example error",
+      "redacted": false,
+      "redactionReasons": []
     }
   ]
 }
@@ -2089,13 +2685,27 @@ Result payload:
 
 - Navigation allows only `http:` and `https:`.
 - `chrome://`, `edge://`, `file://`, and extension pages are blocked in MVP.
-- Unknown `http`/`https` hosts require policy approval before navigation,
-  click, typing, upload, evaluate, or raw CDP. Use `updatePolicy` to record
-  session allows, persistent allows, or denied hosts.
+- Unknown `http`/`https` hosts emit `hostApprovalRequired` and require policy
+  approval before navigation, click, typing, upload, evaluate, or raw CDP. Use
+  `updatePolicy` to record session allows, persistent allows, or denied hosts,
+  then retry the original action.
 - File uploads and sensitive typing require `confirmed: true`.
+- Clicks on targets that look like browser/site permission grants, such as
+  camera, microphone, location, notification, account/login access, or extension
+  install prompts, require `confirmed: true`.
+- CAPTCHA/human-verification challenges, password-change final submission,
+  browser security interstitial bypasses, and paywall bypasses are not automated;
+  they emit `userHandoffRequired` and fail with `user_handoff_required`.
 - Mutating `evaluate` calls require `confirmed: true`; read-only inspection can
   pass `mode: "read"`.
 - Raw `cdp` calls require `originApproved: true`.
+- Raw `cdp` calls that can read cookies, storage, credentials, tokens, or other
+  private browser state also require `confirmed: true`; origin approval alone is
+  not enough for sensitive reads.
+- Read-only `evaluate` is allowed for routine inspection, but scripts that read
+  cookies, localStorage, sessionStorage, IndexedDB, extension storage,
+  passwords, credentials, tokens, or session identifiers require
+  `confirmed: true`.
 - Browser history reads require `confirmed: true` for each request and do not
   have a persistent or always-allow path.
 - Clipboard reads and writes require `confirmed: true` for each request.
@@ -2125,6 +2735,8 @@ Result payload:
   untrusted web content.
 - Password input values are never returned; password elements use
   `label: "[password field]"` and `sensitive: true`.
+- Buffered console/log/exception data is redacted before storage and before
+  `getEvents`, `getDiagnostics`, or `getDevLogs` can return it.
 - Native host logs must use stderr only. stdout is reserved for native
   messaging frames.
 - Agent-facing observations must be wrapped as untrusted web content.

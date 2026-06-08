@@ -38,6 +38,26 @@ describe("browser policy", () => {
       code: "Space",
       keyCode: 32
     });
+    expect(normalizeKey("Esc")).toEqual({
+      key: "Escape",
+      code: "Escape",
+      keyCode: 27
+    });
+    expect(normalizeKey("Control+A")).toEqual({
+      key: "A",
+      code: "KeyA",
+      keyCode: 65
+    });
+    expect(normalizeKey("F5")).toEqual({
+      key: "F5",
+      code: "F5",
+      keyCode: 116
+    });
+    expect(normalizeKey("/")).toEqual({
+      key: "/",
+      code: "Slash",
+      keyCode: 191
+    });
   });
 
   it("rejects unsupported keys", () => {
@@ -150,11 +170,28 @@ describe("browser policy", () => {
       reasons: expect.arrayContaining(["external_side_effect"])
     });
     expect(classifyBrowserAction({
-      action: "download",
-      url: "https://example.com/download"
+      action: "click",
+      url: "https://example.com/meeting",
+      label: "Allow camera access"
     })).toMatchObject({
       requiresConfirmation: true,
-      reasons: expect.arrayContaining(["download"])
+      reasons: expect.arrayContaining(["browser_permission"])
+    });
+    expect(classifyBrowserAction({
+      action: "download",
+      url: "https://example.com/photo.png"
+    })).toMatchObject({
+      requiresConfirmation: false,
+      requiresOriginApproval: true,
+      reasons: []
+    });
+    expect(classifyBrowserAction({
+      action: "download",
+      url: "https://example.com/installer.dmg"
+    })).toMatchObject({
+      requiresConfirmation: true,
+      requiresOriginApproval: true,
+      reasons: expect.arrayContaining(["download_run_or_install"])
     });
     expect(classifyBrowserAction({
       action: "history"
@@ -188,6 +225,28 @@ describe("browser policy", () => {
     })).toMatchObject({
       requiresConfirmation: false,
       readOnly: true
+    });
+    expect(classifyBrowserAction({
+      action: "evaluate",
+      url: "https://example.com",
+      script: "document.cookie",
+      mode: "read"
+    })).toMatchObject({
+      requiresConfirmation: true,
+      readOnly: true,
+      reasons: expect.arrayContaining(["sensitive_browser_state"])
+    });
+    expect(classifyBrowserAction({
+      action: "rawCdp",
+      url: "https://example.com",
+      method: "Runtime.evaluate",
+      params: {
+        expression: "localStorage.getItem('auth_token')"
+      }
+    })).toMatchObject({
+      requiresConfirmation: true,
+      requiresOriginApproval: true,
+      reasons: expect.arrayContaining(["raw_cdp", "sensitive_browser_state"])
     });
     expect(classifyBrowserAction({
       action: "evaluate",
