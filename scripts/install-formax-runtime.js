@@ -3,12 +3,15 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 const root = process.cwd();
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const defaultDist = path.basename(scriptDir) === "scripts" ? path.join(root, "dist") : scriptDir;
 const defaultInstallRoot = path.join(os.homedir(), ".formax", "plugins", "cache", "formax", "chrome");
+const execFileAsync = promisify(execFile);
 
 const platformMap = {
   darwin: "macos",
@@ -81,8 +84,12 @@ const runtimeEntries = [
   ["shared", "shared"],
   ["scripts/check-extension-installed.js", "scripts/check-extension-installed.js"],
   ["scripts/check-native-host-manifest.js", "scripts/check-native-host-manifest.js"],
-  ["node_modules", "node_modules"],
   ["package.json", "package.json"],
+  ["package-lock.json", "package-lock.json"],
+];
+
+const optionalRuntimeEntries = [
+  ["node_modules", "node_modules"],
 ];
 
 const debugEntries = [
@@ -143,6 +150,24 @@ async function copyEntries(srcRoot, destRoot, entries) {
   }
 
   return { copied, missing };
+}
+
+async function copyOptionalEntries(srcRoot, destRoot, entries) {
+  const copied = [];
+
+  for (const [from, to] of entries) {
+    const src = path.join(srcRoot, from);
+    const dest = path.join(destRoot, to);
+
+    if (!(await exists(src))) {
+      continue;
+    }
+
+    await copyFiltered(src, dest);
+    copied.push(to);
+  }
+
+  return copied;
 }
 
 async function replaceSymlink(target, linkPath, dryRun) {
@@ -207,6 +232,42 @@ async function writeJson(filePath, value, dryRun) {
   await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
+async function installNodeDependencies(versionDir, dryRun) {
+  const nodeModulesDir = path.join(versionDir, "node_modules");
+  const lockfilePath = path.join(versionDir, "package-lock.json");
+
+  if (await exists(nodeModulesDir)) {
+    return "bundled";
+  }
+
+  if (dryRun) {
+    console.log(`  node deps:         would install production dependencies`);
+    return "dry-run";
+  }
+
+  console.log("\nInstalling Formax Node dependencies...");
+  const npmArgs = (await exists(lockfilePath))
+    ? ["ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"]
+    : ["install", "--omit=dev", "--ignore-scripts", "--package-lock=false", "--no-audit", "--no-fund"];
+
+  try {
+    await execFileAsync("npm", npmArgs, {
+      cwd: versionDir,
+      maxBuffer: 1024 * 1024 * 20,
+    });
+  } catch (error) {
+    if (error && typeof error === "object" && "stdout" in error && typeof error.stdout === "string") {
+      process.stdout.write(error.stdout);
+    }
+    if (error && typeof error === "object" && "stderr" in error && typeof error.stderr === "string") {
+      process.stderr.write(error.stderr);
+    }
+    throw error;
+  }
+
+  return "installed";
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const distPackagePath = path.join(args.dist, "package.json");
@@ -267,6 +328,8 @@ async function main() {
   await fs.mkdir(versionDir, { recursive: true });
   const entries = args.includeDebug ? [...runtimeEntries, ...debugEntries] : runtimeEntries;
   const { copied, missing } = await copyEntries(args.dist, versionDir, entries);
+  copied.push(...(await copyOptionalEntries(args.dist, versionDir, optionalRuntimeEntries)));
+  const dependencyMode = await installNodeDependencies(versionDir, args.dryRun);
   await writeJson(
     path.join(versionDir, "FORMAX-RUNTIME-MANIFEST.json"),
     {
@@ -276,6 +339,7 @@ async function main() {
       extensionId,
       hostName,
       debugIncluded: args.includeDebug,
+      nodeDependencies: dependencyMode,
       copied,
       missing,
     },

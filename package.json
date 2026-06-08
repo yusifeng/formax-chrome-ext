@@ -1,6 +1,6 @@
 {
   "name": "formax-extension",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,6 +10,7 @@
     "build:rust-native-host": "node scripts/copy-rust-native-host.js",
     "install:formax-runtime": "node scripts/install-formax-runtime.js",
     "package:dist": "npm run build && npm run build:rust-native-host && node scripts/package-dist.js",
+    "release": "node scripts/release.js",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.extension.json --noEmit",
     "chat:llm": "node tests/scripts/llm-browser-chat.js",
     "chat:node-repl": "node tests/scripts/llm-node-repl-chat.js",

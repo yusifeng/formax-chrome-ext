@@ -1,13 +1,10 @@
 #!/usr/bin/env node
 
 import fs from "node:fs/promises";
-import { execFile } from "node:child_process";
 import path from "node:path";
-import { promisify } from "node:util";
 
 const root = process.cwd();
 const dist = path.join(root, "dist");
-const execFileAsync = promisify(execFile);
 
 const copyEntries = [
   ["README.md", "README.md"],
@@ -106,13 +103,8 @@ async function main() {
     },
     dependencies: rootPackage.dependencies || {}
   });
-
-  console.log("Installing production dependencies into dist...");
-  await execFileAsync(
-    "npm",
-    ["install", "--omit=dev", "--ignore-scripts", "--package-lock=false", "--no-audit", "--no-fund"],
-    { cwd: dist }
-  );
+  await fs.copyFile(path.join(root, "package-lock.json"), path.join(dist, "package-lock.json"));
+  copied.push("package-lock.json");
 
   await writeJson(path.join(dist, "DIST-MANIFEST.json"), {
     generatedAt: new Date().toISOString(),
