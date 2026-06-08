@@ -1,0 +1,23 @@
+{
+  "name": "formax-chrome",
+  "version": "0.1.1",
+  "displayName": "Formax Chrome",
+  "description": "Control the user's real Chrome profile through the Formax extension, native host, MCP node_repl server, and browser-client SDK.",
+  "runtime": {
+    "browserClient": "scripts/browser-client.mjs",
+    "mcpServer": "mcp-node-repl/server.js",
+    "nativeHost": "extension-host/<platform>/<arch>/extension-host",
+    "extensionIdConfig": "config/extension-id.json"
+  },
+  "skills": [
+    {
+      "name": "control-chrome",
+      "path": "skills/control-chrome/SKILL.md"
+    }
+  ],
+  "docs": "docs",
+  "install": {
+    "script": "install.js",
+    "defaultInstallRoot": "~/.formax/plugins/cache/formax/chrome"
+  }
+}

@@ -4,10 +4,18 @@ export type BrowserAction =
   | "getEvents"
   | "clearEvents"
   | "waitForEvent"
+  | "getDiagnostics"
+  | "getPolicy"
+  | "updatePolicy"
   | "startSession"
   | "nameSession"
   | "openTabs"
   | "claimTab"
+  | "getHistory"
+  | "clipboardReadText"
+  | "clipboardWriteText"
+  | "clipboardRead"
+  | "clipboardWrite"
   | "createTab"
   | "switchTab"
   | "openUrl"
@@ -19,10 +27,12 @@ export type BrowserAction =
   | "waitForSelector"
   | "waitForText"
   | "observe"
+  | "elementInfo"
   | "locatorQuery"
   | "locatorAction"
   | "locatorWait"
   | "click"
+  | "drag"
   | "moveMouse"
   | "scroll"
   | "typeText"
@@ -48,10 +58,25 @@ export type BrowserKey =
   | "Tab"
   | "Escape"
   | "Backspace"
+  | "Delete"
+  | "Space"
+  | "Home"
+  | "End"
+  | "PageUp"
+  | "PageDown"
   | "ArrowUp"
   | "ArrowDown"
   | "ArrowLeft"
-  | "ArrowRight";
+  | "ArrowRight"
+  | "Alt"
+  | "Control"
+  | "ControlOrMeta"
+  | "Meta"
+  | "Shift"
+  | `${"Alt" | "Control" | "ControlOrMeta" | "Meta" | "Shift"}+${string}`;
+
+export type BrowserMouseButton = "left" | "middle" | "right" | "back" | "forward";
+export type BrowserPointerModifier = "Alt" | "Control" | "ControlOrMeta" | "Meta" | "Shift";
 
 export type NativeRequest = {
   type: "request";
@@ -72,6 +97,7 @@ export type NativeResponse =
       id: string;
       ok: false;
       error: {
+        code?: string;
         message: string;
       };
     };
@@ -117,13 +143,78 @@ export type BrowserTabLease = {
 
 export type BrowserElement = {
   ref: string;
+  nodeId?: string;
   role: string;
   label: string;
+  visibleText?: string;
   sensitive: boolean;
   tagName: string;
+  shadowRoot?: "open" | null;
+  shadowHostSelector?: string | null;
+  selectorCandidates?: BrowserSelectorCandidate[];
+  href?: string | null;
+  placeholder?: string | null;
+  testId?: string | null;
+  disabled?: boolean;
+  readOnly?: boolean;
+  checked?: boolean;
+  selected?: boolean;
   x: number;
   y: number;
   rect: BrowserRect;
+};
+
+export type BrowserSelectorCandidate = {
+  kind: string;
+  selector: string;
+};
+
+export type BrowserElementInfoParams = {
+  sessionId?: string;
+  tabId?: number;
+  x: number;
+  y: number;
+  includeNonInteractable?: boolean;
+};
+
+export type BrowserElementInfo = {
+  sessionId: string | null;
+  tabId: number;
+  source: "chrome_page";
+  trust: "untrusted";
+  x: number;
+  y: number;
+  found: boolean;
+  nodeId?: string | null;
+  backendNodeId?: number | null;
+  role?: string | null;
+  name?: string | null;
+  visibleText?: string;
+  tagName?: string | null;
+  sensitive?: boolean;
+  shadowRoot?: "open" | null;
+  shadowHostSelector?: string | null;
+  selectorCandidates?: BrowserSelectorCandidate[];
+  rect?: BrowserRect | null;
+  center?: {
+    x: number;
+    y: number;
+  } | null;
+  state?: {
+    disabled: boolean;
+    readOnly: boolean;
+    checked: boolean;
+    selected: boolean;
+    href: string | null;
+    placeholder: string | null;
+    testId: string | null;
+  };
+  rawHit?: {
+    tagName: string | null;
+    role: string | null;
+    name: string | null;
+    rect: BrowserRect | null;
+  } | null;
 };
 
 export type BrowserObservation = {
@@ -137,6 +228,35 @@ export type BrowserObservation = {
     width: number;
     height: number;
     devicePixelRatio: number;
+  };
+  scroll?: {
+    x: number;
+    y: number;
+    maxX: number;
+    maxY: number;
+  };
+  focusedElement?: {
+    role: string;
+    label: string;
+    tagName: string;
+    rect: BrowserRect | null;
+  } | null;
+  selectedText?: string;
+  modalState?: {
+    hasModal: boolean;
+    dialogs: {
+      role: string | null;
+      label: string;
+      text: string;
+      rect: BrowserRect;
+    }[];
+  };
+  truncation?: {
+    text: boolean;
+    textMaxLength: number;
+    elements: boolean;
+    elementCount: number;
+    elementMaxCount: number;
   };
   text: string;
   elements: BrowserElement[];
@@ -207,6 +327,7 @@ export type BrowserToolError = {
   tabId: number | null;
   timing: BrowserTiming;
   error: {
+    code?: string;
     message: string;
   };
 };
@@ -218,10 +339,25 @@ export type HealthResult = {
   nativeConnected: boolean;
   lastNativeError: string | null;
   sessions: BrowserSession[];
+  policy?: BrowserPolicyState;
   extensionInstanceId?: string | null;
   attachedTabs: number[];
   supportedActions?: BrowserAction[];
   backendRevision?: number;
+  permissions?: {
+    required: string[];
+    granted: boolean;
+    missing: string[];
+    hostPermissions: string[];
+    hostPermissionsGranted: boolean;
+    missingHostPermissions: string[];
+    error?: string;
+  };
+  fileUrlAccess?: {
+    detectable: boolean;
+    allowed: boolean | null;
+    error?: string;
+  };
 };
 
 export type ReloadExtensionResult = {
@@ -233,16 +369,59 @@ export type BrowserEvent = NativeEvent & {
   sequence: number;
 };
 
+export type BrowserEventSnapshot = {
+  version: 1;
+  sessionId: string;
+  reason: string;
+  createdAt: number;
+  eventCount: number;
+  firstSequence: number | null;
+  lastSequence: number | null;
+  events: BrowserEvent[];
+};
+
+export type BrowserEventSnapshotSummary = Omit<BrowserEventSnapshot, "events">;
+
+export type BrowserActionAuditEvent = BrowserEvent & {
+  name: "browserActionAudit";
+  auditKind: "action" | "diagnostic";
+  category: string;
+  action: string;
+  actionId: string | null;
+  sessionId: string | null;
+  turnId?: string | null;
+  tabId: number | null;
+  origin: string | null;
+  status?: "ok" | "error";
+  resultCode?: string | null;
+  errorCode?: string | null;
+  confirmed?: boolean;
+  originApproved?: boolean;
+  confirmationId?: string | null;
+  timing?: {
+    startedAt: number;
+    endedAt: number;
+    durationMs: number;
+  };
+  method?: string;
+  reason?: string;
+  mode?: string;
+  readOnly?: boolean;
+};
+
 export type GetEventsParams = {
   sessionId?: string;
   tabId?: number;
   name?: string;
   sinceSequence?: number;
   limit?: number;
+  includeSnapshots?: boolean;
+  snapshotLimit?: number;
 };
 
 export type GetEventsResult = {
   events: BrowserEvent[];
+  snapshots?: BrowserEventSnapshot[];
 };
 
 export type ClearEventsParams = {
@@ -250,10 +429,12 @@ export type ClearEventsParams = {
   tabId?: number;
   name?: string;
   sinceSequence?: number;
+  includeSnapshots?: boolean;
 };
 
 export type ClearEventsResult = {
   cleared: number;
+  clearedSnapshots?: number;
 };
 
 export type WaitForEventParams = GetEventsParams & {
@@ -266,6 +447,63 @@ export type WaitForEventResult = {
   timedOut: boolean;
   elapsedMs: number;
   event: BrowserEvent | null;
+};
+
+export type GetDiagnosticsParams = {
+  sessionId?: string;
+  tabId?: number;
+  eventLimit?: number;
+  devLogLimit?: number;
+  includeSnapshots?: boolean;
+  nativeDiagnostics?: JsonObject;
+};
+
+export type GetDiagnosticsResult = {
+  health: HealthResult;
+  events: BrowserEvent[];
+  eventSnapshots?: BrowserEventSnapshot[];
+  devLogs: DevLogEntry[];
+  activeSessions: BrowserSession[];
+  attachedTabs: number[];
+  nativeManifest: {
+    path: string | null;
+    expectedOrigin: string | null;
+    hostName?: string | null;
+    extensionId?: string | null;
+  };
+  extension: {
+    id: string;
+    version: string;
+    backendRevision: number;
+  };
+};
+
+export type BrowserPolicyState = {
+  sessionAllowedHosts: Record<string, string[]>;
+  persistentAllowedHosts: string[];
+  blockedHosts: string[];
+};
+
+export type GetPolicyParams = {
+  sessionId?: string;
+};
+
+export type GetPolicyResult = {
+  policy: BrowserPolicyState;
+};
+
+export type HostPolicyDecision = "allow" | "always_allow" | "deny";
+
+export type UpdatePolicyParams = {
+  decision?: HostPolicyDecision;
+  sessionId?: string;
+  host?: string;
+  url?: string;
+  reset?: boolean;
+};
+
+export type UpdatePolicyResult = {
+  policy: BrowserPolicyState;
 };
 
 export type StartSessionParams = {
@@ -333,6 +571,95 @@ export type UserOpenTabsResult = {
   tabs: ClaimableTabDescriptor[];
 };
 
+export type BrowserHistoryParams = {
+  query?: string;
+  from?: number;
+  to?: number;
+  limit?: number;
+  confirmed?: boolean;
+  confirmationId?: string;
+};
+
+export type BrowserHistoryEntry = {
+  id: string;
+  url: string;
+  title?: string;
+  dateVisited?: string;
+  lastVisitTime?: number;
+  visitCount?: number;
+  typedCount?: number;
+  redacted?: boolean;
+  redactionReasons?: string[];
+};
+
+export type BrowserHistoryResult = {
+  entries: BrowserHistoryEntry[];
+  sensitive: true;
+};
+
+export type ClipboardReadTextParams = {
+  sessionId?: string;
+  tabId?: number;
+  confirmed?: boolean;
+  confirmationId?: string;
+};
+
+export type ClipboardReadTextResult = {
+  text: string;
+  sensitive: true;
+};
+
+export type ClipboardWriteTextParams = {
+  sessionId?: string;
+  tabId?: number;
+  text: string;
+  confirmed?: boolean;
+  confirmationId?: string;
+  sensitive?: boolean;
+};
+
+export type ClipboardWriteTextResult = {
+  written: true;
+  textLength: number;
+};
+
+export type ClipboardItemPayload = {
+  mimeType: string;
+  text?: string;
+  dataBase64?: string;
+  size?: number;
+};
+
+export type ClipboardItemData = {
+  types: ClipboardItemPayload[];
+};
+
+export type ClipboardReadParams = {
+  sessionId?: string;
+  tabId?: number;
+  confirmed?: boolean;
+  confirmationId?: string;
+};
+
+export type ClipboardReadResult = {
+  items: ClipboardItemData[];
+  sensitive: true;
+};
+
+export type ClipboardWriteParams = {
+  sessionId?: string;
+  tabId?: number;
+  items: ClipboardItemData[];
+  confirmed?: boolean;
+  confirmationId?: string;
+  sensitive?: boolean;
+};
+
+export type ClipboardWriteResult = {
+  written: true;
+  itemCount: number;
+};
+
 export type CreateTabParams = {
   sessionId: string;
   turnId?: string;
@@ -377,15 +704,16 @@ export type GetTabResult = {
 export type WaitForLoadStateParams = {
   sessionId?: string;
   tabId?: number;
-  state?: "load" | "domcontentloaded";
+  state?: "load" | "domcontentloaded" | "networkidle";
   timeoutMs?: number;
+  idleMs?: number;
 };
 
 export type WaitForLoadStateResult = {
   sessionId: string | null;
   tabId: number;
-  state: "load" | "domcontentloaded";
-  reason: "already_satisfied" | "Page.loadEventFired" | "Page.domContentEventFired" | "timeout";
+  state: "load" | "domcontentloaded" | "networkidle";
+  reason: "already_satisfied" | "Page.loadEventFired" | "Page.domContentEventFired" | "networkidle" | "timeout";
 };
 
 export type WaitForUrlParams = {
@@ -467,6 +795,14 @@ export type LocatorPlan = {
   role?: string;
   name?: string;
   testId?: string;
+  frameSelectors?: string[];
+  and?: LocatorPlan;
+  or?: LocatorPlan;
+  has?: LocatorPlan;
+  hasNot?: LocatorPlan;
+  hasText?: string;
+  hasNotText?: string;
+  visible?: boolean;
   exact?: boolean;
   index?: number;
   strict?: boolean;
@@ -547,9 +883,28 @@ export type ClickParams = {
   selector?: string;
   x?: number;
   y?: number;
-  button?: "left" | "middle" | "right";
+  button?: BrowserMouseButton;
   clickCount?: number;
+  modifiers?: BrowserPointerModifier[];
   waitMs?: number;
+  confirmed?: boolean;
+  confirmationId?: string;
+};
+
+export type DragPoint = {
+  x: number;
+  y: number;
+};
+
+export type DragParams = {
+  sessionId?: string;
+  tabId?: number;
+  path: DragPoint[];
+  button?: BrowserMouseButton;
+  modifiers?: BrowserPointerModifier[];
+  waitMs?: number;
+  confirmed?: boolean;
+  confirmationId?: string;
 };
 
 export type MoveMouseParams = {
@@ -557,6 +912,7 @@ export type MoveMouseParams = {
   tabId?: number;
   x: number;
   y: number;
+  modifiers?: BrowserPointerModifier[];
   waitForArrival?: boolean;
   waitMs?: number;
 };
@@ -575,6 +931,7 @@ export type ScrollParams = {
   deltaY?: number;
   x?: number;
   y?: number;
+  modifiers?: BrowserPointerModifier[];
   waitMs?: number;
 };
 
@@ -588,6 +945,9 @@ export type TypeTextParams = {
   text: string;
   clear?: boolean;
   waitMs?: number;
+  sensitive?: boolean;
+  confirmed?: boolean;
+  confirmationId?: string;
 };
 
 export type EvaluateParams = {
@@ -596,6 +956,10 @@ export type EvaluateParams = {
   script: string;
   awaitPromise?: boolean;
   timeoutMs?: number;
+  mode?: "read" | "write";
+  confirmed?: boolean;
+  confirmationId?: string;
+  reason?: string;
 };
 
 export type EvaluateResult = {
@@ -628,12 +992,16 @@ export type ScreenshotParams = {
   sessionId?: string;
   tabId?: number;
   format?: "png" | "jpeg";
+  fullPage?: boolean;
+  clip?: BrowserRect;
 };
 
 export type ScreenshotResult = {
   sessionId: string | null;
   tabId: number;
   format: "png" | "jpeg";
+  fullPage?: boolean;
+  clip?: (BrowserRect & { scale?: number }) | null;
   dataBase64: string;
 };
 
@@ -643,21 +1011,30 @@ export type UploadFileParams = {
   ref?: string;
   selector?: string;
   locator?: LocatorPlan;
-  filePath: string;
+  filePath?: string;
+  filePaths?: string[];
   waitMs?: number;
+  confirmed?: boolean;
+  confirmationId?: string;
 };
 
 export type CdpParams = {
   sessionId?: string;
   tabId?: number;
+  targetId?: string;
   method: string;
   params?: JsonObject;
   timeoutMs?: number;
+  originApproved?: boolean;
+  confirmed?: boolean;
+  confirmationId?: string;
+  reason?: string;
 };
 
 export type CdpResult = {
   sessionId: string | null;
   tabId: number;
+  targetId?: string | null;
   method: string;
   result: unknown;
 };
@@ -667,6 +1044,7 @@ export type DevLogLevel = "log" | "debug" | "info" | "warning" | "error";
 export type DevLogEntry = {
   sequence: number;
   time: number;
+  timestamp?: string;
   sessionId: string | null;
   tabId: number | null;
   source: "console" | "log" | "exception";
@@ -681,6 +1059,8 @@ export type GetDevLogsParams = {
   sessionId?: string;
   tabId?: number;
   level?: DevLogLevel | string;
+  levels?: Array<DevLogLevel | string>;
+  filter?: string;
   sinceSequence?: number;
   limit?: number;
 };
@@ -739,6 +1119,8 @@ export type FinalizeSessionResult = {
   handoffTabs?: number[];
   deliverableTabs?: number[];
   releasedTabs?: number[];
+  eventSnapshot?: BrowserEventSnapshotSummary | null;
+  clearedEvents?: number;
 };
 
 export type EndTurnParams = {
@@ -764,6 +1146,8 @@ export type StopSessionResult = {
   sessionId?: string;
   reason?: "session_not_found";
   closedTabs: number[];
+  eventSnapshot?: BrowserEventSnapshotSummary | null;
+  clearedEvents?: number;
 };
 
 export type BrowserTabSummary = {
@@ -773,6 +1157,9 @@ export type BrowserTabSummary = {
   url?: string;
   active: boolean;
   groupId: number;
+  groupLabel?: string | null;
+  openedAt?: number | null;
+  lastFocusedAt?: number | null;
   sessionId?: string | null;
   controlled: boolean;
 };
@@ -795,6 +1182,8 @@ export type BrowserDownloadSummary = {
 };
 
 export type ListDownloadsParams = {
+  sessionId?: string;
+  tabId?: number;
   id?: number;
   state?: BrowserDownloadState;
   urlContains?: string;
@@ -827,10 +1216,18 @@ export type BrowserActionParams =
   | GetEventsParams
   | ClearEventsParams
   | WaitForEventParams
+  | GetDiagnosticsParams
+  | GetPolicyParams
+  | UpdatePolicyParams
   | StartSessionParams
   | NameSessionParams
   | UserOpenTabsParams
   | ClaimTabParams
+  | BrowserHistoryParams
+  | ClipboardReadTextParams
+  | ClipboardWriteTextParams
+  | ClipboardReadParams
+  | ClipboardWriteParams
   | CreateTabParams
   | SwitchTabParams
   | ListTabsParams
@@ -843,10 +1240,12 @@ export type BrowserActionParams =
   | WaitForSelectorParams
   | WaitForTextParams
   | ObserveParams
+  | BrowserElementInfoParams
   | LocatorQueryParams
   | LocatorActionParams
   | LocatorWaitParams
   | ClickParams
+  | DragParams
   | MoveMouseParams
   | ScrollParams
   | TypeTextParams

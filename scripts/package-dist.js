@@ -7,6 +7,7 @@ const root = process.cwd();
 const dist = path.join(root, "dist");
 
 const copyEntries = [
+  [".formax-plugin", ".formax-plugin"],
   ["README.md", "README.md"],
   ["config", "config"],
   ["skill", "skill"],
@@ -14,7 +15,11 @@ const copyEntries = [
   ["mcp-node-repl", "mcp-node-repl"],
   ["agent/browserTools.js", "agent/browserTools.js"],
   ["shared", "shared"],
+  ["docs", "docs"],
   ["extension", "extension"],
+  ["scripts/browser-client.mjs", "scripts/browser-client.mjs"],
+  ["scripts/formax-doctor.js", "scripts/formax-doctor.js"],
+  ["scripts/formax-uninstall.js", "scripts/formax-uninstall.js"],
   ["scripts/install-formax-runtime.js", "install.js"],
   ["native-host/com.formax.browserhost.json.example", "native-host/com.formax.browserhost.json.example"],
   ["native-host/install-linux.sh", "native-host/install-linux.sh"],
@@ -90,6 +95,17 @@ async function main() {
     copied.push(to);
   }
 
+  const pluginManifestPath = path.join(dist, ".formax-plugin", "plugin.json");
+  if (await exists(pluginManifestPath)) {
+    const pluginManifest = JSON.parse(await fs.readFile(pluginManifestPath, "utf8"));
+    pluginManifest.version = rootPackage.version;
+    await writeJson(pluginManifestPath, pluginManifest);
+  }
+
+  await fs.mkdir(path.join(dist, "skills", "control-chrome"), { recursive: true });
+  await fs.copyFile(path.join(root, "skill", "SKILL.md"), path.join(dist, "skills", "control-chrome", "SKILL.md"));
+  copied.push("skills/control-chrome/SKILL.md");
+
   await writeJson(path.join(dist, "package.json"), {
     name: "formax-runtime-dist",
     version: rootPackage.version,
@@ -98,6 +114,8 @@ async function main() {
     scripts: {
       "install:formax-runtime": "node install.js",
       "mcp:node-repl": "node mcp-node-repl/server.js",
+      "doctor": "node scripts/formax-doctor.js",
+      "uninstall": "node scripts/formax-uninstall.js",
       "chat:node-repl": "node tests/scripts/llm-node-repl-chat.js",
       "test:mcp-node-repl": "node tests/scripts/mcp-node-repl-smoke.js"
     },
@@ -113,12 +131,18 @@ async function main() {
       version: rootPackage.version
     },
     products: {
+      pluginManifest: ".formax-plugin/plugin.json",
       installer: "install.js",
       mcpServer: "mcp-node-repl/server.js",
       chromeExtension: "extension/manifest.json",
       nativeHost: "extension-host/<platform>/<arch>/extension-host",
-      browserClientSdk: "mcp-node-repl/browser-client.js",
-      skill: "skill/SKILL.md",
+      browserClientSdk: "scripts/browser-client.mjs",
+      legacyBrowserClientSdk: "mcp-node-repl/browser-client.js",
+      skill: "skills/control-chrome/SKILL.md",
+      legacySkill: "skill/SKILL.md",
+      docs: "docs",
+      doctor: "scripts/formax-doctor.js",
+      uninstall: "scripts/formax-uninstall.js",
       debugHarness: "tests/scripts/llm-node-repl-chat.js"
     },
     copied,

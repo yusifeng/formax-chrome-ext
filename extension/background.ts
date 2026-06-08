@@ -1,26 +1,47 @@
+/// <reference path="./action-validator.ts" />
 /// <reference path="./debugger-manager.ts" />
 /// <reference path="./event-buffer.ts" />
 /// <reference path="./session-manager.ts" />
 
 declare function importScripts(...urls: string[]): void;
 
-importScripts("debugger-manager.js", "event-buffer.js", "session-manager.js");
+importScripts(
+  "action-validator.js",
+  "debugger-manager.js",
+  "event-buffer.js",
+  "session-manager.js"
+);
 
 const HOST_NAME = "com.formax.browserhost";
 const CDP_VERSION = "1.3";
 const HEARTBEAT_ALARM = "formax-native-reconnect";
+const CLIPBOARD_OFFSCREEN_URL = "clipboard-offscreen.html";
+const EVENT_SNAPSHOT_STORAGE_KEY = "formax.agentBrowser.eventSnapshots.v1";
+const POLICY_STORAGE_KEY = "formax.browserPolicy.v1";
 const DEFAULT_CDP_TIMEOUT_MS = 10000;
-const BACKEND_REVISION = 4;
+const MAX_EVENT_SNAPSHOTS = 50;
+const MAX_EVENTS_PER_SESSION_SNAPSHOT = 200;
+const BACKEND_REVISION = 5;
+const DESTRUCTIVE_BROWSER_ACTION_PATTERN = /\b(delete|remove|destroy|cancel|close\s+account|deactivate|terminate|drop)\b/i;
+const EXTERNAL_SIDE_EFFECT_PATTERN = /\b(send|submit|post|publish|comment|reply|create|book|schedule|invite|save|update|confirm|pay|purchase|subscribe|unsubscribe)\b/i;
 const SUPPORTED_ACTIONS = [
   "health",
   "reloadExtension",
   "getEvents",
   "clearEvents",
   "waitForEvent",
+  "getDiagnostics",
+  "getPolicy",
+  "updatePolicy",
   "startSession",
   "nameSession",
   "openTabs",
   "claimTab",
+  "getHistory",
+  "clipboardReadText",
+  "clipboardWriteText",
+  "clipboardRead",
+  "clipboardWrite",
   "createTab",
   "switchTab",
   "openUrl",
@@ -32,10 +53,12 @@ const SUPPORTED_ACTIONS = [
   "waitForSelector",
   "waitForText",
   "observe",
+  "elementInfo",
   "locatorQuery",
   "locatorAction",
   "locatorWait",
   "click",
+  "drag",
   "moveMouse",
   "scroll",
   "typeText",
@@ -62,6 +85,31 @@ let lastNativeError: string | null = null;
 
 type ActionParams = Record<string, any>;
 type CursorPhase = "idle" | "active" | "thinking";
+type BrowserPolicyAction =
+  | "navigate"
+  | "click"
+  | "type"
+  | "upload"
+  | "download"
+  | "evaluate"
+  | "history"
+  | "clipboard"
+  | "rawCdp"
+  | "permission"
+  | "other";
+type BrowserPolicyState = {
+  sessionAllowedHosts: Record<string, string[]>;
+  persistentAllowedHosts: string[];
+  blockedHosts: string[];
+};
+type HostAccessVerdict = {
+  allowed: boolean;
+  requiresApproval: boolean;
+  code: "allowed" | "requires_host_approval" | "host_blocked" | "invalid_url";
+  host: string | null;
+  scope: "session" | "persistent" | "blocked" | null;
+  message: string;
+};
 type CursorOverlayState = {
   arrivedMoveSequence?: number;
   moveSequence: number;
@@ -76,6 +124,7 @@ type CursorOverlayState = {
 type ActionContext = {
   action: string;
   actionId: string;
+  turnId: string | null;
 };
 type ClaimTokenRecord = {
   expiresAt: number;
@@ -96,13 +145,19 @@ const eventBuffer = new EventBuffer({
 const sessionManager = new SessionManager();
 const cursorOverlayStateByTab = new Map<number, CursorOverlayState>();
 const claimTokens = new Map<string, ClaimTokenRecord>();
+const tabOpenedAt = new Map<number, number>();
+const networkRequestsByTab = new Map<number, Set<string>>();
 const cursorArrivalWaiters = new Map<string, CursorArrivalWaiter>();
 let activeActionContext: ActionContext | null = null;
 let nextCursorMoveSequence = 0;
+let browserPolicyState = createDefaultBrowserPolicyState();
+let browserPolicyLoaded = false;
+let browserPolicyLoadPromise: Promise<void> | null = null;
 
 registerTopLevelListeners();
 connectNativeHost();
 ensureReconnectAlarm();
+void ensureBrowserPolicyLoaded();
 
 function registerTopLevelListeners() {
   chrome.runtime.onInstalled.addListener(() => {
@@ -123,9 +178,13 @@ function registerTopLevelListeners() {
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message?.type === "POPUP_HEALTH") {
-      sendResponse({
-        ok: nativePort != null,
-        health: health()
+      void ensureBrowserPolicyLoaded().then(() => {
+        void health().then((healthResult) => {
+          sendResponse({
+            ok: nativePort != null,
+            health: healthResult
+          });
+        });
       });
       return true;
     }
@@ -179,6 +238,9 @@ function registerTopLevelListeners() {
 
   chrome.debugger.onDetach.addListener((source, reason) => {
     debuggerManager.markDetached(source);
+    if (typeof source.tabId === "number") {
+      networkRequestsByTab.delete(source.tabId);
+    }
 
     safePostEvent({
       name: "debuggerDetached",
@@ -190,6 +252,8 @@ function registerTopLevelListeners() {
   });
 
   chrome.debugger.onEvent.addListener((source, method, params) => {
+    trackNetworkDebuggerEvent(source, method, params);
+
     if (!shouldBufferDebuggerEvent(method)) {
       return;
     }
@@ -213,7 +277,15 @@ function registerTopLevelListeners() {
     debuggerManager.markTabRemoved(tabId);
     sessionManager.onTabRemoved(tabId);
     cursorOverlayStateByTab.delete(tabId);
+    tabOpenedAt.delete(tabId);
+    networkRequestsByTab.delete(tabId);
     clearCursorArrivalWaitersForTab(tabId);
+  });
+
+  chrome.tabs.onCreated.addListener((tab) => {
+    if (typeof tab.id === "number") {
+      tabOpenedAt.set(tab.id, Date.now());
+    }
   });
 
   chrome.downloads.onCreated.addListener((downloadItem) => {
@@ -268,9 +340,7 @@ function connectNativeHost() {
         safePostResponse({
           id: message?.id,
           ok: false,
-          error: {
-            message: stringifyError(error)
-          }
+          error: structuredError(error)
         });
       });
     });
@@ -314,9 +384,7 @@ async function handleNativeMessage(message: any) {
     safePostResponse({
       id,
       ok: false,
-      error: {
-        message: stringifyError(error)
-      }
+      error: structuredError(error)
     });
   }
 }
@@ -328,13 +396,29 @@ async function dispatchAction(
 ) {
   const startedAt = Date.now();
   const previousContext = activeActionContext;
-  activeActionContext = { action, actionId };
+  activeActionContext = {
+    action,
+    actionId,
+    turnId: typeof params.turnId === "string" ? params.turnId : null
+  };
 
   try {
     await sessionManager.initialize();
+    await ensureBrowserPolicyLoaded();
+    validateExtensionActionParams(action, params);
     const result = await dispatchActionRaw(action, params);
     const endedAt = Date.now();
     const meta = extractResultMetadata(result);
+    await postBrowserActionAudit({
+      action,
+      actionId,
+      params,
+      result,
+      status: "ok",
+      startedAt,
+      endedAt,
+      resultCode: "ok"
+    });
 
     return {
       actionId,
@@ -349,6 +433,19 @@ async function dispatchAction(
       },
       result
     };
+  } catch (error) {
+    const endedAt = Date.now();
+    const errorDetails = structuredError(error);
+    await postBrowserActionAudit({
+      action,
+      actionId,
+      params,
+      status: "error",
+      startedAt,
+      endedAt,
+      errorCode: errorDetails.code ?? "internal_error"
+    });
+    throw error;
   } finally {
     activeActionContext = previousContext;
   }
@@ -371,6 +468,15 @@ async function dispatchActionRaw(action: string, params: ActionParams) {
     case "waitForEvent":
       return waitForEvent(params);
 
+    case "getDiagnostics":
+      return getDiagnostics(params);
+
+    case "getPolicy":
+      return getPolicy(params);
+
+    case "updatePolicy":
+      return updatePolicy(params);
+
     case "startSession":
       return startSession(params);
 
@@ -382,6 +488,21 @@ async function dispatchActionRaw(action: string, params: ActionParams) {
 
     case "claimTab":
       return claimTab(params);
+
+    case "getHistory":
+      return getHistory(params);
+
+    case "clipboardReadText":
+      return clipboardReadText(params);
+
+    case "clipboardWriteText":
+      return clipboardWriteText(params);
+
+    case "clipboardRead":
+      return clipboardRead(params);
+
+    case "clipboardWrite":
+      return clipboardWrite(params);
 
     case "createTab":
       return createTab(params);
@@ -416,6 +537,9 @@ async function dispatchActionRaw(action: string, params: ActionParams) {
     case "observe":
       return observe(params);
 
+    case "elementInfo":
+      return elementInfo(params);
+
     case "locatorQuery":
       return locatorQuery(params);
 
@@ -427,6 +551,9 @@ async function dispatchActionRaw(action: string, params: ActionParams) {
 
     case "click":
       return click(params);
+
+    case "drag":
+      return drag(params);
 
     case "moveMouse":
       return moveMouse(params);
@@ -516,6 +643,95 @@ function extractResultMetadata(result: any) {
   };
 }
 
+function extractParamsMetadata(params: ActionParams = {}) {
+  return {
+    sessionId: typeof params.sessionId === "string" ? params.sessionId : null,
+    tabId: typeof params.tabId === "number" ? params.tabId : null,
+    turnId: typeof params.turnId === "string" ? params.turnId : null,
+    url: typeof params.url === "string" ? params.url : null,
+    confirmed: params.confirmed === true,
+    originApproved: params.originApproved === true,
+    confirmationId:
+      typeof params.confirmationId === "string" && params.confirmationId.trim()
+        ? truncateAndRedactString(params.confirmationId.trim(), 120)
+        : null
+  };
+}
+
+async function postBrowserActionAudit(args: {
+  action: string;
+  actionId: string;
+  params: ActionParams;
+  result?: unknown;
+  status: "ok" | "error";
+  startedAt: number;
+  endedAt: number;
+  resultCode?: string;
+  errorCode?: string;
+}) {
+  try {
+    const paramsMeta = extractParamsMetadata(args.params);
+    const resultMeta = extractResultMetadata(args.result);
+    const sessionId = resultMeta.sessionId ?? paramsMeta.sessionId;
+    const tabId = resultMeta.tabId ?? paramsMeta.tabId;
+    const origin = await originForActionAudit(paramsMeta.url, tabId);
+
+    safePostEvent({
+      name: "browserActionAudit",
+      auditKind: "action",
+      category: actionAuditCategory(args.action),
+      action: args.action,
+      actionId: args.actionId,
+      sessionId,
+      turnId: paramsMeta.turnId,
+      tabId,
+      origin,
+      status: args.status,
+      resultCode: args.resultCode ?? null,
+      errorCode: args.errorCode ?? null,
+      confirmed: paramsMeta.confirmed,
+      originApproved: paramsMeta.originApproved,
+      confirmationId: paramsMeta.confirmationId,
+      timing: {
+        startedAt: args.startedAt,
+        endedAt: args.endedAt,
+        durationMs: args.endedAt - args.startedAt
+      }
+    });
+  } catch (error) {
+    console.warn("Failed to post browser action audit", error);
+  }
+}
+
+async function originForActionAudit(url: string | null, tabId: number | null) {
+  if (url) {
+    return originForAudit(url);
+  }
+
+  if (typeof tabId !== "number") {
+    return null;
+  }
+
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  return originForAudit(tab?.url ?? null);
+}
+
+function actionAuditCategory(action: string) {
+  if (["health", "getCapabilities", "reloadExtension"].includes(action)) return "runtime";
+  if (["startSession", "nameSession", "createTab", "switchTab", "claimTab", "openTabs", "closeTab", "finalizeSession", "endTurn", "stopSession", "listTabs", "getTab"].includes(action)) return "session";
+  if (["getEvents", "clearEvents", "waitForEvent", "getDevLogs"].includes(action)) return "diagnostic";
+  if (["getPolicy", "updatePolicy"].includes(action)) return "policy";
+  if (["openUrl", "goBack", "goForward", "reload", "waitForLoadState", "waitForUrl"].includes(action)) return "navigation";
+  if (["waitForSelector", "waitForText", "observe", "elementInfo", "locatorQuery", "locatorWait", "screenshot"].includes(action)) return "inspection";
+  if (["locatorAction", "click", "drag", "moveMouse", "scroll", "typeText", "pressKey", "handleDialog"].includes(action)) return "interaction";
+  if (["evaluate", "cdp"].includes(action)) return "diagnostic";
+  if (["uploadFile"].includes(action)) return "file";
+  if (["listDownloads", "waitForDownload"].includes(action)) return "download";
+  if (["getHistory"].includes(action)) return "history";
+  if (["clipboardReadText", "clipboardWriteText", "clipboardRead", "clipboardWrite"].includes(action)) return "clipboard";
+  return "unknown";
+}
+
 function safePostResponse(payload: ActionParams) {
   try {
     nativePort?.postMessage({
@@ -537,7 +753,51 @@ function safePostEvent(payload: ActionParams) {
   }
 }
 
-function health() {
+function structuredError(error: any) {
+  const message = stringifyError(error);
+  return {
+    code: errorCodeForMessage(message),
+    message
+  };
+}
+
+function errorCodeForMessage(message: string) {
+  const explicitCode = message.match(/^([a-z][a-z0-9_]+):\s+/)?.[1];
+  if (explicitCode) {
+    return explicitCode;
+  }
+
+  if (message.includes("Unknown action")) {
+    return "unknown_action";
+  }
+
+  if (message.includes("requires approval")) {
+    return "requires_host_approval";
+  }
+
+  if (message.includes("blocked by policy")) {
+    return "host_blocked";
+  }
+
+  if (message.includes("confirmation_required")) {
+    return "confirmation_required";
+  }
+
+  if (message.includes("origin_approval_required")) {
+    return "origin_approval_required";
+  }
+
+  if (message.includes("must be") || message.includes("requires")) {
+    return "invalid_params";
+  }
+
+  return "internal_error";
+}
+
+async function health() {
+  const permissionStatus = await chromePermissionStatus();
+  const fileUrlAccess = await chromeFileUrlAccessStatus();
+
   return {
     ok: true,
     extensionId: chrome.runtime.id,
@@ -545,11 +805,81 @@ function health() {
     nativeConnected: nativePort != null,
     lastNativeError,
     sessions: sessionManager.serializeAll(),
+    policy: cloneBrowserPolicyState(browserPolicyState),
     extensionInstanceId: sessionManager.getExtensionInstanceId(),
     attachedTabs: debuggerManager.listAttachedTabs(),
     supportedActions: SUPPORTED_ACTIONS,
-    backendRevision: BACKEND_REVISION
+    backendRevision: BACKEND_REVISION,
+    permissions: permissionStatus,
+    fileUrlAccess
   };
+}
+
+async function chromePermissionStatus() {
+  const manifest = chrome.runtime.getManifest();
+  const required = Array.isArray(manifest.permissions)
+    ? manifest.permissions.filter((permission): permission is string => typeof permission === "string")
+    : [];
+  const hostPermissions = Array.isArray(manifest.host_permissions)
+    ? manifest.host_permissions.filter((permission): permission is string => typeof permission === "string")
+    : [];
+
+  try {
+    const granted = required.length === 0
+      ? true
+      : await chrome.permissions.contains({ permissions: required as chrome.runtime.ManifestPermissions[] });
+    const hostsGranted = hostPermissions.length === 0
+      ? true
+      : await chrome.permissions.contains({ origins: hostPermissions });
+
+    return {
+      required,
+      granted,
+      missing: granted ? [] : required,
+      hostPermissions,
+      hostPermissionsGranted: hostsGranted,
+      missingHostPermissions: hostsGranted ? [] : hostPermissions
+    };
+  } catch (error) {
+    return {
+      required,
+      granted: false,
+      missing: required,
+      hostPermissions,
+      hostPermissionsGranted: false,
+      missingHostPermissions: hostPermissions,
+      error: stringifyError(error)
+    };
+  }
+}
+
+async function chromeFileUrlAccessStatus() {
+  const extensionApi = chrome.extension as any;
+
+  if (!extensionApi || typeof extensionApi.isAllowedFileSchemeAccess !== "function") {
+    return {
+      detectable: false,
+      allowed: null,
+      error: "chrome.extension.isAllowedFileSchemeAccess is unavailable"
+    };
+  }
+
+  try {
+    const allowed = await new Promise<boolean>((resolve) => {
+      extensionApi.isAllowedFileSchemeAccess((value: boolean) => resolve(Boolean(value)));
+    });
+
+    return {
+      detectable: true,
+      allowed
+    };
+  } catch (error) {
+    return {
+      detectable: true,
+      allowed: null,
+      error: stringifyError(error)
+    };
+  }
 }
 
 function reloadExtension() {
@@ -563,15 +893,27 @@ function reloadExtension() {
   };
 }
 
-function getEvents(params: ActionParams = {}) {
-  return {
+async function getEvents(params: ActionParams = {}) {
+  const result: ActionParams = {
     events: eventBuffer.list(params)
   };
+
+  if (params.includeSnapshots === true) {
+    result.snapshots = await listEventSnapshots(params);
+  }
+
+  return result;
 }
 
-function clearEvents(params: ActionParams = {}) {
+async function clearEvents(params: ActionParams = {}) {
+  const cleared = eventBuffer.clear(params);
+  const clearedSnapshots = params.includeSnapshots === true
+    ? await clearEventSnapshots(params)
+    : 0;
+
   return {
-    cleared: eventBuffer.clear(params)
+    cleared,
+    clearedSnapshots
   };
 }
 
@@ -609,7 +951,249 @@ async function waitForEvent(params: ActionParams = {}) {
   };
 }
 
+async function getDiagnostics(params: ActionParams = {}) {
+  const eventLimit = normalizeDiagnosticsLimit(params.eventLimit, 100, 500);
+  const devLogLimit = normalizeDiagnosticsLimit(params.devLogLimit, 100, 500);
+  const healthSnapshot = await health();
+  const eventResult = await getEvents({
+    sessionId: params.sessionId,
+    tabId: params.tabId,
+    limit: eventLimit,
+    includeSnapshots: params.includeSnapshots === true,
+    snapshotLimit: params.includeSnapshots === true ? 10 : undefined
+  });
+  const devLogs = getDevLogs({
+    sessionId: params.sessionId,
+    tabId: params.tabId,
+    limit: devLogLimit
+  });
+
+  return {
+    health: healthSnapshot,
+    events: eventResult.events,
+    eventSnapshots: eventResult.snapshots,
+    devLogs: devLogs.logs,
+    activeSessions: healthSnapshot.sessions,
+    attachedTabs: healthSnapshot.attachedTabs,
+    nativeManifest: normalizeNativeManifestDiagnostics(params.nativeDiagnostics),
+    extension: {
+      id: healthSnapshot.extensionId,
+      version: healthSnapshot.version,
+      backendRevision: healthSnapshot.backendRevision
+    }
+  };
+}
+
+function normalizeDiagnosticsLimit(value: unknown, fallback: number, max: number) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return fallback;
+  }
+
+  return Math.max(1, Math.min(Math.floor(value), max));
+}
+
+function normalizeNativeManifestDiagnostics(value: unknown) {
+  const source = value && typeof value === "object" && !Array.isArray(value)
+    ? value as ActionParams
+    : {};
+  return {
+    path: typeof source.manifestPath === "string" ? source.manifestPath : null,
+    expectedOrigin: typeof source.expectedOrigin === "string" ? source.expectedOrigin : null,
+    hostName: typeof source.hostName === "string" ? source.hostName : null,
+    extensionId: typeof source.extensionId === "string" ? source.extensionId : null
+  };
+}
+
+async function persistSessionEventSnapshot(
+  sessionId: string,
+  reason: string
+) {
+  const events = eventBuffer.list({
+    sessionId,
+    limit: MAX_EVENTS_PER_SESSION_SNAPSHOT
+  });
+
+  if (events.length === 0) {
+    return null;
+  }
+
+  const snapshot = {
+    version: 1,
+    sessionId,
+    reason,
+    createdAt: Date.now(),
+    eventCount: events.length,
+    firstSequence: events[0]?.sequence ?? null,
+    lastSequence: events.at(-1)?.sequence ?? null,
+    events
+  };
+  const snapshots = await loadEventSnapshots();
+  snapshots.push(snapshot);
+  await saveEventSnapshots(snapshots.slice(-MAX_EVENT_SNAPSHOTS));
+  return snapshot;
+}
+
+async function listEventSnapshots(params: ActionParams = {}) {
+  const limit = normalizeEventSnapshotLimit(params.snapshotLimit);
+  let snapshots = await loadEventSnapshots();
+
+  if (typeof params.sessionId === "string" && params.sessionId.trim()) {
+    const sessionId = params.sessionId.trim();
+    snapshots = snapshots.filter((snapshot) => snapshot.sessionId === sessionId);
+  }
+
+  if (typeof params.sinceSequence === "number") {
+    snapshots = snapshots.filter((snapshot) =>
+      typeof snapshot.lastSequence === "number" &&
+      snapshot.lastSequence > params.sinceSequence
+    );
+  }
+
+  if (typeof params.name === "string" && params.name.trim()) {
+    const name = params.name.trim();
+    snapshots = snapshots
+      .map((snapshot) => ({
+        ...snapshot,
+        events: snapshot.events.filter((event: ActionParams) => event.name === name)
+      }))
+      .filter((snapshot) => snapshot.events.length > 0)
+      .map((snapshot) => ({
+        ...snapshot,
+        eventCount: snapshot.events.length,
+        firstSequence: snapshot.events[0]?.sequence ?? null,
+        lastSequence: snapshot.events.at(-1)?.sequence ?? null
+      }));
+  }
+
+  return snapshots.slice(-limit);
+}
+
+async function clearEventSnapshots(params: ActionParams = {}) {
+  const snapshots = await loadEventSnapshots();
+  const kept = snapshots.filter((snapshot) => !eventSnapshotMatches(snapshot, params));
+  const cleared = snapshots.length - kept.length;
+
+  if (cleared > 0) {
+    await saveEventSnapshots(kept);
+  }
+
+  return cleared;
+}
+
+function eventSnapshotMatches(snapshot: ActionParams, params: ActionParams = {}) {
+  if (typeof params.sessionId === "string" && params.sessionId.trim() && snapshot.sessionId !== params.sessionId.trim()) {
+    return false;
+  }
+
+  if (
+    typeof params.sinceSequence === "number" &&
+    (
+      typeof snapshot.lastSequence !== "number" ||
+      snapshot.lastSequence <= params.sinceSequence
+    )
+  ) {
+    return false;
+  }
+
+  if (typeof params.name === "string" && params.name.trim()) {
+    const name = params.name.trim();
+    return Array.isArray(snapshot.events) && snapshot.events.some((event: ActionParams) => event.name === name);
+  }
+
+  return true;
+}
+
+async function loadEventSnapshots() {
+  const stored = await storageSessionGet(EVENT_SNAPSHOT_STORAGE_KEY);
+  if (!Array.isArray(stored)) {
+    return [];
+  }
+
+  return stored
+    .filter((snapshot) => snapshot && typeof snapshot === "object" && !Array.isArray(snapshot))
+    .map((snapshot) => snapshot as ActionParams)
+    .filter((snapshot) => typeof snapshot.sessionId === "string" && Array.isArray(snapshot.events))
+    .slice(-MAX_EVENT_SNAPSHOTS);
+}
+
+async function saveEventSnapshots(snapshots: ActionParams[]) {
+  await storageSessionSet(EVENT_SNAPSHOT_STORAGE_KEY, snapshots.slice(-MAX_EVENT_SNAPSHOTS));
+}
+
+function normalizeEventSnapshotLimit(limit: unknown) {
+  if (typeof limit !== "number" || !Number.isFinite(limit)) {
+    return MAX_EVENT_SNAPSHOTS;
+  }
+
+  return Math.max(1, Math.min(Math.floor(limit), MAX_EVENT_SNAPSHOTS));
+}
+
+function summarizeEventSnapshot(snapshot: ActionParams | null) {
+  if (!snapshot) {
+    return null;
+  }
+
+  return {
+    version: snapshot.version,
+    sessionId: snapshot.sessionId,
+    reason: snapshot.reason,
+    createdAt: snapshot.createdAt,
+    eventCount: snapshot.eventCount,
+    firstSequence: snapshot.firstSequence,
+    lastSequence: snapshot.lastSequence
+  };
+}
+
+async function getPolicy(params: ActionParams = {}) {
+  await ensureBrowserPolicyLoaded();
+
+  return {
+    policy: cloneBrowserPolicyState(browserPolicyState, params.sessionId)
+  };
+}
+
+async function updatePolicy(params: ActionParams = {}) {
+  await ensureBrowserPolicyLoaded();
+
+  if (params.reset === true) {
+    browserPolicyState = createDefaultBrowserPolicyState();
+    await persistBrowserPolicyState();
+    return {
+      policy: cloneBrowserPolicyState(browserPolicyState, params.sessionId)
+    };
+  }
+
+  const decision = normalizePolicyDecision(params.decision);
+  const host = normalizePolicyHost(params.host ?? params.url);
+
+  if (!host) {
+    throw new Error("updatePolicy.params requires a valid http/https host or URL");
+  }
+
+  applyHostAccessDecision(browserPolicyState, {
+    decision,
+    host,
+    sessionId: params.sessionId
+  });
+  await persistBrowserPolicyState();
+
+  safePostEvent({
+    name: "policyUpdated",
+    sessionId: typeof params.sessionId === "string" ? params.sessionId : null,
+    host,
+    decision
+  });
+
+  return {
+    policy: cloneBrowserPolicyState(browserPolicyState, params.sessionId)
+  };
+}
+
 async function startSession(params: ActionParams = {}) {
+  if (typeof params.initialUrl === "string" && params.initialUrl.trim()) {
+    await assertBrowserPolicyForUrl("navigate", params.initialUrl, params.sessionId, params);
+  }
+
   const session = await sessionManager.startSession(params);
 
   if (typeof session.activeTabId === "number") {
@@ -641,12 +1225,16 @@ async function claimTab(params: ActionParams = {}) {
 }
 
 async function createTab(params: ActionParams = {}) {
+  if (typeof params.url === "string" && params.url.trim()) {
+    await assertBrowserPolicyForUrl("navigate", params.url, params.sessionId, params);
+  }
+
   const { session, tab } = await sessionManager.createTab(params);
   await debuggerManager.attachTab(tab.id);
 
   return {
     session: sessionManager.serializeSession(session),
-    tab: summarizeTab(tab)
+    tab: await summarizeTab(tab)
   };
 }
 
@@ -658,7 +1246,7 @@ async function switchTab(params: ActionParams = {}) {
 
   return {
     session: sessionManager.serializeSession(session),
-    tab: summarizeTab(tab)
+    tab: await summarizeTab(tab)
   };
 }
 
@@ -667,6 +1255,7 @@ async function openUrl(params: ActionParams = {}) {
   assertAllowedNavigationUrl(url);
 
   let session = sessionManager.findOptionalSession(params);
+  await assertBrowserPolicyForUrl("navigate", url, session?.sessionId ?? params.sessionId, params);
 
   if (!session) {
     if (typeof params.tabId === "number") {
@@ -843,9 +1432,22 @@ async function waitForLoadState(params: ActionParams = {}) {
   const { session, tabId } = sessionManager.resolveSessionAndTab(params);
   const state = normalizeLoadState(params.state);
   const timeoutMs = numberOrDefault(params.timeoutMs, 15000);
+  const idleMs = numberOrDefault(params.idleMs, 500);
 
   await debuggerManager.attachTab(tabId);
   await showCursorActivity(tabId, "thinking");
+
+  if (state === "networkidle") {
+    const result = await waitForNetworkIdle(tabId, timeoutMs, idleMs);
+    sessionManager.touchSession(session?.sessionId);
+
+    return {
+      sessionId: session?.sessionId ?? null,
+      tabId,
+      state,
+      ...result
+    };
+  }
 
   if (await loadStateIsSatisfied(tabId, state)) {
     sessionManager.touchSession(session?.sessionId);
@@ -1016,19 +1618,79 @@ async function observe(params: ActionParams = {}) {
   const labelOf = (el) => {
     if (isSensitive(el)) return "[password field]";
 
-    const attrs = ["aria-label", "placeholder", "title", "alt", "name", "id"];
+    const rootFor = (node) => {
+      const root = node.getRootNode?.();
+      return root && typeof root.querySelectorAll === "function" ? root : document;
+    };
+    const getElementById = (root, id) => {
+      if (!id) return null;
+      if (typeof root.getElementById === "function") return root.getElementById(id);
+      try {
+        return root.querySelector("#" + CSS.escape(id));
+      } catch {
+        return null;
+      }
+    };
+    const isHiddenForName = (node) => {
+      if (!(node instanceof Element)) return false;
+      if (node.hidden || node.getAttribute("aria-hidden") === "true") return true;
+      const style = getComputedStyle(node);
+      return style.display === "none" || style.visibility === "hidden";
+    };
+    const textForName = (node) => {
+      if (!node) return "";
+      if (node.nodeType === Node.TEXT_NODE) return node.nodeValue || "";
+      if (!(node instanceof Element) || isHiddenForName(node)) return "";
+      const tag = node.tagName.toLowerCase();
+      if (tag === "script" || tag === "style") return "";
+      return Array.from(node.childNodes).map((child) => textForName(child)).join(" ");
+    };
+    const nativeLabelText = (node) => {
+      const labels = Array.from(node.labels || []);
+      const text = labels.map((label) => textForName(label)).join(" ");
+      if (normalizeText(text)) return text;
+      return "";
+    };
+    const svgTitle = (node) => {
+      if (node.tagName.toLowerCase() !== "svg") return "";
+      return textForName(node.querySelector("title"));
+    };
+    const controlValueText = (node) => {
+      const tag = node.tagName.toLowerCase();
+      const type = (node.getAttribute("type") || "").toLowerCase();
+      if (tag === "input" && ["button", "submit", "reset", "image"].includes(type)) {
+        return node.getAttribute("value") || node.value || (type === "submit" ? "Submit" : type === "reset" ? "Reset" : "");
+      }
+      return "";
+    };
 
-    for (const attr of attrs) {
-      const value = normalizeText(el.getAttribute(attr));
+    const labelledBy = el.getAttribute("aria-labelledby");
+    if (labelledBy) {
+      const root = rootFor(el);
+      const text = labelledBy
+        .split(/\\s+/)
+        .map((id) => textForName(getElementById(root, id) || document.getElementById(id)))
+        .join(" ");
+      if (normalizeText(text)) return normalizeText(text).slice(0, 160);
+    }
+
+    for (const candidate of [
+      el.getAttribute("aria-label"),
+      nativeLabelText(el),
+      el.getAttribute("alt"),
+      svgTitle(el),
+      controlValueText(el),
+      el.getAttribute("placeholder"),
+      el.getAttribute("title"),
+      textForName(el),
+      el.getAttribute("name"),
+      el.getAttribute("id")
+    ]) {
+      const value = normalizeText(candidate);
       if (value) return value.slice(0, 160);
     }
 
-    if ("value" in el && typeof el.value === "string") {
-      const value = normalizeText(el.value);
-      if (value) return value.slice(0, 160);
-    }
-
-    return normalizeText(el.innerText || el.textContent || "").slice(0, 160);
+    return "";
   };
 
   const roleOf = (el) => {
@@ -1038,14 +1700,125 @@ async function observe(params: ActionParams = {}) {
     const tag = el.tagName.toLowerCase();
     const type = (el.getAttribute("type") || "").toLowerCase();
 
-    if (tag === "a") return "link";
+    if (tag === "a" && el.hasAttribute("href")) return "link";
     if (tag === "button") return "button";
-    if (tag === "input") return type ? "input:" + type : "input";
-    if (tag === "textarea") return "textarea";
-    if (tag === "select") return "select";
+    if (tag === "img") return "img";
+    if (tag === "svg") return "img";
+    if (tag === "input") {
+      if (["button", "submit", "reset", "image"].includes(type)) return "button";
+      if (type === "checkbox") return "checkbox";
+      if (type === "radio") return "radio";
+      if (type === "range") return "slider";
+      if (type === "number") return "spinbutton";
+      return "textbox";
+    }
+    if (tag === "textarea") return "textbox";
+    if (tag === "select") return el.multiple ? "listbox" : "combobox";
     if (el.isContentEditable) return "contenteditable";
 
     return tag;
+  };
+
+  const cssString = (value) => {
+    try {
+      return CSS.escape(String(value));
+    } catch {
+      return String(value).replace(/["\\\\]/g, "\\\\$&");
+    }
+  };
+
+  const queryAllPiercingOpenShadow = (query, root = document) => {
+    const out = [];
+    const seen = new Set();
+    const visit = (scope) => {
+      let matches = [];
+      try {
+        matches = Array.from(scope.querySelectorAll(query));
+      } catch {
+        matches = [];
+      }
+
+      for (const el of matches) {
+        if (!seen.has(el)) {
+          seen.add(el);
+          out.push(el);
+        }
+      }
+
+      let descendants = [];
+      try {
+        descendants = Array.from(scope.querySelectorAll("*"));
+      } catch {
+        descendants = [];
+      }
+
+      for (const el of descendants) {
+        if (el.shadowRoot) visit(el.shadowRoot);
+      }
+    };
+
+    visit(root);
+    return out;
+  };
+
+  const selectorCandidatesFor = (el) => {
+    const candidates = [];
+    const tag = el.tagName.toLowerCase();
+    const id = el.getAttribute("id");
+    const testId = el.getAttribute("data-testid") || el.getAttribute("data-test") || el.getAttribute("data-qa");
+    const ariaLabel = el.getAttribute("aria-label");
+    const placeholder = el.getAttribute("placeholder");
+    const name = el.getAttribute("name");
+
+    if (id) candidates.push({ kind: "id", selector: "#" + cssString(id) });
+    if (testId) candidates.push({ kind: "testId", selector: "[data-testid=\\"" + cssString(testId) + "\\"]" });
+    if (ariaLabel) candidates.push({ kind: "aria-label", selector: tag + "[aria-label=\\"" + cssString(ariaLabel) + "\\"]" });
+    if (placeholder) candidates.push({ kind: "placeholder", selector: tag + "[placeholder=\\"" + cssString(placeholder) + "\\"]" });
+    if (name) candidates.push({ kind: "name", selector: tag + "[name=\\"" + cssString(name) + "\\"]" });
+
+    if (tag === "a" && el.getAttribute("href")) {
+      candidates.push({ kind: "href", selector: "a[href=\\"" + cssString(el.getAttribute("href")) + "\\"]" });
+    }
+
+    candidates.push({ kind: "ref", selector: "[data-agent-browser-ref=\\"" + cssString(el.getAttribute("data-agent-browser-ref") || "") + "\\"]" });
+    return candidates.filter((candidate) => candidate.selector && !candidate.selector.includes("\\"\\"")).slice(0, 6);
+  };
+
+  const selectorForHost = (el) => {
+    if (!isElement(el)) return null;
+    const tag = el.tagName.toLowerCase();
+    const id = el.getAttribute("id");
+    if (id) return tag + "#" + cssString(id);
+    const testId = el.getAttribute("data-testid") || el.getAttribute("data-test") || el.getAttribute("data-qa");
+    if (testId) return tag + "[data-testid=\\"" + cssString(testId) + "\\"]";
+    return tag;
+  };
+
+  const shadowMetadataFor = (el) => {
+    const root = el.getRootNode?.();
+    if (!(root instanceof ShadowRoot)) {
+      return {
+        shadowRoot: null,
+        shadowHostSelector: null
+      };
+    }
+
+    return {
+      shadowRoot: "open",
+      shadowHostSelector: selectorForHost(root.host)
+    };
+  };
+
+  const elementState = (el) => {
+    return {
+      disabled: Boolean(el.disabled) || el.getAttribute("aria-disabled") === "true",
+      readOnly: Boolean(el.readOnly),
+      checked: Boolean(el.checked) || el.getAttribute("aria-checked") === "true",
+      selected: Boolean(el.selected) || el.getAttribute("aria-selected") === "true",
+      href: el.getAttribute("href") || null,
+      placeholder: el.getAttribute("placeholder") || null,
+      testId: el.getAttribute("data-testid") || el.getAttribute("data-test") || el.getAttribute("data-qa") || null
+    };
   };
 
   const selector = [
@@ -1062,25 +1835,42 @@ async function observe(params: ActionParams = {}) {
 
   window.__agentBrowserController = window.__agentBrowserController || {};
   window.__agentBrowserController.elements = {};
+  const refScope = (() => {
+    try {
+      return "r" + crypto.randomUUID().replace(/[^a-zA-Z0-9_-]/g, "");
+    } catch {
+      return "r" + Date.now().toString(36) + Math.random().toString(36).slice(2);
+    }
+  })();
 
-  const candidates = Array.from(document.querySelectorAll(selector))
+  const allCandidates = queryAllPiercingOpenShadow(selector);
+  const candidates = allCandidates
     .filter((el) => isFileInput(el) || isVisible(el))
     .slice(0, MAX_ELEMENTS);
+  const allCandidateCount = allCandidates
+    .filter((el) => isFileInput(el) || isVisible(el))
+    .length;
 
   const elements = candidates.map((el, index) => {
-    const ref = "e" + index;
+    const ref = refScope + "-e" + index;
     const rect = el.getBoundingClientRect();
     const sensitive = isSensitive(el);
+    const visibleText = normalizeText(el.innerText || el.textContent || "").slice(0, 160);
 
     window.__agentBrowserController.elements[ref] = el;
     el.setAttribute("data-agent-browser-ref", ref);
 
     return {
       ref,
+      nodeId: ref,
       role: roleOf(el),
       label: labelOf(el),
+      visibleText,
       sensitive,
       tagName: el.tagName.toLowerCase(),
+      ...shadowMetadataFor(el),
+      selectorCandidates: selectorCandidatesFor(el),
+      ...elementState(el),
       x: Math.round(rect.left + rect.width / 2),
       y: Math.round(rect.top + rect.height / 2),
       rect: {
@@ -1091,6 +1881,27 @@ async function observe(params: ActionParams = {}) {
       }
     };
   });
+  const bodyText = normalizeText(document.body?.innerText || "");
+  const active = isElement(document.activeElement) ? document.activeElement : null;
+  const activeRect = active?.getBoundingClientRect();
+  const selectedText = normalizeText(window.getSelection?.().toString() || "");
+  const dialogs = Array.from(document.querySelectorAll("dialog[open], [role='dialog'], [role='alertdialog'], [aria-modal='true']"))
+    .filter((el) => isVisible(el))
+    .slice(0, 5)
+    .map((el) => ({
+      role: el.getAttribute("role") || (el.tagName.toLowerCase() === "dialog" ? "dialog" : null),
+      label: labelOf(el),
+      text: normalizeText(el.innerText || el.textContent || "").slice(0, 240),
+      rect: (() => {
+        const rect = el.getBoundingClientRect();
+        return {
+          x: Math.round(rect.left),
+          y: Math.round(rect.top),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height)
+        };
+      })()
+    }));
 
   return {
     source: "chrome_page",
@@ -1102,7 +1913,36 @@ async function observe(params: ActionParams = {}) {
       height: window.innerHeight,
       devicePixelRatio: window.devicePixelRatio
     },
-    text: normalizeText(document.body?.innerText || "").slice(0, MAX_TEXT_LENGTH),
+    scroll: {
+      x: Math.round(window.scrollX),
+      y: Math.round(window.scrollY),
+      maxX: Math.max(0, Math.round(document.documentElement.scrollWidth - window.innerWidth)),
+      maxY: Math.max(0, Math.round(document.documentElement.scrollHeight - window.innerHeight))
+    },
+    focusedElement: active ? {
+      role: roleOf(active),
+      label: labelOf(active),
+      tagName: active.tagName.toLowerCase(),
+      rect: activeRect ? {
+        x: Math.round(activeRect.left),
+        y: Math.round(activeRect.top),
+        width: Math.round(activeRect.width),
+        height: Math.round(activeRect.height)
+      } : null
+    } : null,
+    selectedText: selectedText.slice(0, 1000),
+    modalState: {
+      hasModal: dialogs.length > 0,
+      dialogs
+    },
+    truncation: {
+      text: bodyText.length > MAX_TEXT_LENGTH,
+      textMaxLength: MAX_TEXT_LENGTH,
+      elements: allCandidateCount > MAX_ELEMENTS,
+      elementCount: allCandidateCount,
+      elementMaxCount: MAX_ELEMENTS
+    },
+    text: bodyText.slice(0, MAX_TEXT_LENGTH),
     elements
   };
 })()`;
@@ -1152,7 +1992,318 @@ async function observe(params: ActionParams = {}) {
 
   sessionManager.touchSession(session?.sessionId);
 
+  redactObservation(observation);
   return observation;
+}
+
+async function elementInfo(params: ActionParams = {}) {
+  const { session, tabId } = sessionManager.resolveSessionAndTab(params);
+  const x = requireFiniteNumber(params.x, "elementInfo.params.x");
+  const y = requireFiniteNumber(params.y, "elementInfo.params.y");
+  await debuggerManager.attachTab(tabId);
+
+  const expression = `((x, y, includeNonInteractable) => {
+  const normalizeText = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+  const isElement = (value) => value instanceof Element;
+  const rectOf = (el) => {
+    if (!isElement(el)) return null;
+    const rect = el.getBoundingClientRect();
+    return {
+      x: Math.round(rect.left),
+      y: Math.round(rect.top),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height)
+    };
+  };
+  const isSensitive = (el) => {
+    if (!isElement(el)) return false;
+    return el.tagName.toLowerCase() === "input" &&
+      ["password", "hidden"].includes((el.getAttribute("type") || "").toLowerCase());
+  };
+  const labelOf = (el) => {
+    if (!isElement(el)) return null;
+    if (isSensitive(el)) return "[password field]";
+
+    const rootFor = (node) => {
+      const root = node.getRootNode?.();
+      return root && typeof root.querySelectorAll === "function" ? root : document;
+    };
+    const getElementById = (root, id) => {
+      if (!id) return null;
+      if (typeof root.getElementById === "function") return root.getElementById(id);
+      try {
+        return root.querySelector("#" + CSS.escape(id));
+      } catch {
+        return null;
+      }
+    };
+    const isHiddenForName = (node) => {
+      if (!(node instanceof Element)) return false;
+      if (node.hidden || node.getAttribute("aria-hidden") === "true") return true;
+      const style = getComputedStyle(node);
+      return style.display === "none" || style.visibility === "hidden";
+    };
+    const textForName = (node) => {
+      if (!node) return "";
+      if (node.nodeType === Node.TEXT_NODE) return node.nodeValue || "";
+      if (!(node instanceof Element) || isHiddenForName(node)) return "";
+      const tag = node.tagName.toLowerCase();
+      if (tag === "script" || tag === "style") return "";
+      return Array.from(node.childNodes).map((child) => textForName(child)).join(" ");
+    };
+    const nativeLabelText = (node) => {
+      const labels = Array.from(node.labels || []);
+      const text = labels.map((label) => textForName(label)).join(" ");
+      if (normalizeText(text)) return text;
+      return "";
+    };
+    const svgTitle = (node) => {
+      if (node.tagName.toLowerCase() !== "svg") return "";
+      return textForName(node.querySelector("title"));
+    };
+    const controlValueText = (node) => {
+      const tag = node.tagName.toLowerCase();
+      const type = (node.getAttribute("type") || "").toLowerCase();
+      if (tag === "input" && ["button", "submit", "reset", "image"].includes(type)) {
+        return node.getAttribute("value") || node.value || (type === "submit" ? "Submit" : type === "reset" ? "Reset" : "");
+      }
+      return "";
+    };
+
+    const labelledBy = el.getAttribute("aria-labelledby");
+    if (labelledBy) {
+      const root = rootFor(el);
+      const text = labelledBy
+        .split(/\\s+/)
+        .map((id) => textForName(getElementById(root, id) || document.getElementById(id)))
+        .join(" ");
+      if (normalizeText(text)) return normalizeText(text).slice(0, 160);
+    }
+
+    for (const candidate of [
+      el.getAttribute("aria-label"),
+      nativeLabelText(el),
+      el.getAttribute("alt"),
+      svgTitle(el),
+      controlValueText(el),
+      el.getAttribute("placeholder"),
+      el.getAttribute("title"),
+      textForName(el),
+      el.getAttribute("name"),
+      el.getAttribute("id")
+    ]) {
+      const value = normalizeText(candidate);
+      if (value) return value.slice(0, 160);
+    }
+
+    return "";
+  };
+  const roleOf = (el) => {
+    if (!isElement(el)) return null;
+    const explicit = el.getAttribute("role");
+    if (explicit) return explicit;
+
+    const tag = el.tagName.toLowerCase();
+    const type = (el.getAttribute("type") || "").toLowerCase();
+
+    if (tag === "a" && el.hasAttribute("href")) return "link";
+    if (tag === "button") return "button";
+    if (tag === "img") return "img";
+    if (tag === "svg") return "img";
+    if (tag === "input") {
+      if (["button", "submit", "reset", "image"].includes(type)) return "button";
+      if (type === "checkbox") return "checkbox";
+      if (type === "radio") return "radio";
+      if (type === "range") return "slider";
+      if (type === "number") return "spinbutton";
+      return "textbox";
+    }
+    if (tag === "textarea") return "textbox";
+    if (tag === "select") return el.multiple ? "listbox" : "combobox";
+    if (el.isContentEditable) return "contenteditable";
+
+    return tag;
+  };
+  const cssString = (value) => {
+    try {
+      return CSS.escape(String(value));
+    } catch {
+      return String(value).replace(/["\\\\]/g, "\\\\$&");
+    }
+  };
+  const selectorPath = (el) => {
+    const parts = [];
+    let node = el;
+
+    while (isElement(node) && node !== document.documentElement && parts.length < 4) {
+      const tag = node.tagName.toLowerCase();
+      const id = node.getAttribute("id");
+      if (id) {
+        parts.unshift(tag + "#" + cssString(id));
+        break;
+      }
+
+      const parent = node.parentElement;
+      if (!parent) {
+        parts.unshift(tag);
+        break;
+      }
+
+      const index = Array.from(parent.children)
+        .filter((child) => child.tagName === node.tagName)
+        .indexOf(node) + 1;
+      parts.unshift(tag + ":nth-of-type(" + index + ")");
+      node = parent;
+    }
+
+    return parts.join(" > ");
+  };
+  const selectorForHost = (el) => {
+    if (!isElement(el)) return null;
+    const tag = el.tagName.toLowerCase();
+    const id = el.getAttribute("id");
+    if (id) return tag + "#" + cssString(id);
+    const testId = el.getAttribute("data-testid") || el.getAttribute("data-test") || el.getAttribute("data-qa");
+    if (testId) return tag + "[data-testid=\\"" + cssString(testId) + "\\"]";
+    return tag;
+  };
+  const shadowMetadataFor = (el) => {
+    const root = el.getRootNode?.();
+    if (!(root instanceof ShadowRoot)) {
+      return {
+        shadowRoot: null,
+        shadowHostSelector: null
+      };
+    }
+
+    return {
+      shadowRoot: "open",
+      shadowHostSelector: selectorForHost(root.host)
+    };
+  };
+  const selectorCandidatesFor = (el) => {
+    if (!isElement(el)) return [];
+    const candidates = [];
+    const tag = el.tagName.toLowerCase();
+    const id = el.getAttribute("id");
+    const ref = el.getAttribute("data-agent-browser-ref");
+    const testId = el.getAttribute("data-testid") || el.getAttribute("data-test") || el.getAttribute("data-qa");
+    const ariaLabel = el.getAttribute("aria-label");
+    const placeholder = el.getAttribute("placeholder");
+    const name = el.getAttribute("name");
+    const path = selectorPath(el);
+
+    if (ref) candidates.push({ kind: "ref", selector: "[data-agent-browser-ref=\\"" + cssString(ref) + "\\"]" });
+    if (id) candidates.push({ kind: "id", selector: "#" + cssString(id) });
+    if (testId) candidates.push({ kind: "testId", selector: "[data-testid=\\"" + cssString(testId) + "\\"]" });
+    if (ariaLabel) candidates.push({ kind: "aria-label", selector: tag + "[aria-label=\\"" + cssString(ariaLabel) + "\\"]" });
+    if (placeholder) candidates.push({ kind: "placeholder", selector: tag + "[placeholder=\\"" + cssString(placeholder) + "\\"]" });
+    if (name) candidates.push({ kind: "name", selector: tag + "[name=\\"" + cssString(name) + "\\"]" });
+    if (tag === "a" && el.getAttribute("href")) {
+      candidates.push({ kind: "href", selector: "a[href=\\"" + cssString(el.getAttribute("href")) + "\\"]" });
+    }
+    if (path) candidates.push({ kind: "css", selector: path });
+
+    return candidates.filter((candidate) => candidate.selector && !candidate.selector.includes('""')).slice(0, 8);
+  };
+  const elementState = (el) => ({
+    disabled: Boolean(el.disabled) || el.getAttribute("aria-disabled") === "true",
+    readOnly: Boolean(el.readOnly) || el.getAttribute("aria-readonly") === "true",
+    checked: Boolean(el.checked) || el.getAttribute("aria-checked") === "true",
+    selected: Boolean(el.selected) || el.getAttribute("aria-selected") === "true",
+    href: el.getAttribute("href") || null,
+    placeholder: el.getAttribute("placeholder") || null,
+    testId: el.getAttribute("data-testid") || el.getAttribute("data-test") || el.getAttribute("data-qa") || null
+  });
+  const describe = (el) => {
+    if (!isElement(el)) return null;
+    const rect = rectOf(el);
+    const sensitive = isSensitive(el);
+    const visibleText = sensitive ? "" : normalizeText(el.innerText || el.textContent || "").slice(0, 240);
+
+    return {
+      nodeId: el.getAttribute("data-agent-browser-ref") || null,
+      role: roleOf(el),
+      name: labelOf(el),
+      visibleText,
+      tagName: el.tagName.toLowerCase(),
+      sensitive,
+      ...shadowMetadataFor(el),
+      selectorCandidates: selectorCandidatesFor(el),
+      rect,
+      center: rect ? {
+        x: Math.round(rect.x + rect.width / 2),
+        y: Math.round(rect.y + rect.height / 2)
+      } : null,
+      state: elementState(el)
+    };
+  };
+  const interactableSelector = [
+    "a[href]",
+    "button",
+    "input",
+    "textarea",
+    "select",
+    "[role='button']",
+    "[role='link']",
+    "[contenteditable='true']",
+    "[tabindex]"
+  ].join(",");
+  const deepElementFromPoint = (pointX, pointY) => {
+    let current = document.elementFromPoint(pointX, pointY);
+
+    while (current?.shadowRoot) {
+      const nested = current.shadowRoot.elementFromPoint?.(pointX, pointY);
+      if (!nested || nested === current) break;
+      current = nested;
+    }
+
+    return current;
+  };
+  const raw = deepElementFromPoint(x, y);
+  const target = isElement(raw)
+    ? (includeNonInteractable ? raw : raw.closest(interactableSelector))
+    : null;
+  const rawDescription = isElement(raw)
+    ? {
+        tagName: raw.tagName.toLowerCase(),
+        role: roleOf(raw),
+        name: labelOf(raw),
+        rect: rectOf(raw)
+      }
+    : null;
+  const targetDescription = describe(target);
+
+  return {
+    found: Boolean(targetDescription),
+    x,
+    y,
+    element: targetDescription,
+    rawHit: rawDescription
+  };
+})(${JSON.stringify(x)}, ${JSON.stringify(y)}, ${params.includeNonInteractable === true})`;
+
+  const evaluated = await cdp(tabId, "Runtime.evaluate", {
+    expression,
+    returnByValue: true,
+    awaitPromise: true
+  });
+  const value = readRuntimeValue(evaluated) ?? {};
+  const backendNode = await backendNodeForPoint(tabId, x, y, params.includeNonInteractable === true);
+  const element = value.element && typeof value.element === "object" ? value.element : null;
+
+  return {
+    sessionId: session?.sessionId ?? null,
+    tabId,
+    source: "chrome_page",
+    trust: "untrusted",
+    x,
+    y,
+    found: value.found === true,
+    ...(element ?? {}),
+    backendNodeId: backendNode.backendNodeId ?? null,
+    rawHit: value.rawHit ?? null
+  };
 }
 
 async function locatorQuery(params: ActionParams = {}) {
@@ -1193,7 +2344,7 @@ async function locatorAction(params: ActionParams = {}) {
   await debuggerManager.attachTab(tabId);
 
   if (kind === "click" || kind === "dblclick") {
-    const target = await resolveLocatorRef(tabId, locator, `locatorAction.${kind}`);
+    const target = await resolveLocatorRef(tabId, locator, `locatorAction.${kind}`, kind, args);
     return click({
       sessionId: session?.sessionId,
       tabId,
@@ -1206,7 +2357,7 @@ async function locatorAction(params: ActionParams = {}) {
 
   if (kind === "fill" || kind === "type") {
     const text = requireString(args.value ?? args.text, `locatorAction.${kind}.text`);
-    const target = await resolveLocatorRef(tabId, locator, `locatorAction.${kind}`);
+    const target = await resolveLocatorRef(tabId, locator, `locatorAction.${kind}`, kind, args);
 
     return typeText({
       sessionId: session?.sessionId,
@@ -1220,7 +2371,7 @@ async function locatorAction(params: ActionParams = {}) {
 
   if (kind === "press") {
     const key = requireString(args.key, "locatorAction.press.key");
-    await focusLocator(tabId, locator);
+    await focusLocator(tabId, locator, args);
 
     return pressKey({
       sessionId: session?.sessionId,
@@ -1231,7 +2382,7 @@ async function locatorAction(params: ActionParams = {}) {
   }
 
   if (kind === "clear" || kind === "focus" || kind === "hover") {
-    const target = await resolveLocatorRef(tabId, locator, `locatorAction.${kind}`);
+    const target = await resolveLocatorRef(tabId, locator, `locatorAction.${kind}`, kind, args);
 
     if (kind === "focus" || kind === "clear") {
       await focusAndMaybeClearElement(tabId, { ref: target.ref }, kind === "clear");
@@ -1329,6 +2480,11 @@ async function click(params: ActionParams = {}) {
   await debuggerManager.attachTab(tabId);
 
   const target = await resolvePointerTarget(tabId, params, "click");
+  await assertBrowserPolicyForTab("click", tabId, session?.sessionId, {
+    ...params,
+    label: typeof target.label === "string" ? target.label : undefined,
+    text: typeof target.text === "string" ? target.text : undefined
+  });
   await showCursor(tabId, target.x, target.y);
   await dispatchMouseClick(tabId, target.x, target.y, params);
   await showCursorClick(tabId, target.x, target.y);
@@ -1341,10 +2497,32 @@ async function click(params: ActionParams = {}) {
   });
 }
 
+async function drag(params: ActionParams = {}) {
+  const { session, tabId } = sessionManager.resolveSessionAndTab(params);
+  const path = normalizeDragPath(params.path);
+
+  await debuggerManager.attachTab(tabId);
+  await assertBrowserPolicyForTab("click", tabId, session?.sessionId, params);
+  await showCursor(tabId, path[0].x, path[0].y);
+  await dispatchMouseDrag(tabId, path, params);
+  const lastPoint = path[path.length - 1];
+  await showCursor(tabId, lastPoint.x, lastPoint.y, {
+    waitForArrival: false
+  });
+
+  await sleep(numberOrDefault(params.waitMs, 300));
+
+  return observe({
+    sessionId: session?.sessionId,
+    tabId
+  });
+}
+
 async function moveMouse(params: ActionParams = {}) {
   const { session, tabId } = sessionManager.resolveSessionAndTab(params);
   const x = requireFiniteNumber(params.x, "moveMouse.params.x");
   const y = requireFiniteNumber(params.y, "moveMouse.params.y");
+  const modifiers = normalizePointerModifiers(params.modifiers);
 
   await debuggerManager.attachTab(tabId);
   await showCursor(tabId, x, y, {
@@ -1354,7 +2532,8 @@ async function moveMouse(params: ActionParams = {}) {
     type: "mouseMoved",
     x,
     y,
-    button: "none"
+    button: "none",
+    modifiers
   });
   await sleep(numberOrDefault(params.waitMs, 100));
   sessionManager.touchSession(session?.sessionId);
@@ -1371,6 +2550,7 @@ async function scroll(params: ActionParams = {}) {
   const { session, tabId } = sessionManager.resolveSessionAndTab(params);
   const deltaX = numberOrDefault(params.deltaX, 0);
   const deltaY = numberOrDefault(params.deltaY, 0);
+  const modifiers = normalizePointerModifiers(params.modifiers);
   const point =
     typeof params.x === "number" && typeof params.y === "number"
       ? {
@@ -1386,7 +2566,8 @@ async function scroll(params: ActionParams = {}) {
     x: point.x,
     y: point.y,
     deltaX,
-    deltaY
+    deltaY,
+    modifiers
   });
   await sleep(numberOrDefault(params.waitMs, 300));
 
@@ -1399,6 +2580,10 @@ async function scroll(params: ActionParams = {}) {
 async function typeText(params: ActionParams = {}) {
   const { session, tabId } = sessionManager.resolveSessionAndTab(params);
   const text = requireString(params.text, "typeText.params.text");
+  await assertBrowserPolicyForTab("type", tabId, session?.sessionId, {
+    ...params,
+    text
+  });
   const ref = typeof params.ref === "string" ? params.ref : null;
   const selector = typeof params.selector === "string" ? params.selector : null;
   const hasCoordinates =
@@ -1436,6 +2621,19 @@ async function evaluate(params: ActionParams = {}) {
   const { session, tabId } = sessionManager.resolveSessionAndTab(params);
   const script = requireString(params.script, "evaluate.params.script");
   const timeoutMs = numberOrDefault(params.timeoutMs, DEFAULT_CDP_TIMEOUT_MS);
+  await assertBrowserPolicyForTab("evaluate", tabId, session?.sessionId, {
+    ...params,
+    script
+  });
+  await postDiagnosticActionAudit({
+    action: "evaluate",
+    tabId,
+    sessionId: session?.sessionId ?? null,
+    method: "Runtime.evaluate",
+    reason: auditReason(params.reason, evaluateAuditReason(script, params)),
+    mode: params.mode === "write" ? "write" : "read",
+    readOnly: params.mode !== "write" && !looksLikeMutatingScript(script)
+  });
 
   await showCursorActivity(tabId, "thinking");
 
@@ -1479,17 +2677,19 @@ async function pressKey(params: ActionParams = {}) {
     key: normalized.key,
     code: normalized.code,
     ...keyText,
+    modifiers: normalized.modifiers,
     windowsVirtualKeyCode: normalized.keyCode,
     nativeVirtualKeyCode: normalized.keyCode
   });
 
-  if (normalized.key === "Enter") {
+  if (normalized.key === "Enter" || normalized.key === " ") {
     await cdp(tabId, "Input.dispatchKeyEvent", {
       type: "char",
       key: normalized.key,
       code: normalized.code,
-      text: "\r",
-      unmodifiedText: "\r",
+      text: normalized.key === "Enter" ? "\r" : " ",
+      unmodifiedText: normalized.key === "Enter" ? "\r" : " ",
+      modifiers: normalized.modifiers,
       windowsVirtualKeyCode: normalized.keyCode,
       nativeVirtualKeyCode: normalized.keyCode
     });
@@ -1499,6 +2699,7 @@ async function pressKey(params: ActionParams = {}) {
     type: "keyUp",
     key: normalized.key,
     code: normalized.code,
+    modifiers: normalized.modifiers,
     windowsVirtualKeyCode: normalized.keyCode,
     nativeVirtualKeyCode: normalized.keyCode
   });
@@ -1536,23 +2737,74 @@ async function screenshot(params: ActionParams = {}) {
   await debuggerManager.attachTab(tabId);
 
   const format = params.format === "jpeg" ? "jpeg" : "png";
-  const result = await cdp(tabId, "Page.captureScreenshot", {
+  const captureParams: ActionParams = {
     format,
     fromSurface: true
-  });
+  };
+  const clip = normalizeScreenshotClip(params.clip);
+
+  if (clip) {
+    captureParams.clip = clip;
+  } else if (params.fullPage === true) {
+    const metrics = await cdp(tabId, "Page.getLayoutMetrics", {});
+    const contentSize = metrics.cssContentSize || metrics.contentSize || {};
+    const width = Math.max(1, numberOrDefault(contentSize.width, 1));
+    const height = Math.max(1, numberOrDefault(contentSize.height, 1));
+    captureParams.captureBeyondViewport = true;
+    captureParams.clip = {
+      x: 0,
+      y: 0,
+      width,
+      height,
+      scale: 1
+    };
+  }
+
+  const result = await cdp(tabId, "Page.captureScreenshot", captureParams);
   sessionManager.touchSession(session?.sessionId);
 
   return {
     sessionId: session?.sessionId ?? null,
     tabId,
     format,
+    fullPage: params.fullPage === true,
+    clip: captureParams.clip ?? null,
     dataBase64: result.data
+  };
+}
+
+function normalizeScreenshotClip(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const source = value as ActionParams;
+  const x = requireFiniteNumber(source.x, "screenshot.params.clip.x");
+  const y = requireFiniteNumber(source.y, "screenshot.params.clip.y");
+  const width = requireFiniteNumber(source.width, "screenshot.params.clip.width");
+  const height = requireFiniteNumber(source.height, "screenshot.params.clip.height");
+
+  if (width <= 0 || height <= 0) {
+    throw new Error("screenshot.params.clip width and height must be positive");
+  }
+
+  return {
+    x,
+    y,
+    width,
+    height,
+    scale: 1
   };
 }
 
 async function uploadFile(params: ActionParams = {}) {
   const { session, tabId } = sessionManager.resolveSessionAndTab(params);
-  const filePath = requireString(params.filePath, "uploadFile.params.filePath");
+  const filePaths = normalizeUploadFilePaths(params);
+  await assertBrowserPolicyForTab("upload", tabId, session?.sessionId, {
+    ...params,
+    filePath: filePaths[0],
+    filePaths
+  });
   const ref = typeof params.ref === "string" && params.ref.trim()
     ? params.ref.trim()
     : null;
@@ -1597,7 +2849,7 @@ async function uploadFile(params: ActionParams = {}) {
 
   await cdp(tabId, "DOM.setFileInputFiles", {
     nodeId: node.nodeId,
-    files: [filePath]
+    files: filePaths
   });
 
   await sleep(numberOrDefault(params.waitMs, 1000));
@@ -1607,6 +2859,22 @@ async function uploadFile(params: ActionParams = {}) {
     sessionId: session?.sessionId,
     tabId
   });
+}
+
+function normalizeUploadFilePaths(params: ActionParams) {
+  const filePaths = Array.isArray(params.filePaths)
+    ? params.filePaths.map((item, index) => requireString(item, `uploadFile.params.filePaths[${index}]`))
+    : [];
+
+  if (typeof params.filePath === "string" && params.filePath.trim()) {
+    filePaths.unshift(params.filePath.trim());
+  }
+
+  if (filePaths.length === 0) {
+    throw new Error("uploadFile.params requires filePath or filePaths");
+  }
+
+  return filePaths;
 }
 
 async function listTabs(params: ActionParams = {}) {
@@ -1636,7 +2904,7 @@ async function listTabs(params: ActionParams = {}) {
   }
 
   return {
-    tabs: tabs.map(summarizeTab)
+    tabs: await Promise.all(tabs.map((tab) => summarizeTab(tab)))
   };
 }
 
@@ -1657,19 +2925,236 @@ async function openTabs(params: ActionParams = {}) {
     );
   }
 
-  return {
-    tabs: tabs
-      .filter((tab) => typeof tab.id === "number" && isClaimableTab(tab))
-      .map((tab) => {
-        const token = createClaimToken(tab.id as number);
+  const claimableTabs = tabs.filter((tab) => typeof tab.id === "number" && isClaimableTab(tab));
+  const summaries = await Promise.all(claimableTabs.map((tab) => summarizeTab(tab)));
 
-        return {
-          ...summarizeTab(tab),
-          claimToken: token,
-          claimTokenExpiresAt: claimTokens.get(token)?.expiresAt ?? Date.now()
-        };
-      })
+  return {
+    tabs: claimableTabs.map((tab, index) => {
+      const token = createClaimToken(tab.id as number);
+
+      return {
+        ...summaries[index],
+        claimToken: token,
+        claimTokenExpiresAt: claimTokens.get(token)?.expiresAt ?? Date.now()
+      };
+    })
   };
+}
+
+async function getHistory(params: ActionParams = {}) {
+  if (params.confirmed !== true) {
+    throw new Error(
+      "confirmation_required: Browser history access requires confirmed=true for this request."
+    );
+  }
+
+  const limit = Math.max(1, Math.min(Math.floor(numberOrDefault(params.limit, 50)), 100));
+  const search: chrome.history.HistoryQuery = {
+    text: typeof params.query === "string" ? params.query : "",
+    maxResults: limit
+  };
+
+  if (typeof params.from === "number") {
+    search.startTime = params.from;
+  }
+
+  if (typeof params.to === "number") {
+    search.endTime = params.to;
+  }
+
+  const entries = await chrome.history.search(search);
+
+  return {
+    entries: entries.map(redactHistoryEntry),
+    sensitive: true
+  };
+}
+
+async function clipboardReadText(params: ActionParams = {}) {
+  if (params.confirmed !== true) {
+    throw new Error(
+      "confirmation_required: Clipboard read requires confirmed=true for this request."
+    );
+  }
+
+  const result = await sendClipboardOffscreenMessage({
+    action: "readText"
+  });
+  const sessionId = typeof params.sessionId === "string" ? params.sessionId : null;
+  sessionManager.touchSession(sessionId);
+
+  return {
+    sessionId,
+    tabId: typeof params.tabId === "number" ? params.tabId : null,
+    text: typeof result.text === "string" ? result.text : "",
+    sensitive: true
+  };
+}
+
+async function clipboardWriteText(params: ActionParams = {}) {
+  if (params.confirmed !== true) {
+    throw new Error(
+      "confirmation_required: Clipboard write requires confirmed=true for this request."
+    );
+  }
+
+  const text = requireString(params.text, "clipboardWriteText.params.text");
+  await sendClipboardOffscreenMessage({
+    action: "writeText",
+    text
+  });
+  const sessionId = typeof params.sessionId === "string" ? params.sessionId : null;
+  sessionManager.touchSession(sessionId);
+
+  return {
+    sessionId,
+    tabId: typeof params.tabId === "number" ? params.tabId : null,
+    written: true,
+    textLength: text.length
+  };
+}
+
+async function clipboardRead(params: ActionParams = {}) {
+  if (params.confirmed !== true) {
+    throw new Error(
+      "confirmation_required: Clipboard read requires confirmed=true for this request."
+    );
+  }
+
+  const result = await sendClipboardOffscreenMessage({
+    action: "readItems"
+  });
+  const sessionId = typeof params.sessionId === "string" ? params.sessionId : null;
+  sessionManager.touchSession(sessionId);
+
+  return {
+    sessionId,
+    tabId: typeof params.tabId === "number" ? params.tabId : null,
+    items: Array.isArray(result.items) ? result.items : [],
+    sensitive: true
+  };
+}
+
+async function clipboardWrite(params: ActionParams = {}) {
+  if (params.confirmed !== true) {
+    throw new Error(
+      "confirmation_required: Clipboard write requires confirmed=true for this request."
+    );
+  }
+
+  const items = normalizeClipboardItems(params.items);
+  await sendClipboardOffscreenMessage({
+    action: "writeItems",
+    items
+  });
+  const sessionId = typeof params.sessionId === "string" ? params.sessionId : null;
+  sessionManager.touchSession(sessionId);
+
+  return {
+    sessionId,
+    tabId: typeof params.tabId === "number" ? params.tabId : null,
+    written: true,
+    itemCount: items.length
+  };
+}
+
+function normalizeClipboardItems(value: unknown) {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error("clipboardWrite.params.items must be a non-empty array");
+  }
+
+  return value.map((item, itemIndex) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error(`clipboardWrite.params.items[${itemIndex}] must be an object`);
+    }
+
+    const source = item as ActionParams;
+    if (!Array.isArray(source.types) || source.types.length === 0) {
+      throw new Error(`clipboardWrite.params.items[${itemIndex}].types must be a non-empty array`);
+    }
+
+    return {
+      types: source.types.map((payload: unknown, typeIndex: number) => {
+        if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+          throw new Error(`clipboardWrite.params.items[${itemIndex}].types[${typeIndex}] must be an object`);
+        }
+
+        const candidate = payload as ActionParams;
+        const mimeType = requireString(candidate.mimeType, `clipboardWrite.params.items[${itemIndex}].types[${typeIndex}].mimeType`);
+        const text = typeof candidate.text === "string" ? candidate.text : undefined;
+        const dataBase64 = typeof candidate.dataBase64 === "string" ? candidate.dataBase64 : undefined;
+
+        if (text == null && dataBase64 == null) {
+          throw new Error(`clipboardWrite.params.items[${itemIndex}].types[${typeIndex}] requires text or dataBase64`);
+        }
+
+        const normalized: ActionParams = {
+          mimeType
+        };
+
+        if (text != null) {
+          normalized.text = text;
+        }
+
+        if (dataBase64 != null) {
+          normalized.dataBase64 = dataBase64;
+        }
+
+        return normalized;
+      })
+    };
+  });
+}
+
+async function sendClipboardOffscreenMessage(message: ActionParams) {
+  await ensureClipboardOffscreenDocument();
+
+  const response = await chrome.runtime.sendMessage({
+    type: "FORMAX_CLIPBOARD_OFFSCREEN",
+    ...message
+  });
+
+  if (!response || response.ok !== true) {
+    throw new Error(response?.error || "Clipboard offscreen request failed");
+  }
+
+  return response.result && typeof response.result === "object"
+    ? response.result as ActionParams
+    : {};
+}
+
+async function ensureClipboardOffscreenDocument() {
+  const offscreen = (chrome as any).offscreen;
+  if (!offscreen?.createDocument) {
+    throw new Error("Clipboard backend requires chrome.offscreen support.");
+  }
+
+  const runtime = chrome.runtime as any;
+  const documentUrl = chrome.runtime.getURL(CLIPBOARD_OFFSCREEN_URL);
+
+  if (typeof runtime.getContexts === "function") {
+    const contexts = await runtime.getContexts({
+      contextTypes: ["OFFSCREEN_DOCUMENT"],
+      documentUrls: [documentUrl]
+    });
+
+    if (Array.isArray(contexts) && contexts.length > 0) {
+      return;
+    }
+  }
+
+  try {
+    await offscreen.createDocument({
+      url: CLIPBOARD_OFFSCREEN_URL,
+      reasons: ["CLIPBOARD"],
+      justification: "Read and write clipboard text for confirmed Formax browser requests."
+    });
+  } catch (error) {
+    const message = stringifyError(error);
+    if (!message.includes("Only a single offscreen document")) {
+      throw error;
+    }
+  }
 }
 
 async function getTab(params: ActionParams = {}) {
@@ -1677,7 +3162,7 @@ async function getTab(params: ActionParams = {}) {
   const tab = await chrome.tabs.get(tabId);
 
   return {
-    tab: summarizeTab(tab)
+    tab: await summarizeTab(tab)
   };
 }
 
@@ -1697,6 +3182,12 @@ function getDevLogs(params: ActionParams = {}) {
   const level = typeof params.level === "string" && params.level.trim()
     ? params.level.trim()
     : null;
+  const levels = Array.isArray(params.levels)
+    ? Array.from(new Set(params.levels.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim())))
+    : [];
+  const filter = typeof params.filter === "string" && params.filter.trim()
+    ? params.filter.trim().toLowerCase()
+    : null;
   const events = eventBuffer.list({
     sessionId: params.sessionId,
     tabId: params.tabId,
@@ -1705,8 +3196,13 @@ function getDevLogs(params: ActionParams = {}) {
   });
   let logs = events.map(devLogFromEvent).filter((log) => log != null);
 
-  if (level) {
-    logs = logs.filter((log) => log.level === level);
+  const levelFilter = levels.length > 0 ? levels : level ? [level] : [];
+  if (levelFilter.length > 0) {
+    logs = logs.filter((log) => typeof log.level === "string" && levelFilter.includes(log.level));
+  }
+
+  if (filter) {
+    logs = logs.filter((log) => String(log.text || "").toLowerCase().includes(filter));
   }
 
   return {
@@ -1716,6 +3212,7 @@ function getDevLogs(params: ActionParams = {}) {
 
 async function listDownloads(params: ActionParams = {}) {
   const downloads = await findDownloads(params);
+  await assertBrowserBlocklistForDownloads(downloads, params.sessionId);
 
   return {
     downloads: downloads.map(summarizeDownload)
@@ -1736,6 +3233,7 @@ async function waitForDownload(params: ActionParams = {}) {
     });
 
     if (download) {
+      await assertBrowserBlocklistForDownloads([download], params.sessionId);
       lastDownload = download;
 
       if (state === "any" || download.state === state) {
@@ -1764,23 +3262,164 @@ async function waitForDownload(params: ActionParams = {}) {
 async function rawCdp(params: ActionParams = {}) {
   const { session, tabId } = sessionManager.resolveSessionAndTab(params);
   const method = requireString(params.method, "cdp.params.method");
+  const targetId =
+    typeof params.targetId === "string" && params.targetId.trim()
+      ? params.targetId.trim()
+      : null;
   const commandParams =
     params.params && typeof params.params === "object" && !Array.isArray(params.params)
       ? params.params
       : {};
   const timeoutMs = numberOrDefault(params.timeoutMs, DEFAULT_CDP_TIMEOUT_MS);
+  await assertBrowserPolicyForTab("rawCdp", tabId, session?.sessionId, {
+    ...params,
+    method
+  });
+  await postDiagnosticActionAudit({
+    action: "rawCdp",
+    tabId,
+    sessionId: session?.sessionId ?? null,
+    method,
+    reason: auditReason(params.reason, "raw_cdp")
+  });
 
   const result = await cdp(tabId, method, commandParams, {
-    timeoutMs
+    timeoutMs,
+    targetId
   });
   sessionManager.touchSession(session?.sessionId);
 
   return {
     sessionId: session?.sessionId ?? null,
     tabId,
+    targetId,
     method,
     result
   };
+}
+
+async function backendNodeForPoint(
+  tabId: number,
+  x: number,
+  y: number,
+  includeNonInteractable: boolean
+) {
+  const interactableSelector = [
+    "a[href]",
+    "button",
+    "input",
+    "textarea",
+    "select",
+    "[role='button']",
+    "[role='link']",
+    "[contenteditable='true']",
+    "[tabindex]"
+  ].join(",");
+  const expression = `((x, y, includeNonInteractable) => {
+  const raw = document.elementFromPoint(x, y);
+  if (!(raw instanceof Element)) return null;
+  return includeNonInteractable ? raw : raw.closest(${JSON.stringify(interactableSelector)});
+})(${JSON.stringify(x)}, ${JSON.stringify(y)}, ${includeNonInteractable})`;
+
+  try {
+    const evaluated = await cdp(tabId, "Runtime.evaluate", {
+      expression,
+      returnByValue: false,
+      awaitPromise: true,
+      objectGroup: "formaxElementInfo"
+    });
+    const objectId = evaluated?.result?.objectId;
+
+    if (typeof objectId !== "string") {
+      return {
+        backendNodeId: null,
+        nodeId: null,
+        frameId: null
+      };
+    }
+
+    const requested = await cdp(tabId, "DOM.requestNode", { objectId });
+    const nodeId = typeof requested?.nodeId === "number" ? requested.nodeId : null;
+    const described = nodeId != null
+      ? await cdp(tabId, "DOM.describeNode", { nodeId })
+      : null;
+    const node = described?.node && typeof described.node === "object" ? described.node : null;
+
+    return {
+      backendNodeId: typeof node?.backendNodeId === "number" ? node.backendNodeId : null,
+      nodeId,
+      frameId: typeof node?.frameId === "string" ? node.frameId : null
+    };
+  } catch {
+    return {
+      backendNodeId: null,
+      nodeId: null,
+      frameId: null
+    };
+  } finally {
+    try {
+      await cdp(tabId, "Runtime.releaseObjectGroup", {
+        objectGroup: "formaxElementInfo"
+      });
+    } catch {
+      // Releasing debug handles is best-effort and should not affect inspection.
+    }
+  }
+}
+
+async function postDiagnosticActionAudit(args: {
+  action: "evaluate" | "rawCdp";
+  tabId: number;
+  sessionId: string | null;
+  method: string;
+  reason: string;
+  mode?: string;
+  readOnly?: boolean;
+}) {
+  const tab = await chrome.tabs.get(args.tabId).catch(() => null);
+  const origin = originForAudit(tab?.url ?? null);
+
+  safePostEvent({
+    name: "browserActionAudit",
+    auditKind: "diagnostic",
+    category: "diagnostic",
+    action: args.action,
+    actionId: activeActionContext?.actionId ?? null,
+    sessionId: args.sessionId,
+    turnId: activeActionContext?.turnId ?? null,
+    tabId: args.tabId,
+    origin,
+    method: args.method,
+    reason: args.reason,
+    mode: args.mode,
+    readOnly: args.readOnly
+  });
+}
+
+function auditReason(value: unknown, fallback: string) {
+  return typeof value === "string" && value.trim()
+    ? truncateAndRedactString(value.trim(), 160)
+    : fallback;
+}
+
+function evaluateAuditReason(script: string, params: ActionParams) {
+  if (params.mode === "write" || looksLikeMutatingScript(script)) {
+    return "mutating_evaluate";
+  }
+
+  return "read_only_evaluate";
+}
+
+function originForAudit(url: unknown) {
+  if (typeof url !== "string" || !url.trim()) {
+    return null;
+  }
+
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
 }
 
 async function closeTab(params: ActionParams = {}) {
@@ -1885,6 +3524,9 @@ async function finalizeSession(params: ActionParams = {}) {
     sessionManager.deleteSession(sessionId);
   }
 
+  const eventSnapshot = await persistSessionEventSnapshot(sessionId, "finalizeSession");
+  const clearedEvents = eventBuffer.clear({ sessionId });
+
   return {
     finalized: true,
     sessionId,
@@ -1892,7 +3534,9 @@ async function finalizeSession(params: ActionParams = {}) {
     keptTabs,
     handoffTabs: handedOffTabs,
     deliverableTabs: deliverableTabIds,
-    releasedTabs
+    releasedTabs,
+    eventSnapshot: summarizeEventSnapshot(eventSnapshot),
+    clearedEvents
   };
 }
 
@@ -1959,11 +3603,15 @@ async function stopSession(params: ActionParams = {}) {
   }
 
   sessionManager.deleteSession(sessionId);
+  const eventSnapshot = await persistSessionEventSnapshot(sessionId, "stopSession");
+  const clearedEvents = eventBuffer.clear({ sessionId });
 
   return {
     stopped: true,
     sessionId,
-    closedTabs
+    closedTabs,
+    eventSnapshot: summarizeEventSnapshot(eventSnapshot),
+    clearedEvents
   };
 }
 
@@ -2084,6 +3732,13 @@ function elementTargetExpression(
     };
   }
 
+  if (!el.isConnected) {
+    return {
+      ok: false,
+      error: "Element target is detached"
+    };
+  }
+
   el.scrollIntoView({
     block: "center",
     inline: "center",
@@ -2108,12 +3763,89 @@ function elementTargetExpression(
     el.focus();
   }
 
-  const rect = el.getBoundingClientRect();
+  const rect = locatorRectInTopViewport(el);
+  const normalizeText = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+  const labelOf = (node) => {
+    const rootFor = (candidate) => {
+      const root = candidate.getRootNode?.();
+      return root && typeof root.querySelectorAll === "function" ? root : document;
+    };
+    const getElementById = (root, id) => {
+      if (!id) return null;
+      if (typeof root.getElementById === "function") return root.getElementById(id);
+      try {
+        return root.querySelector("#" + CSS.escape(id));
+      } catch {
+        return null;
+      }
+    };
+    const isHiddenForName = (candidate) => {
+      if (!(candidate instanceof Element)) return false;
+      if (candidate.hidden || candidate.getAttribute("aria-hidden") === "true") return true;
+      const style = getComputedStyle(candidate);
+      return style.display === "none" || style.visibility === "hidden";
+    };
+    const textForName = (candidate) => {
+      if (!candidate) return "";
+      if (candidate.nodeType === Node.TEXT_NODE) return candidate.nodeValue || "";
+      if (!(candidate instanceof Element) || isHiddenForName(candidate)) return "";
+      const tag = candidate.tagName.toLowerCase();
+      if (tag === "script" || tag === "style") return "";
+      return Array.from(candidate.childNodes).map((child) => textForName(child)).join(" ");
+    };
+    const nativeLabelText = (candidate) => {
+      const labels = Array.from(candidate.labels || []);
+      const text = labels.map((label) => textForName(label)).join(" ");
+      return normalizeText(text) ? text : "";
+    };
+    const svgTitle = (candidate) => {
+      if (candidate.tagName?.toLowerCase() !== "svg") return "";
+      return textForName(candidate.querySelector("title"));
+    };
+    const controlValueText = (candidate) => {
+      const tag = candidate.tagName?.toLowerCase();
+      const type = (candidate.getAttribute?.("type") || "").toLowerCase();
+      if (tag === "input" && ["button", "submit", "reset", "image"].includes(type)) {
+        return candidate.getAttribute("value") || candidate.value || (type === "submit" ? "Submit" : type === "reset" ? "Reset" : "");
+      }
+      return "";
+    };
+    const labelledBy = node.getAttribute?.("aria-labelledby");
+    if (labelledBy) {
+      const root = rootFor(node);
+      const labelledText = labelledBy
+        .split(/\\s+/)
+        .map((id) => textForName(getElementById(root, id) || document.getElementById(id)))
+        .join(" ");
+      if (normalizeText(labelledText)) return normalizeText(labelledText);
+    }
+
+    for (const candidate of [
+      node.getAttribute?.("aria-label"),
+      nativeLabelText(node),
+      node.getAttribute?.("alt"),
+      svgTitle(node),
+      controlValueText(node),
+      node.getAttribute?.("placeholder"),
+      node.getAttribute?.("title"),
+      textForName(node),
+      node.getAttribute?.("name"),
+      node.getAttribute?.("id")
+    ]) {
+      if (normalizeText(candidate)) return normalizeText(candidate);
+    }
+
+    return "";
+  };
+  const visibleText = normalizeText(el.innerText || el.textContent || "");
 
   return {
     ok: true,
     x: rect.left + rect.width / 2,
     y: rect.top + rect.height / 2,
+    label: labelOf(el).slice(0, 160),
+    text: visibleText.slice(0, 160),
+    tagName: el.tagName,
     rect: {
       x: rect.left,
       y: rect.top,
@@ -2124,9 +3856,13 @@ function elementTargetExpression(
 })()`;
 }
 
-function normalizeLocatorPlan(locator: any) {
+function normalizeLocatorPlan(locator: any, depth = 0) {
   if (!locator || typeof locator !== "object") {
     throw new Error("locator params require a locator object");
+  }
+
+  if (depth > 4) {
+    throw new Error("locator nested filters exceed the supported depth");
   }
 
   const kind = requireString(locator.kind, "locator.kind");
@@ -2146,6 +3882,18 @@ function normalizeLocatorPlan(locator: any) {
   const name = kind === "role" && typeof locator.name === "string" ? locator.name : undefined;
   const testId = kind === "testId" ? requireString(locator.testId ?? locator.text, "locator.testId") : undefined;
   const index = locator.index == null ? 0 : Math.max(0, Math.floor(numberOrDefault(locator.index, 0)));
+  const frameSelectors = Array.isArray(locator.frameSelectors)
+    ? locator.frameSelectors.map((selector: any, selectorIndex: number) =>
+        requireString(selector, `locator.frameSelectors[${selectorIndex}]`)
+      )
+    : undefined;
+  const and = locator.and == null ? undefined : normalizeLocatorPlan(locator.and, depth + 1);
+  const or = locator.or == null ? undefined : normalizeLocatorPlan(locator.or, depth + 1);
+  const has = locator.has == null ? undefined : normalizeLocatorPlan(locator.has, depth + 1);
+  const hasNot = locator.hasNot == null ? undefined : normalizeLocatorPlan(locator.hasNot, depth + 1);
+  const hasText = typeof locator.hasText === "string" ? locator.hasText : undefined;
+  const hasNotText = typeof locator.hasNotText === "string" ? locator.hasNotText : undefined;
+  const visible = typeof locator.visible === "boolean" ? locator.visible : undefined;
 
   return {
     kind,
@@ -2154,6 +3902,14 @@ function normalizeLocatorPlan(locator: any) {
     role,
     name,
     testId,
+    frameSelectors,
+    and,
+    or,
+    has,
+    hasNot,
+    hasText,
+    hasNotText,
+    visible,
     exact: locator.exact === true,
     index,
     strict: locator.strict === true
@@ -2170,6 +3926,8 @@ function normalizeLocatorQueryKind(kind: any) {
     "getAttribute",
     "isVisible",
     "isEnabled",
+    "inputValue",
+    "isChecked",
     "boundingBox"
   ];
 
@@ -2202,9 +3960,20 @@ function normalizeLocatorActionKind(kind: any) {
   return value;
 }
 
-async function resolveLocatorRef(tabId: number, locator: any, actionName: string) {
+async function resolveLocatorRef(
+  tabId: number,
+  locator: any,
+  actionName: string,
+  actionKind = "click",
+  actionArgs: any = {}
+) {
   const evaluated = await cdp(tabId, "Runtime.evaluate", {
-    expression: locatorTargetExpression(locator, `agent-locator-${crypto.randomUUID()}`),
+    expression: locatorTargetExpression(
+      locator,
+      `agent-locator-${crypto.randomUUID()}`,
+      actionKind,
+      actionArgs
+    ),
     returnByValue: true,
     awaitPromise: true
   });
@@ -2217,10 +3986,11 @@ async function resolveLocatorRef(tabId: number, locator: any, actionName: string
   return value;
 }
 
-async function focusLocator(tabId: number, locator: any) {
+async function focusLocator(tabId: number, locator: any, actionArgs: any = {}) {
   const evaluated = await cdp(tabId, "Runtime.evaluate", {
-    expression: `(() => {
+    expression: `(async () => {
   ${locatorResolverSource(locator)}
+  ${locatorActionabilitySource("press", actionArgs)}
   const resolved = resolveLocator();
 
   if (!resolved.ok) {
@@ -2228,19 +3998,8 @@ async function focusLocator(tabId: number, locator: any) {
   }
 
   const el = resolved.element;
-  if (!el) {
-    return {
-      ok: false,
-      error: "Element target not found",
-      count: resolved.count
-    };
-  }
-
-  el.scrollIntoView({
-    block: "center",
-    inline: "center",
-    behavior: "instant"
-  });
+  const actionability = await checkLocatorActionability(el);
+  if (!actionability.ok) return actionability;
   el.focus();
 
   return { ok: true };
@@ -2255,9 +4014,15 @@ async function focusLocator(tabId: number, locator: any) {
   }
 }
 
-function locatorTargetExpression(locator: any, ref: string) {
-  return `(() => {
+function locatorTargetExpression(
+  locator: any,
+  ref: string,
+  actionKind = "click",
+  actionArgs: any = {}
+) {
+  return `(async () => {
   ${locatorResolverSource(locator)}
+  ${locatorActionabilitySource(actionKind, actionArgs)}
   const resolved = resolveLocator();
 
   if (!resolved.ok) {
@@ -2274,18 +4039,15 @@ function locatorTargetExpression(locator: any, ref: string) {
   }
 
   const ref = ${JSON.stringify(ref)};
+  const actionability = await checkLocatorActionability(el);
+  if (!actionability.ok) return actionability;
 
   window.__agentBrowserController = window.__agentBrowserController || {};
   window.__agentBrowserController.elements = window.__agentBrowserController.elements || {};
   window.__agentBrowserController.elements[ref] = el;
   el.setAttribute("data-agent-browser-ref", ref);
-  el.scrollIntoView({
-    block: "center",
-    inline: "center",
-    behavior: "instant"
-  });
 
-  const rect = el.getBoundingClientRect();
+  const rect = actionability.rect || el.getBoundingClientRect();
 
   return {
     ok: true,
@@ -2300,6 +4062,229 @@ function locatorTargetExpression(locator: any, ref: string) {
     }
   };
 })()`;
+}
+
+function locatorActionabilitySource(actionKind: string, actionArgs: any = {}) {
+  const requiresEditable = ["fill", "type", "clear"].includes(actionKind);
+  const requiresPointer = ["click", "dblclick", "hover"].includes(actionKind);
+  const requiresEnabled = [
+    "click",
+    "dblclick",
+    "fill",
+    "type",
+    "press",
+    "clear",
+    "setChecked",
+    "selectOption"
+  ].includes(actionKind);
+
+  return `
+  const locatorActionabilityKind = ${JSON.stringify(actionKind)};
+  const locatorActionabilityForce = ${actionArgs?.force === true ? "true" : "false"};
+  const locatorActionabilityRequiresVisible = true;
+  const locatorActionabilityRequiresEnabled = ${requiresEnabled ? "true" : "false"};
+  const locatorActionabilityRequiresEditable = ${requiresEditable ? "true" : "false"};
+  const locatorActionabilityRequiresPointer = ${requiresPointer ? "true" : "false"};
+  const locatorActionabilityRect = (node) => {
+    const rect = (() => {
+      const localRect = node.getBoundingClientRect();
+      let x = localRect.left;
+      let y = localRect.top;
+      let currentWindow = node.ownerDocument?.defaultView || null;
+
+      while (currentWindow && currentWindow !== window) {
+        const frame = currentWindow.frameElement;
+        if (!frame) break;
+        const frameRect = frame.getBoundingClientRect();
+        x += frameRect.left;
+        y += frameRect.top;
+        currentWindow = currentWindow.parent;
+      }
+
+      return {
+        left: x,
+        top: y,
+        width: localRect.width,
+        height: localRect.height
+      };
+    })();
+    return {
+      x: rect.left,
+      y: rect.top,
+      width: rect.width,
+      height: rect.height
+    };
+  };
+  const locatorActionabilityDelay = () => new Promise((resolve) => {
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => requestAnimationFrame(resolve));
+    } else {
+      setTimeout(resolve, 32);
+    }
+  });
+  const locatorActionabilityVisible = (node, rect) => {
+    const style = getComputedStyle(node);
+    return style.visibility !== "hidden" &&
+      style.display !== "none" &&
+      style.opacity !== "0" &&
+      rect.width > 0 &&
+      rect.height > 0;
+  };
+  const locatorActionabilityElementFromPoint = (x, y) => {
+    let current = document.elementFromPoint(x, y);
+    let localX = x;
+    let localY = y;
+
+    while (current) {
+      if (current?.shadowRoot) {
+        const nested = current.shadowRoot.elementFromPoint?.(localX, localY);
+        if (nested && nested !== current) {
+          current = nested;
+          continue;
+        }
+      }
+
+      if (current instanceof HTMLIFrameElement || current instanceof HTMLFrameElement) {
+        let frameDocument = null;
+        try {
+          frameDocument = current.contentDocument;
+        } catch {
+          frameDocument = null;
+        }
+
+        if (!frameDocument) break;
+        const frameRect = current.getBoundingClientRect();
+        localX -= frameRect.left;
+        localY -= frameRect.top;
+        const nested = frameDocument.elementFromPoint(localX, localY);
+        if (!nested || nested === current) break;
+        current = nested;
+        continue;
+      }
+
+      break;
+    }
+
+    return current;
+  };
+  const locatorActionabilityEnabled = (node) => {
+    return !node.disabled &&
+      node.getAttribute("aria-disabled") !== "true" &&
+      !node.closest?.("fieldset[disabled]");
+  };
+  const locatorActionabilityEditable = (node) => {
+    const tag = node.tagName.toLowerCase();
+    const type = (node.getAttribute("type") || "").toLowerCase();
+    const isTextInput = tag === "textarea" ||
+      (tag === "input" && !["button", "checkbox", "file", "hidden", "image", "radio", "reset", "submit"].includes(type));
+    return node.isContentEditable ||
+      (isTextInput && !node.readOnly && !node.disabled && node.getAttribute("aria-readonly") !== "true");
+  };
+  const locatorActionabilityStable = async (node) => {
+    const first = locatorActionabilityRect(node);
+    await locatorActionabilityDelay();
+
+    if (!node.isConnected) {
+      return {
+        ok: false,
+        error: "Locator actionability failed for " + locatorActionabilityKind + ": element detached during actionability check",
+        code: "detached"
+      };
+    }
+
+    const second = locatorActionabilityRect(node);
+    const stable =
+      Math.abs(first.x - second.x) < 0.25 &&
+      Math.abs(first.y - second.y) < 0.25 &&
+      Math.abs(first.width - second.width) < 0.25 &&
+      Math.abs(first.height - second.height) < 0.25;
+
+    return stable
+      ? { ok: true, rect: second }
+      : {
+          ok: false,
+          error: "Locator actionability failed for " + locatorActionabilityKind + ": element bounding box is not stable",
+          code: "not_stable"
+        };
+  };
+  const locatorActionabilityReceivesPointer = (node, rect) => {
+    const x = rect.x + rect.width / 2;
+    const y = rect.y + rect.height / 2;
+
+    if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) {
+      return {
+        ok: false,
+        error: "Locator actionability failed for " + locatorActionabilityKind + ": element center is outside the viewport",
+        code: "outside_viewport"
+      };
+    }
+
+    const top = locatorActionabilityElementFromPoint(x, y);
+    if (!top || (top !== node && !node.contains(top))) {
+      return {
+        ok: false,
+        error: "Locator actionability failed for " + locatorActionabilityKind + ": element does not receive pointer events",
+        code: "occluded"
+      };
+    }
+
+    return { ok: true };
+  };
+  const checkLocatorActionability = async (node) => {
+    if (!node || !node.isConnected) {
+      return {
+        ok: false,
+        error: "Locator actionability failed for " + locatorActionabilityKind + ": element is detached",
+        code: "detached"
+      };
+    }
+
+    node.scrollIntoView({
+      block: "center",
+      inline: "center",
+      behavior: "instant"
+    });
+
+    const stable = await locatorActionabilityStable(node);
+    if (!stable.ok) return stable;
+
+    const rect = stable.rect;
+    if (locatorActionabilityForce) {
+      return { ok: true, rect };
+    }
+
+    if (locatorActionabilityRequiresVisible && !locatorActionabilityVisible(node, rect)) {
+      return {
+        ok: false,
+        error: "Locator actionability failed for " + locatorActionabilityKind + ": element is not visible",
+        code: "not_visible"
+      };
+    }
+
+    if (locatorActionabilityRequiresEnabled && !locatorActionabilityEnabled(node)) {
+      return {
+        ok: false,
+        error: "Locator actionability failed for " + locatorActionabilityKind + ": element is disabled",
+        code: "disabled"
+      };
+    }
+
+    if (locatorActionabilityRequiresEditable && !locatorActionabilityEditable(node)) {
+      return {
+        ok: false,
+        error: "Locator actionability failed for " + locatorActionabilityKind + ": element is not editable",
+        code: "not_editable"
+      };
+    }
+
+    if (locatorActionabilityRequiresPointer) {
+      const receivesPointer = locatorActionabilityReceivesPointer(node, rect);
+      if (!receivesPointer.ok) return receivesPointer;
+    }
+
+    return { ok: true, rect };
+  };
+`;
 }
 
 function uploadTargetExpression(options: { ref: string | null; locator: any; marker: string }) {
@@ -2332,14 +4317,44 @@ function uploadTargetExpression(options: { ref: string | null; locator: any; mar
     };
   }
 
-  if (el.tagName.toLowerCase() !== "input" || (el.getAttribute("type") || "").toLowerCase() !== "file") {
+  const resolveFileInput = (candidate) => {
+    if (!candidate || !(candidate instanceof Element)) return null;
+    const tag = candidate.tagName.toLowerCase();
+    const type = (candidate.getAttribute("type") || "").toLowerCase();
+
+    if (tag === "input" && type === "file") {
+      return candidate;
+    }
+
+    if (tag === "label") {
+      if (candidate.control && candidate.control.matches?.("input[type=file]")) {
+        return candidate.control;
+      }
+
+      const nested = candidate.querySelector?.("input[type=file]");
+      if (nested) return nested;
+    }
+
+    if (candidate.hasAttribute?.("for")) {
+      const control = document.getElementById(candidate.getAttribute("for") || "");
+      if (control?.matches?.("input[type=file]")) return control;
+    }
+
+    const childInput = candidate.querySelector?.("input[type=file]");
+    if (childInput) return childInput;
+
+    return null;
+  };
+  const fileInput = resolveFileInput(el);
+
+  if (!fileInput) {
     return {
       ok: false,
-      error: "Element is not input[type=file]"
+      error: "Element does not resolve to input[type=file]"
     };
   }
 
-  el.setAttribute("data-agent-upload-marker", marker);
+  fileInput.setAttribute("data-agent-upload-marker", marker);
   el.scrollIntoView({
     block: "center",
     inline: "center",
@@ -2371,6 +4386,14 @@ function locatorResolverSource(locator: any) {
   const locatorRole = ${JSON.stringify(locator.role ?? "")};
   const locatorName = ${JSON.stringify(locator.name ?? "")};
   const locatorTestId = ${JSON.stringify(locator.testId ?? "")};
+  const locatorFrameSelectors = ${JSON.stringify(locator.frameSelectors ?? [])};
+  const locatorAnd = ${JSON.stringify(locator.and ?? null)};
+  const locatorOr = ${JSON.stringify(locator.or ?? null)};
+  const locatorHas = ${JSON.stringify(locator.has ?? null)};
+  const locatorHasNot = ${JSON.stringify(locator.hasNot ?? null)};
+  const locatorHasText = ${JSON.stringify(locator.hasText ?? "")};
+  const locatorHasNotText = ${JSON.stringify(locator.hasNotText ?? "")};
+  const locatorVisible = ${typeof locator.visible === "boolean" ? JSON.stringify(locator.visible) : "undefined"};
   const exact = ${locator.exact === true ? "true" : "false"};
   const index = ${JSON.stringify(locator.index ?? 0)};
   const strict = ${locator.strict === true ? "true" : "false"};
@@ -2381,6 +4404,191 @@ function locatorResolverSource(locator: any) {
     if (!e) return false;
     return exact ? a === e : a.toLowerCase().includes(e.toLowerCase());
   };
+  const locatorTextMatchesForConfig = (actual, expected, config = locator) => {
+    const a = locatorNormalizeText(actual);
+    const e = locatorNormalizeText(expected);
+    if (!e) return false;
+    return config.exact === true ? a === e : a.toLowerCase().includes(e.toLowerCase());
+  };
+  const locatorQueryAllPiercingOpenShadow = (query, root = document) => {
+    const out = [];
+    const seen = new Set();
+    const visit = (scope) => {
+      let matches = [];
+      try {
+        matches = Array.from(scope.querySelectorAll(query));
+      } catch {
+        matches = [];
+      }
+
+      for (const el of matches) {
+        if (!seen.has(el)) {
+          seen.add(el);
+          out.push(el);
+        }
+      }
+
+      let descendants = [];
+      try {
+        descendants = Array.from(scope.querySelectorAll("*"));
+      } catch {
+        descendants = [];
+      }
+
+      for (const el of descendants) {
+        if (el.shadowRoot) visit(el.shadowRoot);
+      }
+    };
+
+    visit(root);
+    return out;
+  };
+  const locatorResolveFrameRoot = (config, root = document) => {
+    let currentRoot = root;
+    const selectors = Array.isArray(config?.frameSelectors) ? config.frameSelectors : [];
+
+    for (const frameSelector of selectors) {
+      const frame = locatorQueryAllPiercingOpenShadow(frameSelector, currentRoot)
+        .find((candidate) => candidate instanceof HTMLIFrameElement || candidate instanceof HTMLFrameElement);
+
+      if (!frame) {
+        throw new Error("Frame locator could not find frame: " + frameSelector);
+      }
+
+      let frameDocument = null;
+      try {
+        frameDocument = frame.contentDocument;
+      } catch {
+        frameDocument = null;
+      }
+
+      if (!frameDocument) {
+        throw new Error("Frame locator cannot access cross-origin or unavailable frame: " + frameSelector);
+      }
+
+      currentRoot = frameDocument;
+    }
+
+    return currentRoot;
+  };
+  const locatorRectInTopViewport = (el) => {
+    const rect = el.getBoundingClientRect();
+    let x = rect.left;
+    let y = rect.top;
+    let currentWindow = el.ownerDocument?.defaultView || null;
+
+    while (currentWindow && currentWindow !== window) {
+      const frame = currentWindow.frameElement;
+      if (!frame) break;
+      const frameRect = frame.getBoundingClientRect();
+      x += frameRect.left;
+      y += frameRect.top;
+      currentWindow = currentWindow.parent;
+    }
+
+    return {
+      x,
+      y,
+      left: x,
+      top: y,
+      right: x + rect.width,
+      bottom: y + rect.height,
+      width: rect.width,
+      height: rect.height
+    };
+  };
+  const locatorElementFromPointDeep = (x, y) => {
+    let current = document.elementFromPoint(x, y);
+    let localX = x;
+    let localY = y;
+
+    while (current) {
+      if (current?.shadowRoot) {
+        const nested = current.shadowRoot.elementFromPoint?.(localX, localY);
+        if (nested && nested !== current) {
+          current = nested;
+          continue;
+        }
+      }
+
+      if (current instanceof HTMLIFrameElement || current instanceof HTMLFrameElement) {
+        let frameDocument = null;
+        try {
+          frameDocument = current.contentDocument;
+        } catch {
+          frameDocument = null;
+        }
+
+        if (!frameDocument) break;
+        const frameRect = current.getBoundingClientRect();
+        localX -= frameRect.left;
+        localY -= frameRect.top;
+        const nested = frameDocument.elementFromPoint(localX, localY);
+        if (!nested || nested === current) break;
+        current = nested;
+        continue;
+      }
+
+      break;
+    }
+
+    return current;
+  };
+  const locatorRootFor = (el) => {
+    const root = el?.getRootNode?.();
+    return root && typeof root.querySelectorAll === "function" ? root : document;
+  };
+  const locatorGetElementById = (root, id) => {
+    if (!id) return null;
+    if (typeof root.getElementById === "function") return root.getElementById(id);
+    try {
+      return root.querySelector("#" + CSS.escape(id));
+    } catch {
+      return null;
+    }
+  };
+  const locatorIsHiddenForName = (node) => {
+    if (!(node instanceof Element)) return false;
+    if (node.hidden || node.getAttribute("aria-hidden") === "true") return true;
+    const style = getComputedStyle(node);
+    return style.display === "none" || style.visibility === "hidden";
+  };
+  const locatorTextForName = (node) => {
+    if (!node) return "";
+    if (node.nodeType === Node.TEXT_NODE) return node.nodeValue || "";
+    if (!(node instanceof Element) || locatorIsHiddenForName(node)) return "";
+    const tag = node.tagName.toLowerCase();
+    if (tag === "script" || tag === "style") return "";
+    return Array.from(node.childNodes).map((child) => locatorTextForName(child)).join(" ");
+  };
+  const locatorTextForFilter = (el) => String(el?.textContent || "");
+  const locatorNativeLabelText = (el) => {
+    const labels = Array.from(el.labels || []);
+    const text = labels.map((label) => locatorTextForName(label)).join(" ");
+    return locatorNormalizeText(text) ? text : "";
+  };
+  const locatorSvgTitle = (el) => {
+    if (el.tagName.toLowerCase() !== "svg") return "";
+    return locatorTextForName(el.querySelector("title"));
+  };
+  const locatorControlValueText = (el) => {
+    const tag = el.tagName.toLowerCase();
+    const type = (el.getAttribute("type") || "").toLowerCase();
+    if (tag === "input" && ["button", "submit", "reset", "image"].includes(type)) {
+      return el.getAttribute("value") || el.value || (type === "submit" ? "Submit" : type === "reset" ? "Reset" : "");
+    }
+    return "";
+  };
+  const locatorElementVisible = (el) => {
+    if (!el) return false;
+    const style = getComputedStyle(el);
+    const rect = locatorRectInTopViewport(el);
+    return style.visibility !== "hidden" &&
+      style.display !== "none" &&
+      style.opacity !== "0" &&
+      rect.width > 0 &&
+      rect.height > 0;
+  };
   const locatorImplicitRole = (el) => {
     const explicit = el.getAttribute("role");
     if (explicit) return explicit;
@@ -2388,6 +4596,8 @@ function locatorResolverSource(locator: any) {
     const type = (el.getAttribute("type") || "").toLowerCase();
     if (tag === "a" && el.hasAttribute("href")) return "link";
     if (tag === "button") return "button";
+    if (tag === "img") return "img";
+    if (tag === "svg") return "img";
     if (tag === "select") return "combobox";
     if (tag === "textarea") return "textbox";
     if (tag === "input") {
@@ -2401,69 +4611,196 @@ function locatorResolverSource(locator: any) {
   const locatorAccessibleName = (el) => {
     const labelledBy = el.getAttribute("aria-labelledby");
     if (labelledBy) {
+      const root = locatorRootFor(el);
       const text = labelledBy
         .split(/\\s+/)
-        .map((id) => document.getElementById(id)?.innerText || document.getElementById(id)?.textContent || "")
+        .map((id) => {
+          const label = locatorGetElementById(root, id) || document.getElementById(id);
+          return locatorTextForName(label);
+        })
         .join(" ");
       if (locatorNormalizeText(text)) return text;
     }
-    const attrs = ["aria-label", "placeholder", "title", "alt", "value", "name", "id"];
-    for (const attr of attrs) {
-      const value = el.getAttribute(attr);
-      if (locatorNormalizeText(value)) return value;
+
+    for (const candidate of [
+      el.getAttribute("aria-label"),
+      locatorNativeLabelText(el),
+      el.getAttribute("alt"),
+      locatorSvgTitle(el),
+      locatorControlValueText(el),
+      el.getAttribute("placeholder"),
+      el.getAttribute("title"),
+      locatorTextForName(el),
+      el.getAttribute("name"),
+      el.getAttribute("id")
+    ]) {
+      if (locatorNormalizeText(candidate)) return candidate;
     }
-    return el.innerText || el.textContent || "";
+
+    return "";
   };
   const locatorElementsForKind = () => {
     if (locatorKind === "css") {
-      return Array.from(document.querySelectorAll(selector));
+      return locatorQueryAllPiercingOpenShadow(selector);
     }
 
     if (locatorKind === "testId") {
-      return Array.from(document.querySelectorAll("[data-testid]"))
+      return locatorQueryAllPiercingOpenShadow("[data-testid]")
         .filter((el) => locatorTextMatches(el.getAttribute("data-testid"), locatorTestId));
     }
 
     if (locatorKind === "placeholder") {
-      return Array.from(document.querySelectorAll("input[placeholder], textarea[placeholder]"))
+      return locatorQueryAllPiercingOpenShadow("input[placeholder], textarea[placeholder]")
         .filter((el) => locatorTextMatches(el.getAttribute("placeholder"), locatorText));
     }
 
     if (locatorKind === "label") {
       const matches = [];
-      for (const label of Array.from(document.querySelectorAll("label"))) {
-        if (!locatorTextMatches(label.innerText || label.textContent || "", locatorText)) continue;
-        const control = label.control || (label.getAttribute("for") ? document.getElementById(label.getAttribute("for")) : null);
+      for (const label of locatorQueryAllPiercingOpenShadow("label")) {
+        if (!locatorTextMatches(locatorTextForName(label), locatorText)) continue;
+        const root = locatorRootFor(label);
+        const control = label.control || (label.getAttribute("for") ? locatorGetElementById(root, label.getAttribute("for")) : null);
         if (control) matches.push(control);
       }
-      for (const el of Array.from(document.querySelectorAll("[aria-label], [aria-labelledby]"))) {
+      for (const el of locatorQueryAllPiercingOpenShadow("[aria-label], [aria-labelledby]")) {
         if (locatorTextMatches(locatorAccessibleName(el), locatorText)) matches.push(el);
       }
       return Array.from(new Set(matches));
     }
 
     if (locatorKind === "role") {
-      return Array.from(document.querySelectorAll("*"))
+      return locatorQueryAllPiercingOpenShadow("*")
         .filter((el) => locatorImplicitRole(el) === locatorRole)
         .filter((el) => !locatorName || locatorTextMatches(locatorAccessibleName(el), locatorName));
     }
 
     if (locatorKind === "text") {
-      const candidates = Array.from(document.querySelectorAll("body *"))
-        .filter((el) => locatorTextMatches(el.innerText || el.textContent || "", locatorText));
+      const candidates = locatorQueryAllPiercingOpenShadow("*")
+        .filter((el) => locatorTextMatches(locatorTextForName(el), locatorText));
       return candidates.filter((el) => {
-        return !Array.from(el.children).some((child) => locatorTextMatches(child.innerText || child.textContent || "", locatorText));
+        return !Array.from(el.children).some((child) => locatorTextMatches(locatorTextForName(child), locatorText));
       });
     }
 
     return [];
+  };
+  const locatorElementsForConfig = (config, root = document) => {
+    const searchRoot = locatorResolveFrameRoot(config, root);
+    const configKind = config?.kind;
+    const configSelector = config?.selector || "";
+    const configText = config?.text ?? config?.name ?? "";
+    const configRole = config?.role || "";
+    const configName = typeof config?.name === "string" ? config.name : "";
+    const configTestId = config?.testId ?? config?.text ?? "";
+    const textMatches = (actual, expected) => locatorTextMatchesForConfig(actual, expected, config);
+
+    if (configKind === "css") {
+      return locatorQueryAllPiercingOpenShadow(configSelector, searchRoot);
+    }
+
+    if (configKind === "testId") {
+      return locatorQueryAllPiercingOpenShadow("[data-testid]", searchRoot)
+        .filter((el) => textMatches(el.getAttribute("data-testid"), configTestId));
+    }
+
+    if (configKind === "placeholder") {
+      return locatorQueryAllPiercingOpenShadow("input[placeholder], textarea[placeholder]", searchRoot)
+        .filter((el) => textMatches(el.getAttribute("placeholder"), configText));
+    }
+
+    if (configKind === "label") {
+      const matches = [];
+      for (const label of locatorQueryAllPiercingOpenShadow("label", searchRoot)) {
+        if (!textMatches(locatorTextForName(label), configText)) continue;
+        const labelRoot = locatorRootFor(label);
+        const control = label.control || (label.getAttribute("for") ? locatorGetElementById(labelRoot, label.getAttribute("for")) : null);
+        if (control) matches.push(control);
+      }
+      for (const el of locatorQueryAllPiercingOpenShadow("[aria-label], [aria-labelledby]", searchRoot)) {
+        if (textMatches(locatorAccessibleName(el), configText)) matches.push(el);
+      }
+      return Array.from(new Set(matches));
+    }
+
+    if (configKind === "role") {
+      return locatorQueryAllPiercingOpenShadow("*", searchRoot)
+        .filter((el) => locatorImplicitRole(el) === configRole)
+        .filter((el) => !configName || textMatches(locatorAccessibleName(el), configName));
+    }
+
+    if (configKind === "text") {
+      const candidates = locatorQueryAllPiercingOpenShadow("*", searchRoot)
+        .filter((el) => textMatches(locatorTextForName(el), configText));
+      return candidates.filter((el) => {
+        return !Array.from(el.children).some((child) => textMatches(locatorTextForName(child), configText));
+      });
+    }
+
+    return [];
+  };
+  const locatorFilteredElementsForConfig = (config, root = document) => {
+    let elements = locatorElementsForConfig(config, root);
+
+    if (config?.and) {
+      const andElements = new Set(locatorFilteredElementsForConfig(config.and, root));
+      elements = elements.filter((el) => andElements.has(el));
+    }
+
+    if (config?.hasText) {
+      elements = elements.filter((el) => locatorTextMatchesForConfig(locatorTextForFilter(el), config.hasText, config));
+    }
+
+    if (config?.hasNotText) {
+      elements = elements.filter((el) => !locatorTextMatchesForConfig(locatorTextForFilter(el), config.hasNotText, config));
+    }
+
+    if (typeof config?.visible === "boolean") {
+      elements = elements.filter((el) => locatorElementVisible(el) === config.visible);
+    }
+
+    if (config?.has) {
+      elements = elements.filter((el) => locatorFilteredElementsForConfig(config.has, el).length > 0);
+    }
+
+    if (config?.hasNot) {
+      elements = elements.filter((el) => locatorFilteredElementsForConfig(config.hasNot, el).length === 0);
+    }
+
+    if (config?.or) {
+      const seen = new Set(elements);
+      for (const el of locatorFilteredElementsForConfig(config.or, root)) {
+        if (!seen.has(el)) {
+          seen.add(el);
+          elements.push(el);
+        }
+      }
+    }
+
+    return elements;
+  };
+  const locatorFilteredElements = () => {
+    let elements = locatorFilteredElementsForConfig(locator, document);
+
+    if (locatorHasText) {
+      elements = elements.filter((el) => locatorTextMatches(locatorTextForFilter(el), locatorHasText));
+    }
+
+    if (locatorHasNotText) {
+      elements = elements.filter((el) => !locatorTextMatches(locatorTextForFilter(el), locatorHasNotText));
+    }
+
+    if (typeof locatorVisible === "boolean") {
+      elements = elements.filter((el) => locatorElementVisible(el) === locatorVisible);
+    }
+
+    return elements;
   };
 
   const resolveLocator = () => {
     let elements;
 
     try {
-      elements = locatorElementsForKind();
+      elements = locatorFilteredElements();
     } catch (error) {
       return {
         ok: false,
@@ -2536,12 +4873,16 @@ function locatorQueryExpression(locator: any, kind: string, args: any) {
     value = isVisible(first);
   } else if (kind === "isEnabled") {
     value = isEnabled(first);
+  } else if (kind === "inputValue") {
+    value = first && "value" in first ? first.value : "";
+  } else if (kind === "isChecked") {
+    value = Boolean(first && ("checked" in first ? first.checked : first.getAttribute("aria-checked") === "true"));
   } else if (kind === "boundingBox") {
     if (first) {
-      const rect = first.getBoundingClientRect();
+      const rect = locatorRectInTopViewport(first);
       value = {
-        x: rect.left,
-        y: rect.top,
+        x: rect.x,
+        y: rect.y,
         width: rect.width,
         height: rect.height
       };
@@ -2557,10 +4898,11 @@ function locatorQueryExpression(locator: any, kind: string, args: any) {
 }
 
 function locatorMutationExpression(locator: any, kind: string, args: any) {
-  return `(() => {
+  return `(async () => {
   const kind = ${JSON.stringify(kind)};
   const args = ${JSON.stringify(args && typeof args === "object" ? args : {})};
   ${locatorResolverSource(locator)}
+  ${locatorActionabilitySource(kind, args)}
   const resolved = resolveLocator();
 
   if (!resolved.ok) {
@@ -2568,19 +4910,8 @@ function locatorMutationExpression(locator: any, kind: string, args: any) {
   }
 
   const el = resolved.element;
-  if (!el) {
-    return {
-      ok: false,
-      error: "Element target not found",
-      count: resolved.count
-    };
-  }
-
-  el.scrollIntoView({
-    block: "center",
-    inline: "center",
-    behavior: "instant"
-  });
+  const actionability = await checkLocatorActionability(el);
+  if (!actionability.ok) return actionability;
   el.focus();
 
   if (kind === "setChecked") {
@@ -2637,12 +4968,14 @@ async function dispatchMouseClick(
   const button = normalizeMouseButton(params.button);
   const clickCount = Math.max(1, Math.floor(numberOrDefault(params.clickCount, 1)));
   const buttons = buttonToButtons(button);
+  const modifiers = normalizePointerModifiers(params.modifiers);
 
   await cdp(tabId, "Input.dispatchMouseEvent", {
     type: "mouseMoved",
     x,
     y,
-    button: "none"
+    button: "none",
+    modifiers
   });
 
   await cdp(tabId, "Input.dispatchMouseEvent", {
@@ -2651,7 +4984,8 @@ async function dispatchMouseClick(
     y,
     button,
     buttons,
-    clickCount
+    clickCount,
+    modifiers
   });
 
   await cdp(tabId, "Input.dispatchMouseEvent", {
@@ -2660,7 +4994,62 @@ async function dispatchMouseClick(
     y,
     button,
     buttons: 0,
-    clickCount
+    clickCount,
+    modifiers
+  });
+}
+
+async function dispatchMouseDrag(
+  tabId: number,
+  path: Array<{ x: number; y: number }>,
+  params: ActionParams = {}
+) {
+  const button = normalizeMouseButton(params.button);
+  const buttons = buttonToButtons(button);
+  const modifiers = normalizePointerModifiers(params.modifiers);
+  const [start, ...rest] = path;
+
+  await cdp(tabId, "Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: start.x,
+    y: start.y,
+    button: "none",
+    modifiers
+  });
+
+  await cdp(tabId, "Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x: start.x,
+    y: start.y,
+    button,
+    buttons,
+    clickCount: 1,
+    modifiers
+  });
+
+  for (const point of rest) {
+    await showCursor(tabId, point.x, point.y, {
+      arrivalTimeoutMs: 250
+    });
+    await cdp(tabId, "Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: point.x,
+      y: point.y,
+      button,
+      buttons,
+      modifiers
+    });
+  }
+
+  const end = path[path.length - 1];
+  await cdp(tabId, "Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x: end.x,
+    y: end.y,
+    button,
+    buttons: 0,
+    clickCount: 1,
+    modifiers
   });
 }
 
@@ -2668,13 +5057,66 @@ async function locateElementByRef(tabId: number, ref: string) {
   const evaluated = await cdp(tabId, "Runtime.evaluate", {
     expression: `(() => {
   const ref = ${JSON.stringify(ref)};
+  const queryOnePiercingOpenShadow = (query, root = document) => {
+    try {
+      const direct = root.querySelector(query);
+      if (direct) return direct;
+    } catch {
+      return null;
+    }
+
+    let descendants = [];
+    try {
+      descendants = Array.from(root.querySelectorAll("*"));
+    } catch {
+      descendants = [];
+    }
+
+    for (const el of descendants) {
+      if (!el.shadowRoot) continue;
+      const found = queryOnePiercingOpenShadow(query, el.shadowRoot);
+      if (found) return found;
+    }
+
+    return null;
+  };
+  const rectInTopViewport = (node) => {
+    const rect = node.getBoundingClientRect();
+    let x = rect.left;
+    let y = rect.top;
+    let currentWindow = node.ownerDocument?.defaultView || null;
+
+    while (currentWindow && currentWindow !== window) {
+      const frame = currentWindow.frameElement;
+      if (!frame) break;
+      const frameRect = frame.getBoundingClientRect();
+      x += frameRect.left;
+      y += frameRect.top;
+      currentWindow = currentWindow.parent;
+    }
+
+    return {
+      x,
+      y,
+      width: rect.width,
+      height: rect.height
+    };
+  };
   const store = window.__agentBrowserController?.elements || {};
-  const el = store[ref] || document.querySelector("[data-agent-browser-ref='" + CSS.escape(ref) + "']");
+  const refSelector = "[data-agent-browser-ref='" + CSS.escape(ref) + "']";
+  const el = store[ref] || queryOnePiercingOpenShadow(refSelector);
 
   if (!el) {
     return {
       ok: false,
       error: "Element ref not found: " + ref
+    };
+  }
+
+  if (!el.isConnected) {
+    return {
+      ok: false,
+      error: "Element ref is detached: " + ref
     };
   }
 
@@ -2684,15 +5126,15 @@ async function locateElementByRef(tabId: number, ref: string) {
     behavior: "instant"
   });
 
-  const rect = el.getBoundingClientRect();
+  const rect = rectInTopViewport(el);
 
   return {
     ok: true,
-    x: rect.left + rect.width / 2,
-    y: rect.top + rect.height / 2,
+    x: rect.x + rect.width / 2,
+    y: rect.y + rect.height / 2,
     rect: {
-      x: rect.left,
-      y: rect.top,
+      x: rect.x,
+      y: rect.y,
       width: rect.width,
       height: rect.height
     }
@@ -2722,6 +5164,13 @@ async function focusAndClearElement(tabId: number, ref: string) {
     return {
       ok: false,
       error: "Element ref not found: " + ref
+    };
+  }
+
+  if (!el.isConnected) {
+    return {
+      ok: false,
+      error: "Element ref is detached: " + ref
     };
   }
 
@@ -2893,7 +5342,7 @@ async function showCursor(
   } = {}
 ) {
   const sessionId = sessionIdForTab(tabId);
-  const turnId = activeActionContext?.actionId ?? null;
+  const turnId = activeActionContext?.turnId ?? null;
   const moveSequence = ++nextCursorMoveSequence;
   const state: CursorOverlayState = {
     moveSequence,
@@ -3114,8 +5563,17 @@ async function cdp(
   tabId: number,
   method: string,
   params: ActionParams = {},
-  options: { timeoutMs?: number } = {}
+  options: { timeoutMs?: number; targetId?: string | null } = {}
 ): Promise<any> {
+  if (typeof options.targetId === "string" && options.targetId.trim()) {
+    return debuggerManager.sendToTarget(
+      options.targetId,
+      method,
+      params,
+      options
+    );
+  }
+
   return debuggerManager.send(tabId, method, params, options);
 }
 
@@ -3166,6 +5624,60 @@ function waitForDebuggerEvents(
     }
 
     chrome.debugger.onEvent.addListener(listener);
+  });
+}
+
+function waitForNetworkIdle(
+  tabId: number,
+  timeoutMs: number,
+  idleMs: number
+): Promise<{ reason: string }> {
+  const boundedTimeoutMs =
+    Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 15000;
+  const boundedIdleMs =
+    Number.isFinite(idleMs) && idleMs > 0 ? Math.max(50, idleMs) : 500;
+
+  return new Promise((resolve) => {
+    let done = false;
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    const timeoutTimer = setTimeout(() => finish("timeout"), boundedTimeoutMs);
+
+    const listener = (source: chrome.debugger.Debuggee, method: string, params?: any) => {
+      if (source.tabId !== tabId || !isNetworkRequestLifecycleEvent(method)) {
+        return;
+      }
+
+      trackNetworkDebuggerEvent(source, method, params);
+      scheduleIdleCheck();
+    };
+
+    function scheduleIdleCheck() {
+      if (idleTimer) {
+        clearTimeout(idleTimer);
+        idleTimer = null;
+      }
+
+      if ((networkRequestsByTab.get(tabId)?.size ?? 0) === 0) {
+        idleTimer = setTimeout(() => finish("networkidle"), boundedIdleMs);
+      }
+    }
+
+    function finish(reason: string) {
+      if (done) {
+        return;
+      }
+
+      done = true;
+      clearTimeout(timeoutTimer);
+      if (idleTimer) {
+        clearTimeout(idleTimer);
+      }
+      chrome.debugger.onEvent.removeListener(listener);
+      resolve({ reason });
+    }
+
+    chrome.debugger.onEvent.addListener(listener);
+    scheduleIdleCheck();
   });
 }
 
@@ -3247,8 +5759,8 @@ async function selectorState(tabId: number, selector: string) {
       className: typeof el.className === "string" ? el.className : undefined,
       text: String(el.innerText || el.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 300),
       rect: {
-        x: Math.round(rect.left),
-        y: Math.round(rect.top),
+        x: Math.round(rect.x),
+        y: Math.round(rect.y),
         width: Math.round(rect.width),
         height: Math.round(rect.height)
       }
@@ -3379,9 +5891,16 @@ function textStateIsSatisfied(match: any, state: string) {
   return state === "hidden" ? !found : found;
 }
 
-function summarizeTab(tab: chrome.tabs.Tab) {
+async function summarizeTab(tab: chrome.tabs.Tab) {
   const sessionId =
     typeof tab.id === "number" ? sessionIdForTab(tab.id) : null;
+  const groupLabel = await tabGroupLabel(tab.groupId);
+  const openedAt =
+    typeof tab.id === "number" ? tabOpenedAt.get(tab.id) ?? null : null;
+  const lastFocusedAt =
+    typeof (tab as any).lastAccessed === "number" && Number.isFinite((tab as any).lastAccessed)
+      ? (tab as any).lastAccessed
+      : null;
 
   return {
     id: tab.id,
@@ -3390,9 +5909,27 @@ function summarizeTab(tab: chrome.tabs.Tab) {
     url: tab.url,
     active: tab.active,
     groupId: tab.groupId,
+    groupLabel,
+    openedAt,
+    lastFocusedAt,
     sessionId,
     controlled: sessionId != null
   };
+}
+
+async function tabGroupLabel(groupId: number | undefined) {
+  if (typeof groupId !== "number" || groupId < 0 || !chrome.tabGroups?.get) {
+    return null;
+  }
+
+  try {
+    const group = await chrome.tabGroups.get(groupId);
+    return typeof group.title === "string" && group.title.trim()
+      ? group.title
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function listCapabilities() {
@@ -3400,6 +5937,8 @@ function listCapabilities() {
 
   return [
     browserCapability("browser.tabs", "List, create, select, and finalize controlled tabs.", true),
+    browserCapability("browser.policy.hosts", "Require approval for new hosts and store session, persistent, and blocked host decisions.", true),
+    browserCapability("browser.policy.confirmation", "Classify browser actions that require confirmation before execution.", true),
     browserCapability("browser.user.openTabs", "List user-visible claimable Chrome tabs with claim tokens.", true),
     browserCapability("browser.user.claimTab", "Claim a user tab with a claim token or current-tab fallback.", true),
     browserCapability("browser.session.name", "Name the current browser automation session.", true),
@@ -3407,12 +5946,13 @@ function listCapabilities() {
     browserCapability("downloads", "List and wait for Chrome downloads.", true),
     browserCapability("dev.logs", "Read buffered console/log/runtime exception entries.", true),
     browserCapability("rawCdp", "Send raw Chrome DevTools Protocol commands.", true),
-    browserCapability("clipboard", "Read and write browser clipboard content.", false, "not_implemented"),
-    browserCapability("history", "Read user browsing history.", false, "not_implemented"),
+    browserCapability("clipboard", "Read and write browser clipboard text with explicit per-request confirmation.", true),
+    browserCapability("browser.user.history", "Read user browsing history with explicit per-request confirmation.", true),
     tabCapability("tab.navigation", "Navigate, reload, and read URL/title for tabs.", true),
     tabCapability("tab.cua", "Coordinate mouse, keyboard, and scroll interactions.", true),
     tabCapability("tab.domSnapshot", "Capture DOMSnapshot output through CDP.", true),
     tabCapability("tab.accessibility", "Read accessibility tree data through CDP.", true),
+    tabCapability("tab.cdp.target", "Send raw CDP commands to a specific DevTools targetId under a controlled tab.", true),
     tabCapability("tab.locator.css", "Use CSS selector based waits/actions.", true),
     tabCapability("tab.locator.semantic", "Use role/label/text/test-id locator engine.", true),
     tabCapability("tab.upload.locator", "Upload files through selector or locator targets.", true),
@@ -3503,6 +6043,15 @@ async function findDownloads(params: ActionParams = {}) {
   return downloads.filter((download) => downloadMatches(download, params));
 }
 
+async function assertBrowserBlocklistForDownloads(
+  downloads: chrome.downloads.DownloadItem[],
+  sessionId: unknown
+) {
+  for (const download of downloads) {
+    await assertBrowserBlocklistForUrl("download", download.finalUrl || download.url, sessionId);
+  }
+}
+
 function downloadMatches(
   download: chrome.downloads.DownloadItem,
   params: ActionParams = {}
@@ -3578,6 +6127,49 @@ function shouldBufferDebuggerEvent(method: string) {
     "Runtime.exceptionThrown",
     "Log.entryAdded"
   ].includes(method);
+}
+
+function isNetworkRequestLifecycleEvent(method: string) {
+  return (
+    method === "Network.requestWillBeSent" ||
+    method === "Network.loadingFinished" ||
+    method === "Network.loadingFailed"
+  );
+}
+
+function trackNetworkDebuggerEvent(
+  source: chrome.debugger.Debuggee,
+  method: string,
+  params?: any
+) {
+  if (typeof source.tabId !== "number" || !isNetworkRequestLifecycleEvent(method)) {
+    return;
+  }
+
+  const requestId =
+    typeof params?.requestId === "string" && params.requestId.trim()
+      ? params.requestId.trim()
+      : null;
+
+  if (!requestId) {
+    return;
+  }
+
+  const requests = networkRequestsByTab.get(source.tabId) ?? new Set<string>();
+
+  if (method === "Network.requestWillBeSent") {
+    requests.add(requestId);
+    networkRequestsByTab.set(source.tabId, requests);
+    return;
+  }
+
+  requests.delete(requestId);
+
+  if (requests.size === 0) {
+    networkRequestsByTab.delete(source.tabId);
+  } else {
+    networkRequestsByTab.set(source.tabId, requests);
+  }
 }
 
 function summarizeDebuggerEvent(method: string, params: any) {
@@ -3822,11 +6414,12 @@ function devLogFromEvent(event: ActionParams) {
     return {
       sequence: event.sequence,
       time: event.time,
+      timestamp: new Date(event.time).toISOString(),
       sessionId: event.sessionId ?? null,
       tabId: event.tabId ?? null,
       source: "console",
       level: normalizeDevLogLevel(params.type),
-      text: truncateString(args.join(" "), 1000),
+      text: truncateAndRedactString(args.join(" "), 1000),
       url: firstStackFrameUrl(params.stackTrace),
       lineNumber: firstStackFrameNumber(params.stackTrace, "lineNumber"),
       columnNumber: firstStackFrameNumber(params.stackTrace, "columnNumber")
@@ -3837,11 +6430,12 @@ function devLogFromEvent(event: ActionParams) {
     return {
       sequence: event.sequence,
       time: event.time,
+      timestamp: new Date(event.time).toISOString(),
       sessionId: event.sessionId ?? null,
       tabId: event.tabId ?? null,
       source: "log",
       level: normalizeDevLogLevel(params.level),
-      text: truncateString(params.text, 1000),
+      text: truncateAndRedactString(params.text, 1000),
       url: params.url,
       lineNumber: params.lineNumber,
       columnNumber: params.columnNumber
@@ -3852,11 +6446,12 @@ function devLogFromEvent(event: ActionParams) {
     return {
       sequence: event.sequence,
       time: event.time,
+      timestamp: new Date(event.time).toISOString(),
       sessionId: event.sessionId ?? null,
       tabId: event.tabId ?? null,
       source: "exception",
       level: "error",
-      text: truncateString(
+      text: truncateAndRedactString(
         params.text ||
           (params.exception && typeof params.exception === "object"
             ? params.exception.description
@@ -3930,24 +6525,134 @@ function readAxValue(payload: any) {
 }
 
 function normalizeKey(key: string) {
-  const map = {
+  const parsed = parseKeyCombo(key);
+  const map: Record<string, { key: string; code: string; keyCode: number }> = {
     Enter: { key: "Enter", code: "Enter", keyCode: 13 },
     Tab: { key: "Tab", code: "Tab", keyCode: 9 },
     Escape: { key: "Escape", code: "Escape", keyCode: 27 },
     Backspace: { key: "Backspace", code: "Backspace", keyCode: 8 },
+    Delete: { key: "Delete", code: "Delete", keyCode: 46 },
+    Space: { key: " ", code: "Space", keyCode: 32 },
+    Home: { key: "Home", code: "Home", keyCode: 36 },
+    End: { key: "End", code: "End", keyCode: 35 },
+    PageUp: { key: "PageUp", code: "PageUp", keyCode: 33 },
+    PageDown: { key: "PageDown", code: "PageDown", keyCode: 34 },
     ArrowUp: { key: "ArrowUp", code: "ArrowUp", keyCode: 38 },
     ArrowDown: { key: "ArrowDown", code: "ArrowDown", keyCode: 40 },
     ArrowLeft: { key: "ArrowLeft", code: "ArrowLeft", keyCode: 37 },
-    ArrowRight: { key: "ArrowRight", code: "ArrowRight", keyCode: 39 }
+    ArrowRight: { key: "ArrowRight", code: "ArrowRight", keyCode: 39 },
+    Alt: { key: "Alt", code: "AltLeft", keyCode: 18 },
+    Control: { key: "Control", code: "ControlLeft", keyCode: 17 },
+    ControlOrMeta: isMacLikePlatform()
+      ? { key: "Meta", code: "MetaLeft", keyCode: 91 }
+      : { key: "Control", code: "ControlLeft", keyCode: 17 },
+    Meta: { key: "Meta", code: "MetaLeft", keyCode: 91 },
+    Shift: { key: "Shift", code: "ShiftLeft", keyCode: 16 }
   };
 
-  const normalized = map[key];
+  const normalized = map[parsed.key];
 
   if (!normalized) {
     throw new Error(`Unsupported key: ${key}`);
   }
 
-  return normalized;
+  return {
+    ...normalized,
+    modifiers: modifierBitmask(parsed.modifiers)
+  };
+}
+
+function parseKeyCombo(key: string) {
+  const parts = key.split("+").map((part) => part.trim()).filter(Boolean);
+
+  if (parts.length === 0) {
+    throw new Error("Unsupported key: empty key");
+  }
+
+  if (parts.length === 1) {
+    return {
+      modifiers: [],
+      key: parts[0]
+    };
+  }
+
+  return {
+    modifiers: parts.slice(0, -1),
+    key: parts[parts.length - 1]
+  };
+}
+
+function modifierBitmask(modifiers: string[]) {
+  let value = 0;
+
+  for (const modifier of modifiers) {
+    const normalized = modifier === "ControlOrMeta"
+      ? isMacLikePlatform() ? "Meta" : "Control"
+      : modifier;
+
+    if (normalized === "Alt") {
+      value |= 1;
+    } else if (normalized === "Control") {
+      value |= 2;
+    } else if (normalized === "Meta") {
+      value |= 4;
+    } else if (normalized === "Shift") {
+      value |= 8;
+    } else {
+      throw new Error(`Unsupported key modifier: ${modifier}`);
+    }
+  }
+
+  return value;
+}
+
+function isMacLikePlatform() {
+  if (typeof navigator === "undefined") {
+    return false;
+  }
+
+  return /Mac|iPhone|iPad|iPod/i.test(`${navigator.platform || ""} ${navigator.userAgent || ""}`);
+}
+
+function normalizeDragPath(value: any): Array<{ x: number; y: number }> {
+  if (!Array.isArray(value)) {
+    throw new Error("drag.params.path must be an array");
+  }
+
+  if (value.length < 2) {
+    throw new Error("drag.params.path must contain at least two points");
+  }
+
+  return value.map((point, index) => {
+    if (!point || typeof point !== "object" || Array.isArray(point)) {
+      throw new Error(`drag.params.path[${index}] must be an object`);
+    }
+
+    return {
+      x: requireFiniteNumber(point.x, `drag.params.path[${index}].x`),
+      y: requireFiniteNumber(point.y, `drag.params.path[${index}].y`)
+    };
+  });
+}
+
+function normalizePointerModifiers(value: any) {
+  if (value == null) {
+    return 0;
+  }
+
+  if (!Array.isArray(value)) {
+    throw new Error("pointer modifiers must be an array");
+  }
+
+  if (!value.every((modifier) => typeof modifier === "string")) {
+    throw new Error("pointer modifiers must be strings");
+  }
+
+  if (new Set(value).size !== value.length) {
+    throw new Error("pointer modifiers must not contain duplicates");
+  }
+
+  return modifierBitmask(value);
 }
 
 function normalizeMouseButton(button: any) {
@@ -3955,7 +6660,7 @@ function normalizeMouseButton(button: any) {
     return "left";
   }
 
-  if (button === "left" || button === "middle" || button === "right") {
+  if (button === "left" || button === "middle" || button === "right" || button === "back" || button === "forward") {
     return button;
   }
 
@@ -3971,6 +6676,14 @@ function buttonToButtons(button: string) {
     return 4;
   }
 
+  if (button === "back") {
+    return 8;
+  }
+
+  if (button === "forward") {
+    return 16;
+  }
+
   return 1;
 }
 
@@ -3979,7 +6692,7 @@ function normalizeLoadState(state: any) {
     return "load";
   }
 
-  if (state === "load" || state === "domcontentloaded") {
+  if (state === "load" || state === "domcontentloaded" || state === "networkidle") {
     return state;
   }
 
@@ -4062,6 +6775,433 @@ function urlMatches(url: string, matcher: ActionParams) {
   return true;
 }
 
+function createDefaultBrowserPolicyState(): BrowserPolicyState {
+  return {
+    sessionAllowedHosts: {},
+    persistentAllowedHosts: [],
+    blockedHosts: []
+  };
+}
+
+async function ensureBrowserPolicyLoaded() {
+  if (browserPolicyLoaded) {
+    return;
+  }
+
+  if (!browserPolicyLoadPromise) {
+    browserPolicyLoadPromise = loadBrowserPolicyState();
+  }
+
+  await browserPolicyLoadPromise;
+}
+
+async function loadBrowserPolicyState() {
+  const stored = await storageGet(POLICY_STORAGE_KEY);
+  browserPolicyState = sanitizeBrowserPolicyState(stored);
+  browserPolicyLoaded = true;
+}
+
+async function persistBrowserPolicyState() {
+  await storageSet(POLICY_STORAGE_KEY, cloneBrowserPolicyState(browserPolicyState));
+}
+
+function storageGet(key: string): Promise<unknown> {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(key, (items) => {
+      resolve(items?.[key]);
+    });
+  });
+}
+
+function storageSet(key: string, value: unknown): Promise<void> {
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.set({ [key]: value }, () => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        reject(new Error(error.message));
+      } else {
+        resolve();
+      }
+    });
+  });
+}
+
+function storageSessionGet(key: string): Promise<unknown> {
+  return new Promise((resolve) => {
+    chrome.storage.session.get(key, (items) => {
+      resolve(items?.[key]);
+    });
+  });
+}
+
+function storageSessionSet(key: string, value: unknown): Promise<void> {
+  return new Promise((resolve, reject) => {
+    chrome.storage.session.set({ [key]: value }, () => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        reject(new Error(error.message));
+      } else {
+        resolve();
+      }
+    });
+  });
+}
+
+function sanitizeBrowserPolicyState(value: unknown): BrowserPolicyState {
+  const source = value && typeof value === "object" && !Array.isArray(value)
+    ? value as ActionParams
+    : {};
+  const sessionAllowedHosts: Record<string, string[]> = {};
+
+  if (
+    source.sessionAllowedHosts &&
+    typeof source.sessionAllowedHosts === "object" &&
+    !Array.isArray(source.sessionAllowedHosts)
+  ) {
+    for (const [sessionId, hosts] of Object.entries(source.sessionAllowedHosts)) {
+      if (Array.isArray(hosts)) {
+        sessionAllowedHosts[sessionId] = normalizeHostList(hosts);
+      }
+    }
+  }
+
+  return {
+    sessionAllowedHosts,
+    persistentAllowedHosts: normalizeHostList(source.persistentAllowedHosts),
+    blockedHosts: normalizeHostList(source.blockedHosts)
+  };
+}
+
+function cloneBrowserPolicyState(
+  state: BrowserPolicyState,
+  sessionId?: unknown
+): BrowserPolicyState {
+  const normalizedSessionId = typeof sessionId === "string" && sessionId.trim()
+    ? sessionId.trim()
+    : null;
+
+  return {
+    sessionAllowedHosts: normalizedSessionId
+      ? {
+          [normalizedSessionId]: [
+            ...(state.sessionAllowedHosts[normalizedSessionId] ?? [])
+          ]
+        }
+      : Object.fromEntries(
+          Object.entries(state.sessionAllowedHosts).map(([id, hosts]) => [
+            id,
+            [...hosts]
+          ])
+        ),
+    persistentAllowedHosts: [...state.persistentAllowedHosts],
+    blockedHosts: [...state.blockedHosts]
+  };
+}
+
+function normalizeHostList(value: unknown) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return Array.from(new Set(value.map(normalizePolicyHost).filter(Boolean) as string[])).sort();
+}
+
+function normalizePolicyDecision(value: unknown) {
+  if (value === "allow" || value === "always_allow" || value === "deny") {
+    return value;
+  }
+
+  throw new Error("updatePolicy.params.decision must be allow, always_allow, or deny");
+}
+
+function applyHostAccessDecision(
+  state: BrowserPolicyState,
+  args: { decision: "allow" | "always_allow" | "deny"; host: string; sessionId?: unknown }
+) {
+  removeHostFromPolicy(state, args.host);
+
+  if (args.decision === "deny") {
+    state.blockedHosts = addPolicyHost(state.blockedHosts, args.host);
+    return;
+  }
+
+  if (args.decision === "always_allow") {
+    state.persistentAllowedHosts = addPolicyHost(state.persistentAllowedHosts, args.host);
+    return;
+  }
+
+  const sessionId = typeof args.sessionId === "string" && args.sessionId.trim()
+    ? args.sessionId.trim()
+    : null;
+
+  if (!sessionId) {
+    throw new Error("Per-session host allow requires updatePolicy.params.sessionId");
+  }
+
+  state.sessionAllowedHosts[sessionId] = addPolicyHost(
+    state.sessionAllowedHosts[sessionId] ?? [],
+    args.host
+  );
+}
+
+async function assertBrowserPolicyForTab(
+  action: BrowserPolicyAction,
+  tabId: number,
+  sessionId: unknown,
+  params: ActionParams = {}
+) {
+  const tab = await chrome.tabs.get(tabId);
+  await assertBrowserPolicyForUrl(action, tab.url ?? null, sessionId, params);
+}
+
+async function assertBrowserPolicyForUrl(
+  action: BrowserPolicyAction,
+  url: unknown,
+  sessionId: unknown,
+  params: ActionParams = {}
+) {
+  await ensureBrowserPolicyLoaded();
+  const verdict = evaluateBrowserHostAccess(browserPolicyState, {
+    action,
+    sessionId,
+    url
+  });
+
+  if (!verdict.allowed) {
+    safePostEvent({
+      name: "policyBlocked",
+      sessionId: typeof sessionId === "string" ? sessionId : null,
+      host: verdict.host,
+      action,
+      code: verdict.code
+    });
+    throw new Error(`${verdict.code}: ${verdict.message}`);
+  }
+
+  const classification = classifyBrowserPolicyAction(action, url, params);
+
+  if (classification.requiresOriginApproval && params.originApproved !== true) {
+    throw new Error(
+      `origin_approval_required: Browser action ${action} on ${classification.host} requires originApproved=true.`
+    );
+  }
+
+  const confirmed =
+    params.confirmed === true ||
+    (classification.requiresOriginApproval && params.originApproved === true);
+
+  if (classification.requiresConfirmation && !confirmed) {
+    throw new Error(
+      `confirmation_required: Browser action ${action} requires confirmation (${classification.reasons.join(", ")}).`
+    );
+  }
+}
+
+async function assertBrowserBlocklistForUrl(
+  action: BrowserPolicyAction,
+  url: unknown,
+  sessionId: unknown
+) {
+  await ensureBrowserPolicyLoaded();
+  const verdict = evaluateBrowserHostAccess(browserPolicyState, {
+    action,
+    sessionId,
+    url
+  });
+
+  if (verdict.code !== "host_blocked") {
+    return;
+  }
+
+  safePostEvent({
+    name: "policyBlocked",
+    sessionId: typeof sessionId === "string" ? sessionId : null,
+    host: verdict.host,
+    action,
+    code: verdict.code
+  });
+  throw new Error(`${verdict.code}: ${verdict.message}`);
+}
+
+function evaluateBrowserHostAccess(
+  state: BrowserPolicyState,
+  check: { action: BrowserPolicyAction; sessionId?: unknown; url?: unknown }
+): HostAccessVerdict {
+  const host = normalizePolicyHost(check.url);
+
+  if (!host) {
+    return {
+      allowed: false,
+      requiresApproval: false,
+      code: "invalid_url",
+      host: null,
+      scope: null,
+      message: "A valid http/https URL is required for browser host policy checks."
+    };
+  }
+
+  if (hostSetHas(state.blockedHosts, host)) {
+    return {
+      allowed: false,
+      requiresApproval: false,
+      code: "host_blocked",
+      host,
+      scope: "blocked",
+      message: `Browser access to ${host} is blocked by policy.`
+    };
+  }
+
+  if (hostSetHas(state.persistentAllowedHosts, host)) {
+    return {
+      allowed: true,
+      requiresApproval: false,
+      code: "allowed",
+      host,
+      scope: "persistent",
+      message: `Browser access to ${host} is allowed persistently.`
+    };
+  }
+
+  const sessionId = typeof check.sessionId === "string" && check.sessionId.trim()
+    ? check.sessionId.trim()
+    : null;
+  if (sessionId && hostSetHas(state.sessionAllowedHosts[sessionId] ?? [], host)) {
+    return {
+      allowed: true,
+      requiresApproval: false,
+      code: "allowed",
+      host,
+      scope: "session",
+      message: `Browser access to ${host} is allowed for this session.`
+    };
+  }
+
+  return {
+    allowed: false,
+    requiresApproval: true,
+    code: "requires_host_approval",
+    host,
+    scope: null,
+    message: `Browser access to ${host} requires approval before ${check.action}.`
+  };
+}
+
+function classifyBrowserPolicyAction(
+  action: BrowserPolicyAction,
+  url: unknown,
+  params: ActionParams
+) {
+  const reasons = new Set<string>();
+  const script = typeof params.script === "string" ? params.script : "";
+  const readOnlyEvaluate =
+    action === "evaluate" &&
+    params.mode !== "write" &&
+    !looksLikeMutatingScript(script);
+  const label = typeof params.label === "string" ? params.label : "";
+  const text = typeof params.text === "string" ? params.text : "";
+
+  if (action === "upload") {
+    reasons.add("file_upload");
+  }
+
+  if (action === "download") {
+    reasons.add("download");
+  }
+
+  if (action === "history") {
+    reasons.add("browser_history");
+  }
+
+  if (action === "clipboard") {
+    reasons.add("clipboard");
+  }
+
+  if (action === "type" && params.sensitive === true) {
+    reasons.add("sensitive_input");
+  }
+
+  if (
+    DESTRUCTIVE_BROWSER_ACTION_PATTERN.test(label) ||
+    DESTRUCTIVE_BROWSER_ACTION_PATTERN.test(text)
+  ) {
+    reasons.add("destructive_action");
+  } else if (
+    EXTERNAL_SIDE_EFFECT_PATTERN.test(label) ||
+    EXTERNAL_SIDE_EFFECT_PATTERN.test(text)
+  ) {
+    reasons.add("external_side_effect");
+  }
+
+  if (action === "permission") {
+    reasons.add("browser_permission");
+  }
+
+  if (action === "rawCdp") {
+    reasons.add("raw_cdp");
+  }
+
+  if (action === "evaluate" && !readOnlyEvaluate) {
+    reasons.add("mutating_evaluate");
+  }
+
+  return {
+    host: normalizePolicyHost(url),
+    readOnly: readOnlyEvaluate,
+    requiresConfirmation: reasons.size > 0,
+    requiresOriginApproval: action === "rawCdp",
+    reasons: Array.from(reasons)
+  };
+}
+
+function looksLikeMutatingScript(script: string) {
+  return /\b(click|submit|remove|setAttribute|removeAttribute|appendChild|insertBefore|replaceChild|dispatchEvent|localStorage|sessionStorage|indexedDB|cookie\s*=)\b|\.value\s*=|\.checked\s*=|\.textContent\s*=|\.innerHTML\s*=/i.test(script);
+}
+
+function normalizePolicyHost(value: unknown): string | null {
+  if (typeof value !== "string" || !value.trim()) {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  let parsed: URL;
+
+  try {
+    parsed = trimmed.includes("://")
+      ? new URL(trimmed)
+      : new URL(`https://${trimmed}`);
+  } catch {
+    return null;
+  }
+
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return null;
+  }
+
+  return parsed.host.toLowerCase();
+}
+
+function hostSetHas(hosts: string[], host: string) {
+  return hosts.some((candidate) => candidate === host || host.endsWith(`.${candidate}`));
+}
+
+function addPolicyHost(hosts: string[], host: string) {
+  return Array.from(new Set([...hosts, host])).sort();
+}
+
+function removeHostFromPolicy(state: BrowserPolicyState, host: string) {
+  state.blockedHosts = state.blockedHosts.filter((candidate) => candidate !== host);
+  state.persistentAllowedHosts = state.persistentAllowedHosts.filter((candidate) => candidate !== host);
+
+  for (const [sessionId, hosts] of Object.entries(state.sessionAllowedHosts)) {
+    const nextHosts = hosts.filter((candidate) => candidate !== host);
+    if (nextHosts.length > 0) {
+      state.sessionAllowedHosts[sessionId] = nextHosts;
+    } else {
+      delete state.sessionAllowedHosts[sessionId];
+    }
+  }
+}
+
 function assertAllowedNavigationUrl(url: string) {
   let parsed;
 
@@ -4094,6 +7234,146 @@ function truncateString(value: any, maxLength: number) {
   }
 
   return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
+}
+
+function truncateAndRedactString(value: any, maxLength: number) {
+  const truncated = truncateString(value, maxLength);
+  return typeof truncated === "string" ? redactSecretPatterns(truncated) : truncated;
+}
+
+function redactObservation(observation: ActionParams) {
+  if (typeof observation.text === "string") {
+    observation.text = redactSecretPatterns(observation.text);
+  }
+
+  if (typeof observation.selectedText === "string") {
+    observation.selectedText = redactSecretPatterns(observation.selectedText);
+  }
+
+  if (observation.focusedElement && typeof observation.focusedElement === "object") {
+    redactStringFields(observation.focusedElement as ActionParams, ["label", "visibleText"]);
+  }
+
+  if (observation.modalState && typeof observation.modalState === "object") {
+    const dialogs = (observation.modalState as ActionParams).dialogs;
+    if (Array.isArray(dialogs)) {
+      for (const dialog of dialogs) {
+        if (dialog && typeof dialog === "object") {
+          redactStringFields(dialog as ActionParams, ["label", "text"]);
+        }
+      }
+    }
+  }
+
+  if (Array.isArray(observation.elements)) {
+    for (const element of observation.elements) {
+      if (element && typeof element === "object") {
+        redactStringFields(element as ActionParams, ["label", "visibleText", "href", "placeholder", "testId"]);
+
+        if (Array.isArray((element as ActionParams).selectorCandidates)) {
+          for (const candidate of (element as ActionParams).selectorCandidates as ActionParams[]) {
+            if (candidate && typeof candidate === "object") {
+              redactStringFields(candidate, ["selector"]);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (Array.isArray(observation.accessibilityTree)) {
+    redactAccessibilityLikeNodes(observation.accessibilityTree);
+  }
+
+  if (observation.semanticTree && Array.isArray(observation.semanticTree.nodes)) {
+    redactAccessibilityLikeNodes(observation.semanticTree.nodes);
+  }
+}
+
+function redactHistoryEntry(entry: chrome.history.HistoryItem) {
+  const url = redactSensitiveUrl(entry.url ?? "");
+  const title = typeof entry.title === "string"
+    ? redactSecretPatterns(entry.title)
+    : entry.title;
+  const redactionReasons = new Set(url.reasons);
+
+  if (title !== entry.title) {
+    redactionReasons.add("secret_pattern");
+  }
+
+  return {
+    id: entry.id,
+    url: url.value,
+    title,
+    lastVisitTime: entry.lastVisitTime,
+    dateVisited:
+      typeof entry.lastVisitTime === "number"
+        ? new Date(entry.lastVisitTime).toISOString()
+        : undefined,
+    visitCount: entry.visitCount,
+    typedCount: entry.typedCount,
+    redacted: redactionReasons.size > 0,
+    redactionReasons: Array.from(redactionReasons)
+  };
+}
+
+function redactStringFields(target: ActionParams, keys: string[]) {
+  for (const key of keys) {
+    if (typeof target[key] === "string") {
+      target[key] = redactSecretPatterns(target[key]);
+    }
+  }
+}
+
+function redactAccessibilityLikeNodes(nodes: ActionParams[]) {
+  for (const node of nodes) {
+    for (const key of ["name", "value", "description"]) {
+      if (typeof node[key] === "string") {
+        node[key] = redactSecretPatterns(node[key]);
+      }
+    }
+  }
+}
+
+function redactSecretPatterns(value: string) {
+  return value
+    .replace(/\b(token|access_token|refresh_token|secret)\s*=\s*([^\s&]+)/gi, "$1=[redacted]")
+    .replace(/\b(password|passwd|pwd)\s*:\s*([^\s]+)/gi, "$1: [redacted]")
+    .replace(/\b(api[_-]?key)\s*=\s*"([^"]*)"/gi, "$1=\"[redacted]\"")
+    .replace(/\b(api[_-]?key)\s*=\s*(?!")([^\s&]+)/gi, "$1=[redacted]")
+    .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, "[redacted-secret]");
+}
+
+function redactSensitiveUrl(value: string) {
+  const reasons = new Set<string>();
+
+  try {
+    const parsed = new URL(value);
+    const sensitiveParamPattern = /(^|[_-])(token|access|refresh|secret|password|passwd|pwd|key|api[_-]?key|auth|session|sid|code|credential)([_-]|$)/i;
+
+    parsed.searchParams.forEach((_value, key) => {
+      if (sensitiveParamPattern.test(key)) {
+        parsed.searchParams.set(key, "[redacted]");
+        reasons.add("sensitive_query_param");
+      }
+    });
+
+    if (parsed.hash && redactSecretPatterns(parsed.hash) !== parsed.hash) {
+      parsed.hash = "#[redacted]";
+      reasons.add("sensitive_fragment");
+    }
+
+    return {
+      value: parsed.toString(),
+      reasons: Array.from(reasons)
+    };
+  } catch {
+    const redacted = redactSecretPatterns(value);
+    return {
+      value: redacted,
+      reasons: redacted !== value ? ["secret_pattern"] : []
+    };
+  }
 }
 
 function numberOrDefault(value: any, defaultValue: number) {

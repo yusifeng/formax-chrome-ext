@@ -11,6 +11,7 @@ const root = process.cwd();
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const defaultDist = path.basename(scriptDir) === "scripts" ? path.join(root, "dist") : scriptDir;
 const defaultInstallRoot = path.join(os.homedir(), ".formax", "plugins", "cache", "formax", "chrome");
+const defaultBinDir = path.join(os.homedir(), ".formax", "bin");
 const execFileAsync = promisify(execFile);
 
 const platformMap = {
@@ -27,6 +28,7 @@ const archMap = {
 function parseArgs(argv) {
   const args = {
     dist: defaultDist,
+    binDir: defaultBinDir,
     dryRun: false,
     extensionId: null,
     includeDebug: false,
@@ -45,7 +47,8 @@ function parseArgs(argv) {
       return value;
     };
 
-    if (arg === "--dist") args.dist = path.resolve(next());
+    if (arg === "--bin-dir") args.binDir = path.resolve(next());
+    else if (arg === "--dist") args.dist = path.resolve(next());
     else if (arg === "--dry-run") args.dryRun = true;
     else if (arg === "--extension-id") args.extensionId = next();
     else if (arg === "--include-debug") args.includeDebug = true;
@@ -67,6 +70,7 @@ function printUsage() {
 
 Options:
   --dist <path>          Dist directory to install. Default: ./dist in the source repo, or the installer directory in a release package
+  --bin-dir <path>       Directory for command wrappers. Default: ~/.formax/bin
   --install-root <path>  Versioned cache root. Default: ~/.formax/plugins/cache/formax/chrome
   --version <version>    Install version name. Default: package.json version from dist
   --extension-id <id>    Override Chrome extension ID, useful for local unpacked testing
@@ -76,12 +80,18 @@ Options:
 }
 
 const runtimeEntries = [
+  [".formax-plugin", ".formax-plugin"],
   ["config", "config"],
   ["skill", "skill"],
+  ["skills", "skills"],
   ["extension-host", "extension-host"],
   ["mcp-node-repl", "mcp-node-repl"],
   ["agent/browserTools.js", "agent/browserTools.js"],
   ["shared", "shared"],
+  ["docs", "docs"],
+  ["scripts/browser-client.mjs", "scripts/browser-client.mjs"],
+  ["scripts/formax-doctor.js", "scripts/formax-doctor.js"],
+  ["scripts/formax-uninstall.js", "scripts/formax-uninstall.js"],
   ["scripts/check-extension-installed.js", "scripts/check-extension-installed.js"],
   ["scripts/check-native-host-manifest.js", "scripts/check-native-host-manifest.js"],
   ["package.json", "package.json"],
@@ -232,6 +242,50 @@ async function writeJson(filePath, value, dryRun) {
   await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
+}
+
+async function writeExecutable(filePath, content, dryRun) {
+  if (dryRun) return;
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, content, "utf8");
+  await fs.chmod(filePath, 0o755);
+}
+
+async function writeBinWrappers({ binDir, latestLink, installRoot, dryRun }) {
+  const wrappers = [
+    {
+      name: "formax-browser-mcp",
+      target: path.join(latestLink, "mcp-node-repl", "server.js"),
+      args: [],
+    },
+    {
+      name: "formax-doctor",
+      target: path.join(latestLink, "scripts", "formax-doctor.js"),
+      args: [],
+    },
+    {
+      name: "formax-uninstall",
+      target: path.join(latestLink, "scripts", "formax-uninstall.js"),
+      args: ["--install-root", installRoot, "--bin-dir", binDir],
+    },
+  ];
+
+  for (const wrapper of wrappers) {
+    const extraArgs = wrapper.args.map(shellQuote).join(" ");
+    const script = [
+      "#!/bin/sh",
+      "set -eu",
+      `exec node ${shellQuote(wrapper.target)}${extraArgs ? ` ${extraArgs}` : ""} "$@"`,
+      "",
+    ].join("\n");
+    await writeExecutable(path.join(binDir, wrapper.name), script, dryRun);
+  }
+
+  return wrappers.map((wrapper) => path.join(binDir, wrapper.name));
+}
+
 async function installNodeDependencies(versionDir, dryRun) {
   const nodeModulesDir = path.join(versionDir, "node_modules");
   const lockfilePath = path.join(versionDir, "package-lock.json");
@@ -314,6 +368,7 @@ async function main() {
   console.log(`  source dist:       ${args.dist}`);
   console.log(`  version dir:       ${versionDir}`);
   console.log(`  latest symlink:    ${latestLink} -> ${version}`);
+  console.log(`  bin dir:           ${args.binDir}`);
   console.log(`  native host path:  ${latestHostPath}`);
   console.log(`  manifest path:     ${manifestPath}`);
   console.log(`  extension origin:  chrome-extension://${extensionId}/`);
@@ -348,6 +403,12 @@ async function main() {
   await replaceSymlink(versionDir, latestLink, args.dryRun);
   await fs.chmod(versionHostPath, 0o755);
   await writeJson(manifestPath, manifest, args.dryRun);
+  const binWrappers = await writeBinWrappers({
+    binDir: args.binDir,
+    latestLink,
+    installRoot: args.installRoot,
+    dryRun: args.dryRun,
+  });
 
   if (missing.length > 0) {
     console.warn(`WARN missing optional runtime entries: ${missing.join(", ")}`);
@@ -355,6 +416,9 @@ async function main() {
 
   console.log("\nInstalled Formax browser runtime.");
   console.log(`Native host manifest written to: ${manifestPath}`);
+  console.log("Command wrappers:");
+  for (const wrapper of binWrappers) console.log(`  ${wrapper}`);
+  console.log("Reload the Formax extension in chrome://extensions, or restart Chrome, before testing native messaging.");
 }
 
 await main().catch((error) => {

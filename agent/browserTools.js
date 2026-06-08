@@ -1,12 +1,50 @@
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { actionForToolName } from "../shared/action-registry.js";
+import { browserActionParameterSchemas, browserToolSchemas, validateBrowserActionParams } from "../shared/browser-tool-schemas.js";
 const RPC_URL = process.env.AGENT_BROWSER_RPC_URL || "http://127.0.0.1:8765/rpc";
-const RPC_TOKEN = process.env.AGENT_BROWSER_TOKEN || "";
+let cachedRpcToken = null;
+function browserRpcToken() {
+    const explicitToken = process.env.AGENT_BROWSER_TOKEN?.trim();
+    if (explicitToken) {
+        return explicitToken;
+    }
+    if (parseBooleanEnv(process.env.AGENT_BROWSER_ALLOW_UNAUTHENTICATED_RPC)) {
+        return "";
+    }
+    if (cachedRpcToken) {
+        return cachedRpcToken;
+    }
+    const tokenFile = process.env.AGENT_BROWSER_TOKEN_FILE?.trim() ||
+        join(homedir(), ".formax", "browser-rpc-token");
+    try {
+        const token = readFileSync(tokenFile, "utf8").trim();
+        if (token) {
+            cachedRpcToken = token;
+            return token;
+        }
+    }
+    catch {
+        // The native host may not have created the default token file yet. The
+        // request will fail with 401 if the host already requires authentication.
+    }
+    return "";
+}
+function parseBooleanEnv(value) {
+    return ["1", "true", "yes", "on"].includes((value ?? "").trim().toLowerCase());
+}
 async function browserRpc(action, params = {}, timeoutMs = 30000) {
+    const paramsValidation = validateBrowserActionParams(action, params);
+    if (paramsValidation.ok === false) {
+        throw new Error(`${paramsValidation.code}: Invalid browser params for ${action}: ${paramsValidation.message}`);
+    }
     const headers = {
         "content-type": "application/json"
     };
-    if (RPC_TOKEN) {
-        headers["x-agent-browser-token"] = RPC_TOKEN;
+    const rpcToken = browserRpcToken();
+    if (rpcToken) {
+        headers["x-agent-browser-token"] = rpcToken;
     }
     const response = await fetch(RPC_URL, {
         method: "POST",
@@ -19,7 +57,16 @@ async function browserRpc(action, params = {}, timeoutMs = 30000) {
     });
     const json = (await response.json());
     if (!response.ok || json.ok !== true) {
-        throw new Error(json.error || `Browser RPC failed: ${action}`);
+        const errorMessage = typeof json.error === "string"
+            ? json.error
+            : typeof json.error?.message === "string"
+                ? json.error.message
+                : `Browser RPC failed: ${action}`;
+        const errorCode = json.errorCode ||
+            (typeof json.error === "object" && typeof json.error?.code === "string"
+                ? json.error.code
+                : null);
+        throw new Error(errorCode ? `${errorCode}: ${errorMessage}` : errorMessage);
     }
     return json.result;
 }
@@ -38,6 +85,15 @@ export async function browserClearEvents(args = {}) {
 export async function browserWaitForEvent(args = {}) {
     return browserRpc("waitForEvent", args);
 }
+export async function browserGetDiagnostics(args = {}) {
+    return browserRpc("getDiagnostics", args);
+}
+export async function browserGetPolicy(args = {}) {
+    return browserRpc("getPolicy", args);
+}
+export async function browserUpdatePolicy(args = {}) {
+    return browserRpc("updatePolicy", args);
+}
 export async function browserStartSession(args) {
     return browserRpc("startSession", args);
 }
@@ -49,6 +105,21 @@ export async function browserUserOpenTabs(args = {}) {
 }
 export async function browserClaimTab(args) {
     return browserRpc("claimTab", args);
+}
+export async function browserUserHistory(args = {}) {
+    return browserRpc("getHistory", args);
+}
+export async function browserClipboardReadText(args = {}) {
+    return browserRpc("clipboardReadText", args);
+}
+export async function browserClipboardWriteText(args) {
+    return browserRpc("clipboardWriteText", args);
+}
+export async function browserClipboardRead(args = {}) {
+    return browserRpc("clipboardRead", args);
+}
+export async function browserClipboardWrite(args) {
+    return browserRpc("clipboardWrite", args);
 }
 export async function browserCreateTab(args) {
     return browserRpc("createTab", args);
@@ -89,6 +160,9 @@ export async function browserWaitForText(args) {
 export async function browserObserve(args) {
     return browserRpc("observe", args);
 }
+export async function browserElementInfo(args) {
+    return browserRpc("elementInfo", args);
+}
 export async function browserLocatorQuery(args) {
     return browserRpc("locatorQuery", args);
 }
@@ -100,6 +174,9 @@ export async function browserLocatorWait(args) {
 }
 export async function browserClick(args) {
     return browserRpc("click", args);
+}
+export async function browserDrag(args) {
+    return browserRpc("drag", args);
 }
 export async function browserMoveMouse(args) {
     return browserRpc("moveMouse", args);
@@ -152,794 +229,15 @@ export async function browserEndTurn(args) {
 export async function browserStopSession(args) {
     return browserRpc("stopSession", args);
 }
-export const browserToolSchemas = [
-    {
-        name: "browser_health",
-        description: "Check whether the browser extension and native host are connected.",
-        parameters: {
-            type: "object",
-            properties: {},
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_reload_extension",
-        description: "Ask the extension background to reload itself after the current response returns.",
-        parameters: {
-            type: "object",
-            properties: {},
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_get_events",
-        description: "Read recent buffered browser events such as navigation, dialogs, downloads, and debugger detach.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                tabId: { type: "number" },
-                name: { type: "string" },
-                sinceSequence: { type: "number" },
-                limit: { type: "number" }
-            },
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_clear_events",
-        description: "Clear buffered browser events, optionally filtered by session, tab, name, or sequence.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                tabId: { type: "number" },
-                name: { type: "string" },
-                sinceSequence: { type: "number" }
-            },
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_wait_for_event",
-        description: "Wait for a buffered browser event such as navigation, dialog, download, or dev log.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                tabId: { type: "number" },
-                name: { type: "string" },
-                sinceSequence: { type: "number" },
-                limit: { type: "number" },
-                timeoutMs: { type: "number" },
-                pollMs: { type: "number" }
-            },
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_start_session",
-        description: "Start a Chrome browser control session.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                turnId: { type: "string" },
-                active: { type: "boolean" },
-                initialUrl: { type: "string" },
-                name: { type: "string" }
-            },
-            required: ["sessionId"],
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_name_session",
-        description: "Name an active browser automation session and its Chrome tab group.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                name: { type: "string" }
-            },
-            required: ["sessionId", "name"],
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_user_open_tabs",
-        description: "List user-visible Chrome tabs that can be claimed. Use the returned claimToken with browser_claim_tab instead of guessing tab IDs.",
-        parameters: {
-            type: "object",
-            properties: {
-                currentWindow: { type: "boolean" },
-                includeControlled: { type: "boolean" }
-            },
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_claim_tab",
-        description: "Claim a Chrome tab into a browser control session. Prefer passing claimToken from browser_user_open_tabs; naked tabId claims require allowUnsafeTabIdClaim.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                turnId: { type: "string" },
-                claimToken: { type: "string" },
-                tabId: { type: "number" },
-                active: { type: "boolean" },
-                allowUnsafeTabIdClaim: { type: "boolean" }
-            },
-            required: ["sessionId"],
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_create_tab",
-        description: "Create a new tab inside a browser control session.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                turnId: { type: "string" },
-                url: { type: "string" },
-                active: { type: "boolean" }
-            },
-            required: ["sessionId"],
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_switch_tab",
-        description: "Make a controlled tab active inside its session.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                tabId: { type: "number" }
-            },
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_list_tabs",
-        description: "List Chrome tabs, optionally filtered to controlled tabs or a browser session.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                controlledOnly: { type: "boolean" },
-                currentWindow: { type: "boolean" }
-            },
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_get_tab",
-        description: "Get one Chrome tab summary by tabId or the active tab in a session.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                tabId: { type: "number" }
-            },
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_open_url",
-        description: "Open an http or https URL in a controlled Chrome tab.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                tabId: { type: "number" },
-                url: { type: "string" },
-                active: { type: "boolean" },
-                timeoutMs: { type: "number" }
-            },
-            required: ["url"],
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_go_back",
-        description: "Navigate the controlled tab back in browser history.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                tabId: { type: "number" },
-                waitForLoad: { type: "boolean" },
-                timeoutMs: { type: "number" }
-            },
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_go_forward",
-        description: "Navigate the controlled tab forward in browser history.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                tabId: { type: "number" },
-                waitForLoad: { type: "boolean" },
-                timeoutMs: { type: "number" }
-            },
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_reload",
-        description: "Reload the controlled tab.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                tabId: { type: "number" },
-                ignoreCache: { type: "boolean" },
-                waitForLoad: { type: "boolean" },
-                timeoutMs: { type: "number" }
-            },
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_wait_for_load_state",
-        description: "Wait until the controlled tab reaches a page load state.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                tabId: { type: "number" },
-                state: {
-                    type: "string",
-                    enum: ["load", "domcontentloaded"]
-                },
-                timeoutMs: { type: "number" }
-            },
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_wait_for_url",
-        description: "Wait for the controlled tab URL to match an exact URL, substring, or regular expression.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                tabId: { type: "number" },
-                url: { type: "string" },
-                urlContains: { type: "string" },
-                urlRegex: { type: "string" },
-                timeoutMs: { type: "number" },
-                pollMs: { type: "number" }
-            },
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_wait_for_selector",
-        description: "Wait for a CSS selector to become attached, visible, hidden, or detached.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                tabId: { type: "number" },
-                selector: { type: "string" },
-                state: {
-                    type: "string",
-                    enum: ["attached", "visible", "hidden", "detached"]
-                },
-                timeoutMs: { type: "number" },
-                pollMs: { type: "number" }
-            },
-            required: ["selector"],
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_wait_for_text",
-        description: "Wait for page text to appear or disappear.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                tabId: { type: "number" },
-                text: { type: "string" },
-                state: {
-                    type: "string",
-                    enum: ["present", "hidden"]
-                },
-                exact: { type: "boolean" },
-                caseSensitive: { type: "boolean" },
-                timeoutMs: { type: "number" },
-                pollMs: { type: "number" }
-            },
-            required: ["text"],
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_observe",
-        description: "Read the current page URL, title, visible text, and interactable elements.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                tabId: { type: "number" },
-                includeAccessibility: { type: "boolean" },
-                maxAccessibilityNodes: { type: "number" },
-                includeDomSnapshot: { type: "boolean" }
-            },
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_locator_query",
-        description: "Query a CSS locator in the controlled tab for count, visibility, text, attributes, or bounds.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                tabId: { type: "number" },
-                locator: {
-                    type: "object",
-                    properties: {
-                        kind: { type: "string", enum: ["css", "text", "role", "label", "placeholder", "testId"] },
-                        selector: { type: "string" },
-                        text: { type: "string" },
-                        role: { type: "string" },
-                        name: { type: "string" },
-                        testId: { type: "string" },
-                        exact: { type: "boolean" },
-                        index: { type: "number" },
-                        strict: { type: "boolean" }
-                    },
-                    required: ["kind"],
-                    additionalProperties: false
-                },
-                kind: {
-                    type: "string",
-                    enum: [
-                        "count",
-                        "allTextContents",
-                        "textContent",
-                        "innerText",
-                        "getAttribute",
-                        "isVisible",
-                        "isEnabled",
-                        "boundingBox"
-                    ]
-                },
-                args: {
-                    type: "object",
-                    additionalProperties: true
-                },
-                timeoutMs: { type: "number" }
-            },
-            required: ["locator", "kind"],
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_locator_action",
-        description: "Perform a basic action on a CSS locator, resolving it at action time.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                tabId: { type: "number" },
-                locator: {
-                    type: "object",
-                    properties: {
-                        kind: { type: "string", enum: ["css", "text", "role", "label", "placeholder", "testId"] },
-                        selector: { type: "string" },
-                        text: { type: "string" },
-                        role: { type: "string" },
-                        name: { type: "string" },
-                        testId: { type: "string" },
-                        exact: { type: "boolean" },
-                        index: { type: "number" },
-                        strict: { type: "boolean" }
-                    },
-                    required: ["kind"],
-                    additionalProperties: false
-                },
-                kind: {
-                    type: "string",
-                    enum: ["click", "dblclick", "fill", "type", "press", "clear", "focus", "hover", "setChecked", "selectOption"]
-                },
-                args: {
-                    type: "object",
-                    additionalProperties: true
-                },
-                timeoutMs: { type: "number" },
-                waitMs: { type: "number" }
-            },
-            required: ["locator", "kind"],
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_locator_wait",
-        description: "Wait for a CSS locator to become attached, visible, hidden, or detached.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                tabId: { type: "number" },
-                locator: {
-                    type: "object",
-                    properties: {
-                        kind: { type: "string", enum: ["css", "text", "role", "label", "placeholder", "testId"] },
-                        selector: { type: "string" },
-                        text: { type: "string" },
-                        role: { type: "string" },
-                        name: { type: "string" },
-                        testId: { type: "string" },
-                        exact: { type: "boolean" },
-                        index: { type: "number" },
-                        strict: { type: "boolean" }
-                    },
-                    required: ["kind"],
-                    additionalProperties: false
-                },
-                state: {
-                    type: "string",
-                    enum: ["attached", "visible", "hidden", "detached"]
-                },
-                timeoutMs: { type: "number" },
-                pollMs: { type: "number" }
-            },
-            required: ["locator"],
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_click",
-        description: "Click a page target by observation ref, CSS selector, or viewport coordinates.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                tabId: { type: "number" },
-                ref: { type: "string" },
-                selector: { type: "string" },
-                x: { type: "number" },
-                y: { type: "number" },
-                button: {
-                    type: "string",
-                    enum: ["left", "middle", "right"]
-                },
-                clickCount: { type: "number" },
-                waitMs: { type: "number" }
-            },
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_move_mouse",
-        description: "Move the visible agent cursor and Chrome mouse pointer to page coordinates.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                tabId: { type: "number" },
-                x: { type: "number" },
-                y: { type: "number" },
-                waitForArrival: { type: "boolean" },
-                waitMs: { type: "number" }
-            },
-            required: ["x", "y"],
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_scroll",
-        description: "Scroll the controlled tab by pixel deltas.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                tabId: { type: "number" },
-                deltaX: { type: "number" },
-                deltaY: { type: "number" },
-                x: { type: "number" },
-                y: { type: "number" },
-                waitMs: { type: "number" }
-            },
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_type_text",
-        description: "Type text into the focused page or into a target by ref, CSS selector, or coordinates.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                tabId: { type: "number" },
-                ref: { type: "string" },
-                selector: { type: "string" },
-                x: { type: "number" },
-                y: { type: "number" },
-                text: { type: "string" },
-                clear: { type: "boolean" },
-                waitMs: { type: "number" }
-            },
-            required: ["text"],
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_evaluate",
-        description: "Evaluate JavaScript in the controlled tab and return the JSON-serializable value.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                tabId: { type: "number" },
-                script: { type: "string" },
-                awaitPromise: { type: "boolean" },
-                timeoutMs: { type: "number" }
-            },
-            required: ["script"],
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_press_key",
-        description: "Press a key in the controlled Chrome tab.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                tabId: { type: "number" },
-                key: {
-                    type: "string",
-                    enum: [
-                        "Enter",
-                        "Tab",
-                        "Escape",
-                        "Backspace",
-                        "ArrowUp",
-                        "ArrowDown",
-                        "ArrowLeft",
-                        "ArrowRight"
-                    ]
-                },
-                waitMs: { type: "number" }
-            },
-            required: ["key"],
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_handle_dialog",
-        description: "Accept or dismiss the currently open JavaScript alert, confirm, or prompt dialog.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                tabId: { type: "number" },
-                accept: { type: "boolean" },
-                promptText: { type: "string" }
-            },
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_screenshot",
-        description: "Capture a screenshot of the controlled Chrome tab.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                tabId: { type: "number" },
-                format: {
-                    type: "string",
-                    enum: ["png", "jpeg"]
-                }
-            },
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_upload_file",
-        description: "Upload a local file through an input[type=file] element by observation ref, selector, or locator.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                tabId: { type: "number" },
-                ref: { type: "string" },
-                selector: { type: "string" },
-                locator: {
-                    type: "object",
-                    properties: {
-                        kind: { type: "string", enum: ["css", "text", "role", "label", "placeholder", "testId"] },
-                        selector: { type: "string" },
-                        text: { type: "string" },
-                        role: { type: "string" },
-                        name: { type: "string" },
-                        testId: { type: "string" },
-                        exact: { type: "boolean" },
-                        index: { type: "number" },
-                        strict: { type: "boolean" }
-                    },
-                    required: ["kind"],
-                    additionalProperties: false
-                },
-                filePath: { type: "string" },
-                waitMs: { type: "number" }
-            },
-            required: ["filePath"],
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_cdp",
-        description: "Send a raw Chrome DevTools Protocol command to a controlled tab.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                tabId: { type: "number" },
-                method: { type: "string" },
-                params: {
-                    type: "object",
-                    additionalProperties: true
-                },
-                timeoutMs: { type: "number" }
-            },
-            required: ["method"],
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_get_dev_logs",
-        description: "Read buffered console, log, and runtime exception entries for a tab.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                tabId: { type: "number" },
-                level: { type: "string" },
-                sinceSequence: { type: "number" },
-                limit: { type: "number" }
-            },
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_get_capabilities",
-        description: "List browser or tab capabilities advertised by the current backend.",
-        parameters: {
-            type: "object",
-            properties: {
-                scope: {
-                    type: "string",
-                    enum: ["browser", "tab"]
-                },
-                sessionId: { type: "string" },
-                tabId: { type: "number" }
-            },
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_list_downloads",
-        description: "List recent Chrome downloads matching optional filters.",
-        parameters: {
-            type: "object",
-            properties: {
-                id: { type: "number" },
-                state: {
-                    type: "string",
-                    enum: ["in_progress", "interrupted", "complete"]
-                },
-                urlContains: { type: "string" },
-                filenameContains: { type: "string" },
-                mimeContains: { type: "string" },
-                startedAfter: { type: "number" },
-                limit: { type: "number" }
-            },
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_wait_for_download",
-        description: "Wait for a Chrome download to reach a target state and return its local filename.",
-        parameters: {
-            type: "object",
-            properties: {
-                id: { type: "number" },
-                state: {
-                    type: "string",
-                    enum: ["in_progress", "interrupted", "complete", "any"]
-                },
-                urlContains: { type: "string" },
-                filenameContains: { type: "string" },
-                mimeContains: { type: "string" },
-                startedAfter: { type: "number" },
-                limit: { type: "number" },
-                timeoutMs: { type: "number" },
-                pollMs: { type: "number" }
-            },
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_close_tab",
-        description: "Close one controlled Chrome tab and clean up debugger/session state.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                tabId: { type: "number" }
-            },
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_finalize_session",
-        description: "Finalize a browser control session. Handoff tabs stay controlled for the next turn; deliverable tabs remain open but are released from agent control.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                keepTabIds: {
-                    type: "array",
-                    items: { type: "number" }
-                },
-                handoffTabIds: {
-                    type: "array",
-                    items: { type: "number" }
-                },
-                deliverableTabIds: {
-                    type: "array",
-                    items: { type: "number" }
-                },
-                turnId: { type: "string" },
-                closeRest: { type: "boolean" }
-            },
-            required: ["sessionId"],
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_end_turn",
-        description: "End one browser-control turn and release active leases for that turn. Use browser_finalize_session first to hand off tabs that should remain controlled.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                turnId: { type: "string" }
-            },
-            required: ["sessionId", "turnId"],
-            additionalProperties: false
-        }
-    },
-    {
-        name: "browser_stop_session",
-        description: "Stop a Chrome browser control session and optionally close its tabs.",
-        parameters: {
-            type: "object",
-            properties: {
-                sessionId: { type: "string" },
-                closeTabs: { type: "boolean" }
-            },
-            required: ["sessionId"],
-            additionalProperties: false
-        }
-    }
-];
+export { browserActionParameterSchemas, browserToolSchemas, validateBrowserActionParams };
 export async function callBrowserTool(name, args) {
-    if (actionForToolName(name) == null) {
+    const action = actionForToolName(name);
+    if (action == null) {
         throw new Error(`Unknown browser tool: ${name}`);
+    }
+    const paramsValidation = validateBrowserActionParams(action, args);
+    if (paramsValidation.ok === false) {
+        throw new Error(`${paramsValidation.code}: Invalid browser params for ${action}: ${paramsValidation.message}`);
     }
     switch (name) {
         case "browser_health":
@@ -952,6 +250,12 @@ export async function callBrowserTool(name, args) {
             return browserClearEvents(args);
         case "browser_wait_for_event":
             return browserWaitForEvent(args);
+        case "browser_get_diagnostics":
+            return browserGetDiagnostics(args);
+        case "browser_get_policy":
+            return browserGetPolicy(args);
+        case "browser_update_policy":
+            return browserUpdatePolicy(args);
         case "browser_start_session":
             return browserStartSession(args);
         case "browser_name_session":
@@ -960,6 +264,16 @@ export async function callBrowserTool(name, args) {
             return browserUserOpenTabs(args);
         case "browser_claim_tab":
             return browserClaimTab(args);
+        case "browser_user_history":
+            return browserUserHistory(args);
+        case "browser_clipboard_read_text":
+            return browserClipboardReadText(args);
+        case "browser_clipboard_write_text":
+            return browserClipboardWriteText(args);
+        case "browser_clipboard_read":
+            return browserClipboardRead(args);
+        case "browser_clipboard_write":
+            return browserClipboardWrite(args);
         case "browser_create_tab":
             return browserCreateTab(args);
         case "browser_switch_tab":
@@ -986,6 +300,8 @@ export async function callBrowserTool(name, args) {
             return browserWaitForText(args);
         case "browser_observe":
             return browserObserve(args);
+        case "browser_element_info":
+            return browserElementInfo(args);
         case "browser_locator_query":
             return browserLocatorQuery(args);
         case "browser_locator_action":
@@ -994,6 +310,8 @@ export async function callBrowserTool(name, args) {
             return browserLocatorWait(args);
         case "browser_click":
             return browserClick(args);
+        case "browser_drag":
+            return browserDrag(args);
         case "browser_move_mouse":
             return browserMoveMouse(args);
         case "browser_scroll":

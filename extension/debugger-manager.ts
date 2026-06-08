@@ -16,6 +16,8 @@ class DebuggerManager {
   private readonly defaultTimeoutMs: number;
   private readonly attachedTabs = new Set<number>();
   private readonly attachLocks = new Map<number, Promise<void>>();
+  private readonly attachedTargets = new Set<string>();
+  private readonly targetAttachLocks = new Map<string, Promise<void>>();
 
   constructor(options: { cdpVersion: string; defaultTimeoutMs?: number }) {
     this.cdpVersion = options.cdpVersion;
@@ -30,6 +32,11 @@ class DebuggerManager {
     if (typeof source.tabId === "number") {
       this.attachedTabs.delete(source.tabId);
       this.attachLocks.delete(source.tabId);
+    }
+
+    if (typeof source.targetId === "string" && source.targetId) {
+      this.attachedTargets.delete(source.targetId);
+      this.targetAttachLocks.delete(source.targetId);
     }
   }
 
@@ -87,6 +94,45 @@ class DebuggerManager {
     }
   }
 
+  async attachTarget(targetId: string): Promise<void> {
+    const normalizedTargetId = requireTargetId(targetId);
+
+    if (this.attachedTargets.has(normalizedTargetId)) {
+      return;
+    }
+
+    const pending = this.targetAttachLocks.get(normalizedTargetId);
+
+    if (pending) {
+      await pending;
+      return;
+    }
+
+    const attachPromise = this.attachTargetUnlocked(normalizedTargetId);
+    this.targetAttachLocks.set(normalizedTargetId, attachPromise);
+
+    try {
+      await attachPromise;
+    } finally {
+      if (this.targetAttachLocks.get(normalizedTargetId) === attachPromise) {
+        this.targetAttachLocks.delete(normalizedTargetId);
+      }
+    }
+  }
+
+  async detachTarget(targetId: string): Promise<void> {
+    const normalizedTargetId = requireTargetId(targetId);
+
+    try {
+      if (this.attachedTargets.has(normalizedTargetId)) {
+        await chrome.debugger.detach({ targetId: normalizedTargetId });
+      }
+    } finally {
+      this.attachedTargets.delete(normalizedTargetId);
+      this.targetAttachLocks.delete(normalizedTargetId);
+    }
+  }
+
   async send(
     tabId: number,
     method: string,
@@ -112,6 +158,35 @@ class DebuggerManager {
     }
   }
 
+  async sendToTarget(
+    targetId: string,
+    method: string,
+    commandParams: CdpCommandParams = {},
+    options: CdpCommandOptions = {}
+  ): Promise<any> {
+    const normalizedTargetId = requireTargetId(targetId);
+    const commandName = requireCdpMethod(method);
+    await this.attachTarget(normalizedTargetId);
+
+    try {
+      return await withTimeout(
+        chrome.debugger.sendCommand(
+          { targetId: normalizedTargetId },
+          commandName,
+          commandParams
+        ),
+        commandName,
+        options.timeoutMs ?? this.defaultTimeoutMs
+      );
+    } catch (error) {
+      if (error instanceof CdpCommandTimeoutError) {
+        await this.forceDetachTarget(normalizedTargetId);
+      }
+
+      throw error;
+    }
+  }
+
   private async forceDetachTab(tabId: number): Promise<void> {
     try {
       await chrome.debugger.detach({ tabId });
@@ -125,6 +200,18 @@ class DebuggerManager {
     }
   }
 
+  private async forceDetachTarget(targetId: string): Promise<void> {
+    try {
+      await chrome.debugger.detach({ targetId });
+    } catch {
+      // See tab-level timeout cleanup above. Always clear local target state so
+      // the next attach starts from a clean slate.
+    } finally {
+      this.attachedTargets.delete(targetId);
+      this.targetAttachLocks.delete(targetId);
+    }
+  }
+
   private async attachTabUnlocked(tabId: number): Promise<void> {
     await chrome.debugger.attach({ tabId }, this.cdpVersion);
 
@@ -132,6 +219,7 @@ class DebuggerManager {
       await this.sendEnabledCommand(tabId, "Page.enable");
       await this.sendEnabledCommand(tabId, "Runtime.enable");
       await this.sendEnabledCommand(tabId, "DOM.enable");
+      await this.sendEnabledCommand(tabId, "Network.enable");
       try {
         await this.sendEnabledCommand(tabId, "Log.enable");
       } catch {
@@ -148,6 +236,11 @@ class DebuggerManager {
       this.attachedTabs.delete(tabId);
       throw error;
     }
+  }
+
+  private async attachTargetUnlocked(targetId: string): Promise<void> {
+    await chrome.debugger.attach({ targetId }, this.cdpVersion);
+    this.attachedTargets.add(targetId);
   }
 
   private async sendEnabledCommand(tabId: number, method: string): Promise<void> {
@@ -171,6 +264,14 @@ function requireCdpMethod(method: string): string {
   }
 
   return method.trim();
+}
+
+function requireTargetId(targetId: string): string {
+  if (typeof targetId !== "string" || !targetId.trim()) {
+    throw new Error("CDP target command requires a non-empty targetId");
+  }
+
+  return targetId.trim();
 }
 
 function withTimeout<T>(

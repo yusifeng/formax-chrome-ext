@@ -7,11 +7,15 @@
     "alarms",
     "debugger",
     "downloads",
+    "history",
     "nativeMessaging",
+    "offscreen",
     "scripting",
     "storage",
     "tabGroups",
-    "tabs"
+    "tabs",
+    "clipboardRead",
+    "clipboardWrite"
   ],
   "host_permissions": [
     "<all_urls>"

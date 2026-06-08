@@ -188,12 +188,17 @@ async fn handle_chrome_message(
                 let result = message.get("result").cloned().unwrap_or(Value::Null);
                 let _ = sender.send(crate::rpc::CallResult::Success(result));
             } else {
-                let error_msg = message
-                    .get("error")
-                    .and_then(|e| e.get("message"))
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| format!("{}", message.get("error").unwrap_or(&Value::Null)));
+                let error_value = message.get("error").unwrap_or(&Value::Null);
+                let error_msg = match (
+                    error_value.get("code").and_then(|v| v.as_str()),
+                    error_value.get("message").and_then(|v| v.as_str()),
+                ) {
+                    (Some(code), Some(message)) if !message.starts_with(&format!("{code}:")) => {
+                        format!("{code}: {message}")
+                    }
+                    (_, Some(message)) => message.to_string(),
+                    _ => format!("{error_value}"),
+                };
                 let _ = sender.send(crate::rpc::CallResult::Error(error_msg));
             }
         }
@@ -285,6 +290,40 @@ mod tests {
         match result {
             CallResult::Error(msg) => {
                 assert_eq!(msg, "failed");
+            }
+            _ => panic!("expected error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_error_response_preserves_structured_code() {
+        let pending: Arc<Mutex<HashMap<String, oneshot::Sender<CallResult>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let (tx, rx) = oneshot::channel::<CallResult>();
+        pending.lock().await.insert("req-3".to_string(), tx);
+
+        handle_chrome_message(
+            &pending,
+            json!({
+                "type": "response",
+                "id": "req-3",
+                "ok": false,
+                "error": {
+                    "code": "requires_host_approval",
+                    "message": "Browser access to example.com requires approval"
+                }
+            }),
+        )
+        .await;
+
+        let result = rx.await.unwrap();
+        match result {
+            CallResult::Error(msg) => {
+                assert_eq!(
+                    msg,
+                    "requires_host_approval: Browser access to example.com requires approval"
+                );
             }
             _ => panic!("expected error"),
         }
