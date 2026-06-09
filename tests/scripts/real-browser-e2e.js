@@ -2629,6 +2629,16 @@ async function run() {
       );
       assert(frameClicked === "Frame: clicked", "frame locator click mismatch", { frameClicked });
 
+      await frame.frameLocator("#nested-frame")
+        .getByRole("button", { name: "Nested frame action" })
+        .click({ waitMs: 100 });
+      const nestedClicked = await tabA.evaluate(
+        `document.getElementById("frame-result").textContent`
+      );
+      assert(nestedClicked === "Frame: nested clicked", "nested frame locator click mismatch", {
+        nestedClicked
+      });
+
       let threw = false;
       try {
         await tabA.waitForSelector("#definitely-missing", { timeoutMs: 300 });

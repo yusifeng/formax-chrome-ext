@@ -3380,7 +3380,6 @@ async function locatorExecutionTarget(tabId, locator, options = {}) {
         : null;
     const dispatchOnTopTarget = !targetId &&
         resolved.accessible === true &&
-        frameSelectors.length === 1 &&
         ["click", "dblclick", "dragTo", "hover", "highlight"].includes(options.actionKind ?? "");
     if (!frameId) {
         throw new Error(`Unable to resolve frame context for locator frameSelectors: ${frameSelectors.join(" -> ")}`);
@@ -6162,6 +6161,10 @@ function resolveFrameSelectorPathExpression(frameSelectors) {
       return String(value);
     }
   };
+  const isFrameElement = (node) => {
+    const tag = String(node?.tagName || "").toLowerCase();
+    return tag === "iframe" || tag === "frame";
+  };
   const rectInTopViewport = (node) => {
     const rect = node.getBoundingClientRect();
     let x = rect.left;
@@ -6194,7 +6197,7 @@ function resolveFrameSelectorPathExpression(frameSelectors) {
   for (let index = 0; index < frameSelectors.length; index += 1) {
     const selector = frameSelectors[index];
     const frame = queryAllPiercingOpenShadow(selector, currentRoot)
-      .find((candidate) => candidate instanceof HTMLIFrameElement || candidate instanceof HTMLFrameElement);
+      .find((candidate) => isFrameElement(candidate));
 
     if (!frame) {
       return {
@@ -6566,7 +6569,7 @@ function locatorActionabilitySource(actionKind, actionArgs = {}) {
         }
       }
 
-      if (current instanceof HTMLIFrameElement || current instanceof HTMLFrameElement) {
+      if (locatorIsFrameElement(current)) {
         let frameDocument = null;
         try {
           frameDocument = current.contentDocument;
@@ -6968,13 +6971,17 @@ function locatorResolverSource(locator) {
     visit(root);
     return out;
   };
+  const locatorIsFrameElement = (node) => {
+    const tag = String(node?.tagName || "").toLowerCase();
+    return tag === "iframe" || tag === "frame";
+  };
   const locatorResolveFrameRoot = (config, root = document) => {
     let currentRoot = root;
     const selectors = Array.isArray(config?.frameSelectors) ? config.frameSelectors : [];
 
     for (const frameSelector of selectors) {
       const frame = locatorQueryAllPiercingOpenShadow(frameSelector, currentRoot)
-        .find((candidate) => candidate instanceof HTMLIFrameElement || candidate instanceof HTMLFrameElement);
+        .find((candidate) => locatorIsFrameElement(candidate));
 
       if (!frame) {
         throw new Error("Frame locator could not find frame: " + frameSelector);
@@ -7036,7 +7043,7 @@ function locatorResolverSource(locator) {
         }
       }
 
-      if (current instanceof HTMLIFrameElement || current instanceof HTMLFrameElement) {
+      if (locatorIsFrameElement(current)) {
         let frameDocument = null;
         try {
           frameDocument = current.contentDocument;
