@@ -31,6 +31,8 @@ export const browserActionRegistry = [
     { action: "getDiagnostics", toolName: "browser_get_diagnostics", capabilityId: "browser.diagnostics", annotations: readOnly({ requiresSensitiveDataReview: true }) },
     { action: "getPolicy", toolName: "browser_get_policy", capabilityId: "browser.policy.get", annotations: readOnly() },
     { action: "updatePolicy", toolName: "browser_update_policy", capabilityId: "browser.policy.update", annotations: sideEffect() },
+    { action: "getPendingApprovals", toolName: "browser_get_pending_approvals", capabilityId: "browser.policy.confirmation", annotations: readOnly() },
+    { action: "resolveApproval", toolName: "browser_resolve_approval", capabilityId: "browser.policy.confirmation", annotations: sideEffect() },
     { action: "startSession", toolName: "browser_start_session", annotations: sideEffect({ requiresHostApproval: true }) },
     { action: "nameSession", toolName: "browser_name_session", capabilityId: "browser.nameSession", annotations: sideEffect() },
     { action: "openTabs", toolName: "browser_user_open_tabs", capabilityId: "browser.user.openTabs", annotations: sideEffect({ requiresSensitiveDataReview: true }) },

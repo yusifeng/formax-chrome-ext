@@ -69,6 +69,8 @@ export type BrowserClient = {
   getDiagnostics(args?: JsonObject): Promise<unknown>;
   getPolicy(args?: JsonObject): Promise<unknown>;
   updatePolicy(args?: JsonObject): Promise<unknown>;
+  getPendingApprovals(args?: JsonObject): Promise<unknown[]>;
+  resolveApproval(args: JsonObject): Promise<unknown>;
   startSession(args?: JsonObject): Promise<unknown>;
   nameSession(nameOrArgs: string | JsonObject, args?: JsonObject): Promise<unknown>;
   claimTab(args?: JsonObject): Promise<unknown>;
@@ -341,6 +343,9 @@ export type TabHandle = {
   getByLabel(text: string, args?: JsonObject): LocatorHandle;
   getByPlaceholder(text: string, args?: JsonObject): LocatorHandle;
   getByTestId(testId: string, args?: JsonObject): LocatorHandle;
+  getByAltText(text: string, args?: JsonObject): LocatorHandle;
+  getByTitle(text: string, args?: JsonObject): LocatorHandle;
+  getByDisplayValue(text: string, args?: JsonObject): LocatorHandle;
   frameLocator(selector: string): FrameLocatorHandle;
   click(targetOrArgs?: string | JsonObject, args?: JsonObject): Promise<unknown>;
   drag(args: JsonObject): Promise<unknown>;
@@ -374,12 +379,17 @@ console.log(observed.url);
 
 ```ts
 export type TabPlaywrightFacade = {
+  readonly keyboard: TabPlaywrightKeyboardFacade;
+  readonly mouse: TabPlaywrightMouseFacade;
   locator(selector: string, args?: JsonObject): LocatorHandle;
   getByText(text: string, args?: JsonObject): LocatorHandle;
   getByRole(role: string, args?: JsonObject): LocatorHandle;
   getByLabel(text: string, args?: JsonObject): LocatorHandle;
   getByPlaceholder(text: string, args?: JsonObject): LocatorHandle;
   getByTestId(testId: string, args?: JsonObject): LocatorHandle;
+  getByAltText(text: string, args?: JsonObject): LocatorHandle;
+  getByTitle(text: string, args?: JsonObject): LocatorHandle;
+  getByDisplayValue(text: string, args?: JsonObject): LocatorHandle;
   frameLocator(selector: string): FrameLocatorHandle;
   evaluate<T = unknown>(
     scriptOrFunction: string | ((arg?: unknown) => unknown),
@@ -541,6 +551,14 @@ export type LocatorHandle = {
   readonly selector: string;
   readonly plan: JsonObject;
   locator(childSelector: string, args?: JsonObject): LocatorHandle;
+  getByText(text: string, args?: JsonObject): LocatorHandle;
+  getByRole(role: string, args?: JsonObject): LocatorHandle;
+  getByLabel(text: string, args?: JsonObject): LocatorHandle;
+  getByPlaceholder(text: string, args?: JsonObject): LocatorHandle;
+  getByTestId(testId: string, args?: JsonObject): LocatorHandle;
+  getByAltText(text: string, args?: JsonObject): LocatorHandle;
+  getByTitle(text: string, args?: JsonObject): LocatorHandle;
+  getByDisplayValue(text: string, args?: JsonObject): LocatorHandle;
   filter(args?: JsonObject): LocatorHandle;
   and(locator: LocatorHandle | JsonObject): LocatorHandle;
   or(locator: LocatorHandle | JsonObject): LocatorHandle;
@@ -551,27 +569,47 @@ export type LocatorHandle = {
   waitFor(args?: JsonObject): Promise<unknown>;
   count(args?: JsonObject): Promise<number>;
   allTextContents(args?: JsonObject): Promise<string[]>;
+  allInnerTexts(args?: JsonObject): Promise<string[]>;
   textContent(args?: JsonObject): Promise<string | null>;
   innerText(args?: JsonObject): Promise<string>;
   getAttribute(name: string, args?: JsonObject): Promise<string | null>;
   isVisible(args?: JsonObject): Promise<boolean>;
+  isHidden(args?: JsonObject): Promise<boolean>;
   isEnabled(args?: JsonObject): Promise<boolean>;
+  isDisabled(args?: JsonObject): Promise<boolean>;
+  isEditable(args?: JsonObject): Promise<boolean>;
   inputValue(args?: JsonObject): Promise<string>;
   isChecked(args?: JsonObject): Promise<boolean>;
   boundingBox(args?: JsonObject): Promise<unknown>;
+  evaluate<T = unknown>(
+    scriptOrFunction: string | ((element: unknown, arg?: unknown) => unknown),
+    argOrOptions?: unknown,
+    options?: JsonObject
+  ): Promise<T>;
+  evaluateAll<T = unknown>(
+    scriptOrFunction: string | ((elements: unknown[], arg?: unknown) => unknown),
+    argOrOptions?: unknown,
+    options?: JsonObject
+  ): Promise<T>;
+  dispatchEvent(type: string, eventInit?: JsonObject, args?: JsonObject): Promise<unknown>;
   screenshot(args?: JsonObject): Promise<BrowserScreenshotResult>;
   click(args?: JsonObject): Promise<unknown>;
   dblclick(args?: JsonObject): Promise<unknown>;
+  dragTo(target: LocatorHandle | JsonObject, args?: JsonObject): Promise<unknown>;
   check(args?: JsonObject): Promise<unknown>;
   uncheck(args?: JsonObject): Promise<unknown>;
   hover(args?: JsonObject): Promise<unknown>;
+  highlight(args?: JsonObject): Promise<unknown>;
   focus(args?: JsonObject): Promise<unknown>;
+  blur(args?: JsonObject): Promise<unknown>;
+  scrollIntoViewIfNeeded(args?: JsonObject): Promise<unknown>;
+  selectText(args?: JsonObject): Promise<unknown>;
   clear(args?: JsonObject): Promise<unknown>;
   fill(value: string, args?: JsonObject): Promise<unknown>;
   type(value: string, args?: JsonObject): Promise<unknown>;
   press(key: string, args?: JsonObject): Promise<unknown>;
   setChecked(checked?: boolean, args?: JsonObject): Promise<unknown>;
-  selectOption(value: string | string[], args?: JsonObject): Promise<unknown>;
+  selectOption(value: string | string[] | JsonObject | JsonObject[] | null, args?: JsonObject): Promise<unknown>;
   setInputFiles(filePath: string | string[], args?: JsonObject): Promise<unknown>;
   downloadMedia(args?: JsonObject): Promise<BrowserDownloadMediaResult>;
   toJSON(): JsonObject;
@@ -598,6 +636,9 @@ export type FrameLocatorHandle = {
   getByLabel(text: string, args?: JsonObject): LocatorHandle;
   getByPlaceholder(text: string, args?: JsonObject): LocatorHandle;
   getByTestId(testId: string, args?: JsonObject): LocatorHandle;
+  getByAltText(text: string, args?: JsonObject): LocatorHandle;
+  getByTitle(text: string, args?: JsonObject): LocatorHandle;
+  getByDisplayValue(text: string, args?: JsonObject): LocatorHandle;
   frameLocator(selector: string): FrameLocatorHandle;
   resolve(args?: JsonObject): Promise<unknown>;
   evaluate<T = unknown>(
@@ -613,7 +654,7 @@ Example:
 
 ```js
 const frame = tab.frameLocator("iframe[name='login']");
-console.log(frame.toJSON()); // supported: false until iframe locators are implemented
+await frame.getByRole("button", { name: "Sign in" }).click();
 ```
 
 ## Unsupported Features And Reasons

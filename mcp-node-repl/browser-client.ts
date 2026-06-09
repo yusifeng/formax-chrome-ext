@@ -52,6 +52,38 @@ export class BrowserStrictModeError extends Error {
   }
 }
 
+export class BrowserActionabilityError extends Error {
+  readonly code = "locator_actionability";
+  readonly selector: string;
+  readonly action: string;
+  readonly reason: string;
+  readonly details: unknown;
+
+  constructor(selector: string, action: string, reason: string, details: unknown) {
+    super(`Locator ${selector} was not actionable for ${action}: ${reason}.`);
+    this.name = "BrowserActionabilityError";
+    this.selector = selector;
+    this.action = action;
+    this.reason = reason;
+    this.details = details;
+  }
+}
+
+export class BrowserDomCuaStaleNodeError extends Error {
+  readonly code = "dom_cua_stale_node";
+  readonly operation: string;
+  readonly nodeId: string;
+  readonly details: unknown;
+
+  constructor(operation: string, nodeId: string, details: unknown) {
+    super(`${operation} could not find node_id "${nodeId}" in the latest visible DOM snapshot. Refresh tab.dom_cua.get_visible_dom() and retry with a current node_id.`);
+    this.name = "BrowserDomCuaStaleNodeError";
+    this.operation = operation;
+    this.nodeId = nodeId;
+    this.details = details;
+  }
+}
+
 export type BrowserScreenshotResult = {
   sessionId: string | null;
   tabId: number;
@@ -171,6 +203,8 @@ export type BrowserFileChooserHandle = JsonObject & {
 export type BrowserPolicyFacade = {
   get(args?: JsonObject): Promise<unknown>;
   update(args?: JsonObject): Promise<unknown>;
+  pending(args?: JsonObject): Promise<unknown[]>;
+  resolve(args: JsonObject): Promise<unknown>;
   allowHost(hostOrUrl: string, args?: JsonObject): Promise<unknown>;
   alwaysAllowHost(hostOrUrl: string, args?: JsonObject): Promise<unknown>;
   blockHost(hostOrUrl: string, args?: JsonObject): Promise<unknown>;
@@ -194,12 +228,17 @@ export type BrowserDevFacade = {
 };
 
 export type TabPlaywrightFacade = {
+  readonly keyboard: TabPlaywrightKeyboardFacade;
+  readonly mouse: TabPlaywrightMouseFacade;
   locator(selector: string, args?: JsonObject): LocatorHandle;
   getByText(text: string, args?: JsonObject): LocatorHandle;
   getByRole(role: string, args?: JsonObject): LocatorHandle;
   getByLabel(text: string, args?: JsonObject): LocatorHandle;
   getByPlaceholder(text: string, args?: JsonObject): LocatorHandle;
   getByTestId(testId: string, args?: JsonObject): LocatorHandle;
+  getByAltText(text: string, args?: JsonObject): LocatorHandle;
+  getByTitle(text: string, args?: JsonObject): LocatorHandle;
+  getByDisplayValue(text: string, args?: JsonObject): LocatorHandle;
   frameLocator(selector: string): FrameLocatorHandle;
   evaluate<T = unknown>(
     scriptOrFunction: string | ((arg?: unknown) => unknown),
@@ -214,6 +253,20 @@ export type TabPlaywrightFacade = {
   waitForEvent(event: string, args?: JsonObject): Promise<unknown>;
   expectNavigation(action: () => unknown | Promise<unknown>, args?: JsonObject): Promise<unknown>;
   expectNavigation(args?: JsonObject): Promise<unknown>;
+};
+
+export type TabPlaywrightKeyboardFacade = {
+  press(key: string | string[], args?: JsonObject): Promise<unknown>;
+  type(text: string, args?: JsonObject): Promise<unknown>;
+  insertText(text: string, args?: JsonObject): Promise<unknown>;
+};
+
+export type TabPlaywrightMouseFacade = {
+  click(x: number, y: number, args?: JsonObject): Promise<unknown>;
+  dblclick(x: number, y: number, args?: JsonObject): Promise<unknown>;
+  move(x: number, y: number, args?: JsonObject): Promise<unknown>;
+  wheel(deltaX: number, deltaY: number, args?: JsonObject): Promise<unknown>;
+  drag(path: Array<{ x: number; y: number }>, args?: JsonObject): Promise<unknown>;
 };
 
 export type TabCuaFacade = {
@@ -322,6 +375,9 @@ export type TabHandle = {
   getByLabel(text: string, args?: JsonObject): LocatorHandle;
   getByPlaceholder(text: string, args?: JsonObject): LocatorHandle;
   getByTestId(testId: string, args?: JsonObject): LocatorHandle;
+  getByAltText(text: string, args?: JsonObject): LocatorHandle;
+  getByTitle(text: string, args?: JsonObject): LocatorHandle;
+  getByDisplayValue(text: string, args?: JsonObject): LocatorHandle;
   frameLocator(selector: string): FrameLocatorHandle;
   click(targetOrArgs?: string | JsonObject, args?: JsonObject): Promise<unknown>;
   drag(args: JsonObject): Promise<unknown>;
@@ -347,6 +403,14 @@ export type LocatorHandle = {
   readonly selector: string;
   readonly plan: JsonObject;
   locator(childSelector: string, args?: JsonObject): LocatorHandle;
+  getByText(text: string, args?: JsonObject): LocatorHandle;
+  getByRole(role: string, args?: JsonObject): LocatorHandle;
+  getByLabel(text: string, args?: JsonObject): LocatorHandle;
+  getByPlaceholder(text: string, args?: JsonObject): LocatorHandle;
+  getByTestId(testId: string, args?: JsonObject): LocatorHandle;
+  getByAltText(text: string, args?: JsonObject): LocatorHandle;
+  getByTitle(text: string, args?: JsonObject): LocatorHandle;
+  getByDisplayValue(text: string, args?: JsonObject): LocatorHandle;
   filter(args?: JsonObject): LocatorHandle;
   and(locator: LocatorHandle | JsonObject): LocatorHandle;
   or(locator: LocatorHandle | JsonObject): LocatorHandle;
@@ -357,27 +421,47 @@ export type LocatorHandle = {
   waitFor(args?: JsonObject): Promise<unknown>;
   count(args?: JsonObject): Promise<number>;
   allTextContents(args?: JsonObject): Promise<string[]>;
+  allInnerTexts(args?: JsonObject): Promise<string[]>;
   textContent(args?: JsonObject): Promise<string | null>;
   innerText(args?: JsonObject): Promise<string>;
   getAttribute(name: string, args?: JsonObject): Promise<string | null>;
   isVisible(args?: JsonObject): Promise<boolean>;
+  isHidden(args?: JsonObject): Promise<boolean>;
   isEnabled(args?: JsonObject): Promise<boolean>;
+  isDisabled(args?: JsonObject): Promise<boolean>;
+  isEditable(args?: JsonObject): Promise<boolean>;
   inputValue(args?: JsonObject): Promise<string>;
   isChecked(args?: JsonObject): Promise<boolean>;
   boundingBox(args?: JsonObject): Promise<unknown>;
+  evaluate<T = unknown>(
+    scriptOrFunction: string | ((element: unknown, arg?: unknown) => unknown),
+    argOrOptions?: unknown,
+    options?: JsonObject
+  ): Promise<T>;
+  evaluateAll<T = unknown>(
+    scriptOrFunction: string | ((elements: unknown[], arg?: unknown) => unknown),
+    argOrOptions?: unknown,
+    options?: JsonObject
+  ): Promise<T>;
+  dispatchEvent(type: string, eventInit?: JsonObject, args?: JsonObject): Promise<unknown>;
   screenshot(args?: JsonObject): Promise<BrowserScreenshotResult>;
   click(args?: JsonObject): Promise<unknown>;
   dblclick(args?: JsonObject): Promise<unknown>;
+  dragTo(target: LocatorHandle | JsonObject, args?: JsonObject): Promise<unknown>;
   check(args?: JsonObject): Promise<unknown>;
   uncheck(args?: JsonObject): Promise<unknown>;
   hover(args?: JsonObject): Promise<unknown>;
+  highlight(args?: JsonObject): Promise<unknown>;
   focus(args?: JsonObject): Promise<unknown>;
+  blur(args?: JsonObject): Promise<unknown>;
+  scrollIntoViewIfNeeded(args?: JsonObject): Promise<unknown>;
+  selectText(args?: JsonObject): Promise<unknown>;
   clear(args?: JsonObject): Promise<unknown>;
   fill(value: string, args?: JsonObject): Promise<unknown>;
   type(value: string, args?: JsonObject): Promise<unknown>;
   press(key: string, args?: JsonObject): Promise<unknown>;
   setChecked(checked?: boolean, args?: JsonObject): Promise<unknown>;
-  selectOption(value: string | string[], args?: JsonObject): Promise<unknown>;
+  selectOption(value: string | string[] | JsonObject | JsonObject[] | null, args?: JsonObject): Promise<unknown>;
   setInputFiles(filePath: string | string[], args?: JsonObject): Promise<unknown>;
   downloadMedia(args?: JsonObject): Promise<BrowserDownloadMediaResult>;
   toJSON(): JsonObject;
@@ -392,6 +476,9 @@ export type FrameLocatorHandle = {
   getByLabel(text: string, args?: JsonObject): LocatorHandle;
   getByPlaceholder(text: string, args?: JsonObject): LocatorHandle;
   getByTestId(testId: string, args?: JsonObject): LocatorHandle;
+  getByAltText(text: string, args?: JsonObject): LocatorHandle;
+  getByTitle(text: string, args?: JsonObject): LocatorHandle;
+  getByDisplayValue(text: string, args?: JsonObject): LocatorHandle;
   frameLocator(selector: string): FrameLocatorHandle;
   resolve(args?: JsonObject): Promise<unknown>;
   evaluate<T = unknown>(
@@ -429,6 +516,8 @@ export type BrowserClient = {
   getDiagnostics(args?: JsonObject): Promise<unknown>;
   getPolicy(args?: JsonObject): Promise<unknown>;
   updatePolicy(args?: JsonObject): Promise<unknown>;
+  getPendingApprovals(args?: JsonObject): Promise<unknown[]>;
+  resolveApproval(args: JsonObject): Promise<unknown>;
   startSession(args?: JsonObject): Promise<unknown>;
   nameSession(nameOrArgs: string | JsonObject, args?: JsonObject): Promise<unknown>;
   claimTab(args?: JsonObject): Promise<unknown>;
@@ -484,6 +573,8 @@ const noDefaultActions = new Set<BrowserToolName>([
   "browser_wait_for_event",
   "browser_get_policy",
   "browser_update_policy",
+  "browser_get_pending_approvals",
+  "browser_resolve_approval",
   "browser_start_session",
   "browser_name_session",
   "browser_user_open_tabs",
@@ -653,6 +744,11 @@ export function createBrowserClient(options: CreateBrowserClientOptions = {}): B
     getDiagnostics: (args = {}) => result("browser_get_diagnostics", args),
     getPolicy: (args = {}) => result("browser_get_policy", args),
     updatePolicy: (args = {}) => result("browser_update_policy", args),
+    getPendingApprovals: async (args = {}) => {
+      const pending = await result<{ approvals?: unknown[] }>("browser_get_pending_approvals", args);
+      return pending.approvals ?? [];
+    },
+    resolveApproval: (args) => result("browser_resolve_approval", args),
     startSession: (args = {}) => result("browser_start_session", withPreferredSession(state, args)),
     nameSession: (nameOrArgs, args = {}) =>
       result("browser_name_session", withCurrentSession(state, stringArg("name", nameOrArgs, args))),
@@ -800,14 +896,16 @@ async function writeScreenshotOutput(
 }
 
 function elementScreenshotQueryArgs(args: JsonObject): JsonObject {
+  const options = withTimeoutAlias(args, "element.screenshot.timeout");
   return cleanObject({
-    timeoutMs: optionalNumber(args.timeoutMs, "element.screenshot.timeoutMs")
+    timeoutMs: optionalNumber(options.timeoutMs, "element.screenshot.timeoutMs")
   });
 }
 
 function locatorCountQueryArgs(args: JsonObject): JsonObject {
+  const options = withTimeoutAlias(args, "locator.count.timeout");
   return cleanObject({
-    timeoutMs: optionalNumber(args.timeoutMs, "locator.count.timeoutMs")
+    timeoutMs: optionalNumber(options.timeoutMs, "locator.count.timeoutMs")
   });
 }
 
@@ -828,11 +926,56 @@ function locatorAllLimit(value: unknown) {
 function locatorActionOptions(args: JsonObject): JsonObject {
   return cleanObject({
     force: typeof args.force === "boolean" ? args.force : undefined,
+    trial: typeof args.trial === "boolean" ? args.trial : undefined,
     button: typeof args.button === "string" ? args.button : undefined,
     clickCount: optionalNumber(args.clickCount, "locator.action.clickCount"),
     confirmed: typeof args.confirmed === "boolean" ? args.confirmed : undefined,
     confirmationId: typeof args.confirmationId === "string" ? args.confirmationId : undefined
   });
+}
+
+function normalizeSelectOptionValue(value: string | JsonObject | null, label: string): JsonObject {
+  if (value == null) {
+    return {};
+  }
+
+  if (typeof value === "string") {
+    return { value, label: value };
+  }
+
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} must be a string, option object, option object array, string array, or null.`);
+  }
+
+  const source = objectArg(value);
+  const option = cleanObject({
+    value: typeof source.value === "string" ? source.value : undefined,
+    label: typeof source.label === "string" ? source.label : undefined,
+    index: source.index === undefined ? undefined : Math.max(0, Math.floor(Number(source.index)))
+  });
+
+  if (option.index !== undefined && !Number.isFinite(option.index as number)) {
+    throw new Error(`${label}.index must be a finite number.`);
+  }
+
+  if (option.value === undefined && option.label === undefined && option.index === undefined) {
+    throw new Error(`${label} must include value, label, or index.`);
+  }
+
+  return option;
+}
+
+function selectOptionActionArgs(value: string | string[] | JsonObject | JsonObject[] | null): JsonObject {
+  if (value == null) {
+    return { options: [] };
+  }
+
+  const values = Array.isArray(value) ? value : [value];
+  return {
+    options: values.map((item, index) =>
+      normalizeSelectOptionValue(item as string | JsonObject | null, `locator.selectOption.options[${index}]`)
+    )
+  };
 }
 
 function locatorPlanFilterOptions(args: JsonObject, label: string): JsonObject {
@@ -1058,7 +1201,7 @@ class TabHandleImpl implements TabHandle {
 
   async waitForLoadState(stateOrArgs: string | JsonObject = "load", args: JsonObject = {}) {
     this.assertOpen();
-    const params = stringArg("state", stateOrArgs, args);
+    const params = withTimeoutAlias(stringArg("state", stateOrArgs, args), "waitForLoadState.timeout");
     const result = await this.transport.result<WaitResult>(
       "browser_wait_for_load_state",
       this.targetArgs(stripClientOptions(params))
@@ -1068,7 +1211,7 @@ class TabHandleImpl implements TabHandle {
 
   async waitForUrl(matchOrArgs: string | RegExp | JsonObject, args: JsonObject = {}) {
     this.assertOpen();
-    const params = normalizeUrlMatcher(matchOrArgs, args);
+    const params = withTimeoutAlias(normalizeUrlMatcher(matchOrArgs, args), "waitForUrl.timeout");
     const result = await this.transport.result<WaitResult>(
       "browser_wait_for_url",
       this.targetArgs(stripClientOptions(params))
@@ -1078,7 +1221,7 @@ class TabHandleImpl implements TabHandle {
 
   async waitForSelector(selectorOrArgs: string | JsonObject, args: JsonObject = {}) {
     this.assertOpen();
-    const params = stringArg("selector", selectorOrArgs, args);
+    const params = withTimeoutAlias(stringArg("selector", selectorOrArgs, args), "waitForSelector.timeout");
     const result = await this.transport.result<WaitResult>(
       "browser_wait_for_selector",
       this.targetArgs(stripClientOptions(params))
@@ -1088,7 +1231,7 @@ class TabHandleImpl implements TabHandle {
 
   async waitForText(textOrArgs: string | JsonObject, args: JsonObject = {}) {
     this.assertOpen();
-    const params = stringArg("text", textOrArgs, args);
+    const params = withTimeoutAlias(stringArg("text", textOrArgs, args), "waitForText.timeout");
     const result = await this.transport.result<WaitResult>(
       "browser_wait_for_text",
       this.targetArgs(stripClientOptions(params))
@@ -1153,6 +1296,30 @@ class TabHandleImpl implements TabHandle {
     return new LocatorHandleImpl(this.transport, this, requireNonEmptyString(testId, "getByTestId.testId"), {
       ...args,
       plan: { kind: "testId", testId, exact: args.exact === true }
+    });
+  }
+
+  getByAltText(text: string, args: JsonObject = {}) {
+    this.assertOpen();
+    return new LocatorHandleImpl(this.transport, this, requireNonEmptyString(text, "getByAltText.text"), {
+      ...args,
+      plan: { kind: "altText", text, exact: args.exact === true }
+    });
+  }
+
+  getByTitle(text: string, args: JsonObject = {}) {
+    this.assertOpen();
+    return new LocatorHandleImpl(this.transport, this, requireNonEmptyString(text, "getByTitle.text"), {
+      ...args,
+      plan: { kind: "title", text, exact: args.exact === true }
+    });
+  }
+
+  getByDisplayValue(text: string, args: JsonObject = {}) {
+    this.assertOpen();
+    return new LocatorHandleImpl(this.transport, this, requireNonEmptyString(text, "getByDisplayValue.text"), {
+      ...args,
+      plan: { kind: "displayValue", text, exact: args.exact === true }
     });
   }
 
@@ -1334,13 +1501,87 @@ class LocatorHandleImpl implements LocatorHandle {
   }
 
   locator(childSelector: string, args: JsonObject = {}) {
-    if (this.plan.kind !== "css") {
-      throw new Error("Locator chaining is currently only supported for CSS locators.");
-    }
     const child = requireNonEmptyString(childSelector, "locator.childSelector");
-    return new LocatorHandleImpl(this.transport, this.tab, `${this.selector} ${child}`, {
+    return this.scopedLocator(child, {
+      kind: "css",
+      selector: child
+    }, args);
+  }
+
+  getByText(text: string, args: JsonObject = {}) {
+    return this.scopedLocator(requireNonEmptyString(text, "locator.getByText.text"), {
+      kind: "text",
+      text,
+      exact: args.exact === true
+    }, args);
+  }
+
+  getByRole(role: string, args: JsonObject = {}) {
+    return this.scopedLocator(requireNonEmptyString(role, "locator.getByRole.role"), {
+      kind: "role",
+      role,
+      name: typeof args.name === "string" ? args.name : undefined,
+      exact: args.exact === true
+    }, args);
+  }
+
+  getByLabel(text: string, args: JsonObject = {}) {
+    return this.scopedLocator(requireNonEmptyString(text, "locator.getByLabel.text"), {
+      kind: "label",
+      text,
+      exact: args.exact === true
+    }, args);
+  }
+
+  getByPlaceholder(text: string, args: JsonObject = {}) {
+    return this.scopedLocator(requireNonEmptyString(text, "locator.getByPlaceholder.text"), {
+      kind: "placeholder",
+      text,
+      exact: args.exact === true
+    }, args);
+  }
+
+  getByTestId(testId: string, args: JsonObject = {}) {
+    return this.scopedLocator(requireNonEmptyString(testId, "locator.getByTestId.testId"), {
+      kind: "testId",
+      testId,
+      exact: args.exact === true
+    }, args);
+  }
+
+  getByAltText(text: string, args: JsonObject = {}) {
+    return this.scopedLocator(requireNonEmptyString(text, "locator.getByAltText.text"), {
+      kind: "altText",
+      text,
+      exact: args.exact === true
+    }, args);
+  }
+
+  getByTitle(text: string, args: JsonObject = {}) {
+    return this.scopedLocator(requireNonEmptyString(text, "locator.getByTitle.text"), {
+      kind: "title",
+      text,
+      exact: args.exact === true
+    }, args);
+  }
+
+  getByDisplayValue(text: string, args: JsonObject = {}) {
+    return this.scopedLocator(requireNonEmptyString(text, "locator.getByDisplayValue.text"), {
+      kind: "displayValue",
+      text,
+      exact: args.exact === true
+    }, args);
+  }
+
+  private scopedLocator(selector: string, plan: JsonObject, args: JsonObject = {}) {
+    return new LocatorHandleImpl(this.transport, this.tab, selector, {
       ...args,
-      strict: args.strict ?? this.strict
+      strict: args.strict ?? this.strict,
+      plan: {
+        ...plan,
+        within: this.plan,
+        frameSelectors: this.plan.frameSelectors
+      }
     });
   }
 
@@ -1407,9 +1648,10 @@ class LocatorHandleImpl implements LocatorHandle {
   }
 
   async waitFor(args: JsonObject = {}) {
+    const options = withTimeoutAlias(args, "locator.waitFor.timeout");
     const result = await this.transport.result<WaitResult>(
       "browser_locator_wait",
-      this.targetArgs(stripClientOptions(args))
+      this.targetArgs(stripClientOptions(options))
     );
     return assertWaitResult(result, "locator.waitFor", args.soft === true);
   }
@@ -1420,6 +1662,11 @@ class LocatorHandleImpl implements LocatorHandle {
 
   async allTextContents(args: JsonObject = {}) {
     const value = (await this.query("allTextContents", args)).value;
+    return Array.isArray(value) ? value.map((item) => String(item)) : [];
+  }
+
+  async allInnerTexts(args: JsonObject = {}) {
+    const value = (await this.query("allInnerTexts", args)).value;
     return Array.isArray(value) ? value.map((item) => String(item)) : [];
   }
 
@@ -1448,8 +1695,20 @@ class LocatorHandleImpl implements LocatorHandle {
     return (await this.query("isVisible", args)).value === true;
   }
 
+  async isHidden(args: JsonObject = {}) {
+    return (await this.query("isHidden", args)).value === true;
+  }
+
   async isEnabled(args: JsonObject = {}) {
     return (await this.query("isEnabled", args)).value === true;
+  }
+
+  async isDisabled(args: JsonObject = {}) {
+    return (await this.query("isDisabled", args)).value === true;
+  }
+
+  async isEditable(args: JsonObject = {}) {
+    return (await this.query("isEditable", args)).value === true;
   }
 
   async inputValue(args: JsonObject = {}) {
@@ -1463,6 +1722,49 @@ class LocatorHandleImpl implements LocatorHandle {
 
   async boundingBox(args: JsonObject = {}) {
     return (await this.query("boundingBox", args)).value ?? null;
+  }
+
+  async evaluate<T = unknown>(
+    scriptOrFunction: string | ((element: unknown, arg?: unknown) => unknown),
+    argOrOptions?: unknown,
+    options: JsonObject = {}
+  ) {
+    const evaluateOptions = typeof scriptOrFunction === "function"
+      ? options
+      : objectArg(argOrOptions);
+    const argument = typeof scriptOrFunction === "function" ? argOrOptions : evaluateOptions.arg;
+    const result = await this.action("evaluate", {
+      script: typeof scriptOrFunction === "function"
+        ? serializeLocatorPageFunction(scriptOrFunction)
+        : requireNonEmptyString(scriptOrFunction, "locator.evaluate.script"),
+      ...(argument !== undefined ? { argument } : {})
+    }, evaluateOptions);
+    return (objectArg(result).value ?? null) as T;
+  }
+
+  async evaluateAll<T = unknown>(
+    scriptOrFunction: string | ((elements: unknown[], arg?: unknown) => unknown),
+    argOrOptions?: unknown,
+    options: JsonObject = {}
+  ) {
+    const evaluateOptions = typeof scriptOrFunction === "function"
+      ? options
+      : objectArg(argOrOptions);
+    const argument = typeof scriptOrFunction === "function" ? argOrOptions : evaluateOptions.arg;
+    const result = await this.action("evaluateAll", {
+      script: typeof scriptOrFunction === "function"
+        ? serializeLocatorPageFunction(scriptOrFunction)
+        : requireNonEmptyString(scriptOrFunction, "locator.evaluateAll.script"),
+      ...(argument !== undefined ? { argument } : {})
+    }, evaluateOptions);
+    return (objectArg(result).value ?? null) as T;
+  }
+
+  dispatchEvent(type: string, eventInit: JsonObject = {}, args: JsonObject = {}) {
+    return this.action("dispatchEvent", {
+      type: requireNonEmptyString(type, "locator.dispatchEvent.type"),
+      eventInit: objectArg(eventInit)
+    }, args);
   }
 
   async screenshot(args: JsonObject = {}) {
@@ -1479,6 +1781,12 @@ class LocatorHandleImpl implements LocatorHandle {
     return this.action("dblclick", {}, args);
   }
 
+  dragTo(target: LocatorHandle | JsonObject, args: JsonObject = {}) {
+    return this.action("dragTo", {
+      targetLocator: locatorPlanFromFilterTarget(target, "locator.dragTo.target")
+    }, args);
+  }
+
   check(args: JsonObject = {}) {
     return this.setChecked(true, args);
   }
@@ -1491,8 +1799,28 @@ class LocatorHandleImpl implements LocatorHandle {
     return this.action("hover", {}, args);
   }
 
+  highlight(args: JsonObject = {}) {
+    return this.action("highlight", {
+      ...(typeof args.color === "string" ? { color: args.color } : {}),
+      ...(typeof args.durationMs === "number" ? { durationMs: args.durationMs } : {}),
+      ...(typeof args.highlightDurationMs === "number" ? { highlightDurationMs: args.highlightDurationMs } : {})
+    }, args);
+  }
+
   focus(args: JsonObject = {}) {
     return this.action("focus", {}, args);
+  }
+
+  blur(args: JsonObject = {}) {
+    return this.action("blur", {}, args);
+  }
+
+  scrollIntoViewIfNeeded(args: JsonObject = {}) {
+    return this.action("scrollIntoViewIfNeeded", {}, args);
+  }
+
+  selectText(args: JsonObject = {}) {
+    return this.action("selectText", {}, args);
   }
 
   clear(args: JsonObject = {}) {
@@ -1521,9 +1849,8 @@ class LocatorHandleImpl implements LocatorHandle {
     return this.action("setChecked", { checked }, args);
   }
 
-  selectOption(value: string | string[], args: JsonObject = {}) {
-    const actionArgs = Array.isArray(value) ? { values: value } : { value };
-    return this.action("selectOption", actionArgs, args);
+  selectOption(value: string | string[] | JsonObject | JsonObject[] | null, args: JsonObject = {}) {
+    return this.action("selectOption", selectOptionActionArgs(value), args);
   }
 
   setInputFiles(filePath: string | string[], args: JsonObject = {}) {
@@ -1555,29 +1882,36 @@ class LocatorHandleImpl implements LocatorHandle {
   }
 
   private async query(kind: string, args: JsonObject = {}) {
+    const options = withTimeoutAlias(args, `locator.${kind}.timeout`);
     return this.transport.result<{ value?: unknown; count?: number }>(
       "browser_locator_query",
       this.targetArgs({
-        ...stripClientOptions(args),
+        ...stripClientOptions(options),
         kind
       })
     );
   }
 
   private async action(kind: string, actionArgs: JsonObject, args: JsonObject = {}) {
+    const options = withTimeoutAlias(args, `locator.${kind}.timeout`);
     await this.assertStrictIfNeeded(args);
-    return this.transport.result(
-      "browser_locator_action",
-      this.targetArgs({
-        kind,
-        waitMs: args.waitMs,
-        args: {
-          ...actionArgs,
-          ...locatorActionOptions(args),
-          ...objectArg(args.actionArgs)
-        }
-      })
-    );
+    try {
+      return await this.transport.result(
+        "browser_locator_action",
+        this.targetArgs({
+          kind,
+          waitMs: options.waitMs,
+          timeoutMs: options.timeoutMs,
+          args: {
+            ...actionArgs,
+            ...locatorActionOptions(options),
+            ...objectArg(options.actionArgs)
+          }
+        })
+      );
+    } catch (error) {
+      throw mapLocatorBackendError(error, this.selector, kind);
+    }
   }
 
   private async assertStrictIfNeeded(args: JsonObject) {
@@ -1662,6 +1996,27 @@ class FrameLocatorHandleImpl implements FrameLocatorHandle {
     });
   }
 
+  getByAltText(text: string, args: JsonObject = {}) {
+    return new LocatorHandleImpl(this.transport, this.tab, requireNonEmptyString(text, "frameLocator.getByAltText.text"), {
+      ...args,
+      plan: { kind: "altText", text, exact: args.exact === true, frameSelectors: this.frameSelectors }
+    });
+  }
+
+  getByTitle(text: string, args: JsonObject = {}) {
+    return new LocatorHandleImpl(this.transport, this.tab, requireNonEmptyString(text, "frameLocator.getByTitle.text"), {
+      ...args,
+      plan: { kind: "title", text, exact: args.exact === true, frameSelectors: this.frameSelectors }
+    });
+  }
+
+  getByDisplayValue(text: string, args: JsonObject = {}) {
+    return new LocatorHandleImpl(this.transport, this.tab, requireNonEmptyString(text, "frameLocator.getByDisplayValue.text"), {
+      ...args,
+      plan: { kind: "displayValue", text, exact: args.exact === true, frameSelectors: this.frameSelectors }
+    });
+  }
+
   frameLocator(selector: string) {
     return new FrameLocatorHandleImpl(this.transport, this.tab, [
       ...this.frameSelectors,
@@ -1670,12 +2025,13 @@ class FrameLocatorHandleImpl implements FrameLocatorHandle {
   }
 
   resolve(args: JsonObject = {}) {
+    const options = withTimeoutAlias(args, "frameLocator.resolve.timeout");
     return this.transport.result("browser_resolve_frame", {
       sessionId: this.tab.sessionId,
       tabId: this.tab.tabId,
       frameSelectors: this.frameSelectors,
-      ...(typeof args.targetId === "string" ? { targetId: args.targetId } : {}),
-      ...(typeof args.timeoutMs === "number" ? { timeoutMs: args.timeoutMs } : {})
+      ...(typeof options.targetId === "string" ? { targetId: options.targetId } : {}),
+      ...(typeof options.timeoutMs === "number" ? { timeoutMs: options.timeoutMs } : {})
     });
   }
 
@@ -1724,12 +2080,17 @@ class FrameLocatorHandleImpl implements FrameLocatorHandle {
 
 function createTabPlaywrightFacade(tab: TabHandle): TabPlaywrightFacade {
   return {
+    keyboard: createTabPlaywrightKeyboardFacade(tab),
+    mouse: createTabPlaywrightMouseFacade(tab),
     locator: (selector, args = {}) => tab.locator(selector, args),
     getByText: (text, args = {}) => tab.getByText(text, args),
     getByRole: (role, args = {}) => tab.getByRole(role, args),
     getByLabel: (text, args = {}) => tab.getByLabel(text, args),
     getByPlaceholder: (text, args = {}) => tab.getByPlaceholder(text, args),
     getByTestId: (testId, args = {}) => tab.getByTestId(testId, args),
+    getByAltText: (text, args = {}) => tab.getByAltText(text, args),
+    getByTitle: (text, args = {}) => tab.getByTitle(text, args),
+    getByDisplayValue: (text, args = {}) => tab.getByDisplayValue(text, args),
     frameLocator: (selector) => tab.frameLocator(selector),
     evaluate: <T = unknown>(
       scriptOrFunction: string | ((arg?: unknown) => unknown),
@@ -1790,6 +2151,40 @@ function createTabPlaywrightFacade(tab: TabHandle): TabPlaywrightFacade {
   };
 }
 
+function createTabPlaywrightKeyboardFacade(tab: TabHandle): TabPlaywrightKeyboardFacade {
+  return {
+    press: (key, args = {}) => tab.pressKey(keypressArg(key, args, "tab.playwright.keyboard.press")),
+    type: (text, args = {}) => tab.type({
+      ...args,
+      text: requireTextString(text, "tab.playwright.keyboard.type.text")
+    }),
+    insertText: (text, args = {}) => tab.type({
+      ...args,
+      text: requireTextString(text, "tab.playwright.keyboard.insertText.text")
+    })
+  };
+}
+
+function createTabPlaywrightMouseFacade(tab: TabHandle): TabPlaywrightMouseFacade {
+  return {
+    click: (x, y, args = {}) => tab.click(mousePointArgs(x, y, args, "tab.playwright.mouse.click")),
+    dblclick: (x, y, args = {}) => tab.click({
+      ...mousePointArgs(x, y, args, "tab.playwright.mouse.dblclick"),
+      clickCount: 2
+    }),
+    move: (x, y, args = {}) => tab.moveMouse(mousePointArgs(x, y, args, "tab.playwright.mouse.move")),
+    wheel: (deltaX, deltaY, args = {}) => tab.scroll({
+      ...args,
+      deltaX: requireNumber(deltaX, "tab.playwright.mouse.wheel.deltaX"),
+      deltaY: requireNumber(deltaY, "tab.playwright.mouse.wheel.deltaY")
+    }),
+    drag: (path, args = {}) => tab.drag({
+      ...args,
+      path
+    })
+  };
+}
+
 async function expectNavigationForAction(
   tab: TabHandle,
   actionOrArgs: JsonObject | (() => unknown | Promise<unknown>) = {},
@@ -1797,10 +2192,13 @@ async function expectNavigationForAction(
 ) {
   if (typeof actionOrArgs !== "function") {
     const state = typeof actionOrArgs.state === "string" ? actionOrArgs.state : "load";
-    return tab.waitForLoadState(state, withoutKeys(actionOrArgs, ["state"]));
+    return tab.waitForLoadState(state, withoutKeys(
+      withTimeoutAlias(actionOrArgs, "tab.playwright.expectNavigation.timeout"),
+      ["state"]
+    ));
   }
 
-  const options = objectArg(args);
+  const options = withTimeoutAlias(objectArg(args), "tab.playwright.expectNavigation.timeout");
   const navigationPromise = waitForExpectedNavigation(tab, options);
   let actionResult;
 
@@ -1820,7 +2218,8 @@ async function expectNavigationForAction(
 }
 
 async function waitForExpectedNavigation(tab: TabHandle, options: JsonObject) {
-  const timeoutMs = optionalNumber(options.timeoutMs, "tab.playwright.expectNavigation.timeoutMs") ?? 15000;
+  const normalizedOptions = withTimeoutAlias(options, "tab.playwright.expectNavigation.timeout");
+  const timeoutMs = optionalNumber(normalizedOptions.timeoutMs, "tab.playwright.expectNavigation.timeoutMs") ?? 15000;
   const waitUntil = typeof options.waitUntil === "string"
     ? options.waitUntil
     : typeof options.state === "string"
@@ -1833,7 +2232,7 @@ async function waitForExpectedNavigation(tab: TabHandle, options: JsonObject) {
     typeof options.urlRegex === "string"
   ) {
     return tab.waitForUrl(withoutKeys({
-      ...options,
+      ...normalizedOptions,
       waitUntil,
       timeoutMs
     }, ["state"]));
@@ -1841,7 +2240,7 @@ async function waitForExpectedNavigation(tab: TabHandle, options: JsonObject) {
 
   const startedAt = Date.now();
   const commit = await tab.waitForLoadState("commit", {
-    ...withoutKeys(options, ["state", "waitUntil"]),
+    ...withoutKeys(normalizedOptions, ["state", "waitUntil"]),
     timeoutMs
   });
 
@@ -1853,7 +2252,7 @@ async function waitForExpectedNavigation(tab: TabHandle, options: JsonObject) {
 
   const remainingMs = Math.max(0, timeoutMs - (Date.now() - startedAt));
   const loadState = await tab.waitForLoadState(waitUntil, {
-    ...withoutKeys(options, ["state", "waitUntil"]),
+    ...withoutKeys(normalizedOptions, ["state", "waitUntil"]),
     timeoutMs: remainingMs
   });
 
@@ -1935,16 +2334,84 @@ function createTabClipboardFacade(tab: TabHandle): TabClipboardFacade {
         tabId: tab.tabId
       });
       const result = objectArg(envelope.result);
-      return Array.isArray(result.items) ? result.items : [];
+      return Array.isArray(result.items) ? enrichClipboardItems(result.items) : [];
     },
     write: async (items, args = {}) => {
       return tab.browser.tool("browser_clipboard_write", {
         ...args,
         sessionId: tab.sessionId,
         tabId: tab.tabId,
-        items
+        items: normalizeClipboardWriteItems(items)
       });
     }
+  };
+}
+
+function enrichClipboardItems(items: unknown[]): JsonObject[] {
+  return items.map((item) => {
+    const source = objectArg(item);
+    const types = Array.isArray(source.types)
+      ? source.types.map((payload) => enrichClipboardPayload(payload))
+      : [];
+    return {
+      ...source,
+      types
+    };
+  });
+}
+
+function enrichClipboardPayload(payload: unknown): JsonObject {
+  const source = objectArg(payload);
+  const mimeType = typeof source.mimeType === "string" ? source.mimeType : null;
+  const dataBase64 = typeof source.dataBase64 === "string" ? source.dataBase64 : null;
+
+  return cleanObject({
+    ...source,
+    ...(mimeType && dataBase64 ? { dataUrl: `data:${mimeType};base64,${dataBase64}` } : {})
+  });
+}
+
+function normalizeClipboardWriteItems(items: unknown[]): JsonObject[] {
+  if (!Array.isArray(items)) {
+    throw new Error("tab.clipboard.write(items) requires an item array.");
+  }
+
+  return items.map((item, itemIndex) => {
+    const source = objectArg(item);
+    const types = Array.isArray(source.types)
+      ? source.types.map((payload, typeIndex) => normalizeClipboardWritePayload(
+          payload,
+          `tab.clipboard.write.items[${itemIndex}].types[${typeIndex}]`
+        ))
+      : [];
+
+    return {
+      ...source,
+      types
+    };
+  });
+}
+
+function normalizeClipboardWritePayload(payload: unknown, label: string): JsonObject {
+  const source = objectArg(payload);
+  const dataUrl = typeof source.dataUrl === "string" ? parseClipboardDataUrl(source.dataUrl, label) : null;
+
+  return cleanObject({
+    ...withoutKeys(source, ["dataUrl"]),
+    ...(dataUrl ? { mimeType: dataUrl.mimeType, dataBase64: dataUrl.dataBase64 } : {})
+  });
+}
+
+function parseClipboardDataUrl(value: string, label: string) {
+  const match = /^data:([^;,]+(?:\/[^;,]+)?)(?:;[^,]*)?;base64,([A-Za-z0-9+/=]+)$/.exec(value.trim());
+
+  if (!match) {
+    throw new Error(`${label}.dataUrl must be a base64 data URL.`);
+  }
+
+  return {
+    mimeType: match[1],
+    dataBase64: match[2]
   };
 }
 
@@ -1961,6 +2428,10 @@ function serializePageFunction(fn: (arg?: unknown) => unknown, arg: unknown) {
   }
 
   return `(${source})(${serializedArg})`;
+}
+
+function serializeLocatorPageFunction(fn: Function) {
+  return fn.toString();
 }
 
 function cuaClickArgs(args: JsonObject = {}, extra: JsonObject = {}) {
@@ -2034,6 +2505,21 @@ function cuaKeyArg(args: JsonObject = {}, label = "tab.cua.keypress") {
   });
 }
 
+function keypressArg(key: string | string[], args: JsonObject = {}, label = "keypress") {
+  return cleanObject({
+    ...args,
+    key: normalizeSingleKey(key, `${label}.key`)
+  });
+}
+
+function mousePointArgs(x: number, y: number, args: JsonObject = {}, label = "mouse") {
+  return cleanObject({
+    ...args,
+    x: requireNumber(x, `${label}.x`),
+    y: requireNumber(y, `${label}.y`)
+  });
+}
+
 function domCuaTargetArgs(args: JsonObject = {}, extra: JsonObject = {}) {
   const target = domCuaTarget(args);
   return cleanObject({
@@ -2102,7 +2588,14 @@ async function domCuaNodeFromLatestSnapshot(
   const node = snapshot.nodes.find((candidate) => candidate.node_id === nodeId || candidate.ref === nodeId);
 
   if (!node) {
-    throw new Error(`${label} could not find node_id "${nodeId}" in the latest visible DOM snapshot.`);
+    throw new BrowserDomCuaStaleNodeError(label, nodeId, {
+      sessionId: snapshot.sessionId,
+      tabId: snapshot.tabId,
+      url: snapshot.url,
+      title: snapshot.title,
+      availableNodeIds: snapshot.nodes.map((candidate) => candidate.node_id).filter(Boolean).slice(0, 25),
+      availableRefs: snapshot.nodes.map((candidate) => candidate.ref).filter(Boolean).slice(0, 25)
+    });
   }
 
   return node;
@@ -2318,7 +2811,25 @@ function normalizeKeyCombo(parts: string[], label: string) {
     PgDown: "PageDown",
     Return: "Enter",
     Apps: "ContextMenu",
-    Menu: "ContextMenu"
+    Menu: "ContextMenu",
+    VolumeMute: "AudioVolumeMute",
+    VolumeDown: "AudioVolumeDown",
+    VolumeUp: "AudioVolumeUp",
+    MediaNextTrack: "MediaTrackNext",
+    MediaPreviousTrack: "MediaTrackPrevious",
+    MediaPrevTrack: "MediaTrackPrevious",
+    MediaPlay: "MediaPlayPause",
+    MediaPause: "MediaPlayPause",
+    NumpadPlus: "NumpadAdd",
+    NumpadMinus: "NumpadSubtract",
+    NumpadStar: "NumpadMultiply",
+    NumpadSlash: "NumpadDivide",
+    NumpadDot: "NumpadDecimal",
+    Decimal: "NumpadDecimal",
+    Multiply: "NumpadMultiply",
+    Add: "NumpadAdd",
+    Subtract: "NumpadSubtract",
+    Divide: "NumpadDivide"
   };
   const baseKeys = [
     "Enter",
@@ -2341,7 +2852,32 @@ function normalizeKeyCombo(parts: string[], label: string) {
     "NumLock",
     "ScrollLock",
     "ContextMenu",
-    ...Array.from({ length: 12 }, (_value, index) => `F${index + 1}`),
+    "Convert",
+    "NonConvert",
+    "KanaMode",
+    "HangulMode",
+    "HanjaMode",
+    "JunjaMode",
+    "FinalMode",
+    "ModeChange",
+    "Process",
+    "Compose",
+    "AudioVolumeMute",
+    "AudioVolumeDown",
+    "AudioVolumeUp",
+    "MediaTrackNext",
+    "MediaTrackPrevious",
+    "MediaStop",
+    "MediaPlayPause",
+    ...Array.from({ length: 10 }, (_value, index) => `Numpad${index}`),
+    "NumpadEnter",
+    "NumpadAdd",
+    "NumpadSubtract",
+    "NumpadMultiply",
+    "NumpadDivide",
+    "NumpadDecimal",
+    "NumpadEqual",
+    ...Array.from({ length: 24 }, (_value, index) => `F${index + 1}`),
     ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ".split(""),
     ..."abcdefghijklmnopqrstuvwxyz".split(""),
     ..."0123456789".split(""),
@@ -2685,17 +3221,28 @@ function enrichDownloadMediaResult(result: unknown): BrowserDownloadMediaResult 
 function enrichDownloadSummary(download: unknown): BrowserDownloadHandle {
   const source = objectArg(download);
   const suggestedFilename = downloadSuggestedFilename(source);
+  const id = typeof source.id === "number"
+    ? source.id
+    : typeof source.downloadId === "number"
+      ? source.downloadId
+      : typeof source.download_id === "number"
+        ? source.download_id
+        : undefined;
+  const normalized: JsonObject = {
+    ...source,
+    ...(id != null ? { id, downloadId: id, download_id: id } : {})
+  };
   const localPath =
-    source.state === "complete" && typeof source.filename === "string" && source.filename
-      ? source.filename
+    normalized.state === "complete" && typeof normalized.filename === "string" && normalized.filename
+      ? normalized.filename
       : null;
 
   return {
-    ...source,
+    ...normalized,
     suggestedFilename: () => suggestedFilename,
     path: () => localPath,
     toJSON: () => ({
-      ...source,
+      ...normalized,
       suggestedFilename,
       path: localPath
     })
@@ -2737,6 +3284,11 @@ function createPolicyFacade(transport: BrowserTransport): BrowserPolicyFacade {
   return {
     get: (args = {}) => transport.result("browser_get_policy", args),
     update: (args = {}) => transport.result("browser_update_policy", args),
+    pending: async (args = {}) => {
+      const result = await transport.result<{ approvals?: unknown[] }>("browser_get_pending_approvals", args);
+      return result.approvals ?? [];
+    },
+    resolve: (args) => transport.result("browser_resolve_approval", args),
     allowHost: (hostOrUrl, args = {}) =>
       transport.result("browser_update_policy", {
         ...args,
@@ -2874,6 +3426,30 @@ function createDocumentationFacade(runtime: {
         "const tab = await browser.tabs.new('https://www.baidu.com')",
         "const tabs = await browser.user.openTabs({ currentWindow: true })",
         "const tab = await browser.user.claimTab(tabs[0])"
+      ]
+    }),
+    browserUse: () => ({
+      mcpSurface: "Expose only the node_repl JavaScript tool surface to the model. Import the Formax browser SDK inside that persistent runtime and use the object API for all browser work.",
+      decisionFlow: [
+        "Use structured connectors, APIs, CLIs, or file parsers before Chrome when they can satisfy the task.",
+        "Use the Chrome extension backend only when the task needs the user's real Chrome profile, cookies, logged-in state, installed extensions, or currently open tabs.",
+        "Reuse or claim one working tab unless the user explicitly asks for multiple tabs.",
+        "Wait for the required page state, then observe or inspect before acting.",
+        "Prefer semantic locators, then scoped locators, then CSS, then observed refs, and use coordinates only as a last resort.",
+        "Verify each meaningful action from URL, title, DOM text, events, or screenshot.",
+        "Finalize handoff/deliverable tabs or stop the session as the final browser action."
+      ],
+      approvals: [
+        "Never bypass host, confirmation, or origin approval with raw CDP or evaluate.",
+        "When an action returns requires_host_approval, confirmation_required, or origin_approval_required, inspect browser.policy.pending(), summarize the pending approval to the user, then call browser.policy.resolve() only after the user decides.",
+        "Browser history and clipboard reads/writes require explicit confirmation for every request and have no always-allow path.",
+        "Site permission prompts require explicit approval for the exact site and permission before clicking Allow."
+      ],
+      frameAndLocatorNotes: [
+        "frameLocator(selector) and nested frameLocator paths are best-effort for same-origin and common OOPIF targets.",
+        "OOPIF target matching uses Target.getTargets and target-scoped Page.getFrameTree when needed.",
+        "Closed shadow roots remain opaque; use page-provided controls or inspected coordinates when no DOM access exists.",
+        "Do not blindly retry locator failures; refresh observe()/DOM state first."
       ]
     }),
     locators: () => ({
@@ -3135,6 +3711,33 @@ function assertWaitResult<T extends WaitResult>(result: T, label: string, soft: 
   return result;
 }
 
+function mapLocatorBackendError(error: unknown, selector: string, action: string): never {
+  const record = error && typeof error === "object" ? error as JsonObject : {};
+  const code = typeof record.code === "string" ? record.code : null;
+  const details = record.details && typeof record.details === "object" ? record.details as JsonObject : {};
+  const detailSelector = typeof details.selector === "string" && details.selector.trim()
+    ? details.selector.trim()
+    : selector;
+
+  if (code === "strict_mode_violation") {
+    const count = typeof details.count === "number" && Number.isFinite(details.count)
+      ? details.count
+      : 0;
+    throw new BrowserStrictModeError(detailSelector, count);
+  }
+
+  if (code === "locator_actionability") {
+    const reason = typeof details.actionabilityCode === "string" && details.actionabilityCode.trim()
+      ? details.actionabilityCode.trim()
+      : error instanceof Error && error.message.trim()
+        ? error.message.trim()
+        : "not_actionable";
+    throw new BrowserActionabilityError(detailSelector, action, reason, details);
+  }
+
+  throw error;
+}
+
 function normalizeUrlMatcher(matchOrArgs: string | RegExp | JsonObject, args: JsonObject) {
   if (typeof matchOrArgs === "string") {
     return {
@@ -3154,7 +3757,18 @@ function normalizeUrlMatcher(matchOrArgs: string | RegExp | JsonObject, args: Js
 }
 
 function stripClientOptions(args: JsonObject) {
-  return withoutKeys(args, ["soft", "strict", "actionArgs"]);
+  return withoutKeys(args, ["soft", "strict", "actionArgs", "timeout"]);
+}
+
+function withTimeoutAlias(args: JsonObject, label: string): JsonObject {
+  if (args.timeoutMs !== undefined || args.timeout === undefined) {
+    return args;
+  }
+
+  return {
+    ...args,
+    timeoutMs: optionalNumber(args.timeout, label)
+  };
 }
 
 function stringArg(key: string, valueOrArgs: string | JsonObject, args: JsonObject) {
@@ -3279,6 +3893,14 @@ function requireNonEmptyString(value: unknown, label: string) {
   }
 
   return value.trim();
+}
+
+function requireTextString(value: unknown, label: string) {
+  if (typeof value !== "string") {
+    throw new Error(`${label} must be a string.`);
+  }
+
+  return value;
 }
 
 function requireNumber(value: unknown, label: string) {

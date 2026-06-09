@@ -25,6 +25,8 @@ import type {
   GetEventsResult,
   GetPolicyParams,
   GetPolicyResult,
+  GetPendingApprovalsParams,
+  GetPendingApprovalsResult,
   GetTabParams,
   GetTabResult,
   HandleDialogParams,
@@ -74,6 +76,8 @@ import type {
   PressKeyParams,
   ReloadParams,
   ReloadExtensionResult,
+  ResolveApprovalParams,
+  ResolveApprovalResult,
   ScrollParams,
   ScreenshotParams,
   ScreenshotResult,
@@ -181,7 +185,7 @@ async function browserRpc<T = unknown>(
   const json = (await response.json()) as {
     ok?: boolean;
     result?: BrowserToolResult<T>;
-    error?: string | { code?: string; message?: string };
+    error?: string | { code?: string; message?: string; details?: JsonObject };
     errorCode?: string;
   };
 
@@ -197,7 +201,14 @@ async function browserRpc<T = unknown>(
       (typeof json.error === "object" && typeof json.error?.code === "string"
         ? json.error.code
         : null);
-    throw new Error(errorCode ? `${errorCode}: ${errorMessage}` : errorMessage);
+    const error = new Error(errorCode ? `${errorCode}: ${errorMessage}` : errorMessage);
+    if (errorCode) {
+      (error as Error & { code?: string }).code = errorCode;
+    }
+    if (typeof json.error === "object" && json.error?.details && typeof json.error.details === "object") {
+      (error as Error & { details?: JsonObject }).details = json.error.details;
+    }
+    throw error;
   }
 
   return json.result as BrowserToolResult<T>;
@@ -233,6 +244,14 @@ export async function browserGetPolicy(args: GetPolicyParams = {}) {
 
 export async function browserUpdatePolicy(args: UpdatePolicyParams = {}) {
   return browserRpc<UpdatePolicyResult>("updatePolicy", args as JsonObject);
+}
+
+export async function browserGetPendingApprovals(args: GetPendingApprovalsParams = {}) {
+  return browserRpc<GetPendingApprovalsResult>("getPendingApprovals", args as JsonObject);
+}
+
+export async function browserResolveApproval(args: ResolveApprovalParams) {
+  return browserRpc<ResolveApprovalResult>("resolveApproval", args as JsonObject);
 }
 
 export async function browserStartSession(args: StartSessionParams) {
@@ -468,6 +487,10 @@ export async function callBrowserTool(name: string, args: JsonObject) {
       return browserGetPolicy(args as GetPolicyParams);
     case "browser_update_policy":
       return browserUpdatePolicy(args as UpdatePolicyParams);
+    case "browser_get_pending_approvals":
+      return browserGetPendingApprovals(args as GetPendingApprovalsParams);
+    case "browser_resolve_approval":
+      return browserResolveApproval(args as ResolveApprovalParams);
     case "browser_start_session":
       return browserStartSession(args as StartSessionParams);
     case "browser_name_session":

@@ -163,7 +163,7 @@ const examples = {
   FrameLocatorHandle: [
     "```js",
     "const frame = tab.frameLocator(\"iframe[name='login']\");",
-    "console.log(frame.toJSON()); // supported: false until iframe locators are implemented",
+    "await frame.getByRole(\"button\", { name: \"Sign in\" }).click();",
     "```"
   ]
 };

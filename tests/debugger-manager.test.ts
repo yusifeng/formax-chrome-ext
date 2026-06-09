@@ -10,12 +10,14 @@ type DebuggerCall =
   | { name: "attach"; target: Record<string, unknown>; version: string }
   | { name: "detach"; target: Record<string, unknown> }
   | { name: "sendCommand"; target: Record<string, unknown>; method: string; params?: Record<string, unknown> };
+type DebuggerSendCommandCall = Extract<DebuggerCall, { name: "sendCommand" }>;
 
 type DebuggerManagerConstructor = new (options: {
   cdpVersion: string;
   defaultTimeoutMs?: number;
 }) => {
   listAttachedTabs(): number[];
+  listAttachedTargets(): string[];
   markDetached(source: Record<string, unknown>): void;
   markTabRemoved(tabId: number): void;
   send(
@@ -82,12 +84,14 @@ describe("extension debugger manager", () => {
 
     await manager.sendToTarget("target-1", "Runtime.evaluate", { expression: "1" });
     await manager.sendToTarget("target-1", "DOM.getDocument");
+    expect(manager.listAttachedTargets()).toEqual(["target-1"]);
 
     expect(calls.filter((call) => call.name === "attach")).toEqual([
       { name: "attach", target: { targetId: "target-1" }, version: "1.3" }
     ]);
 
     manager.markDetached({ targetId: "target-1" });
+    expect(manager.listAttachedTargets()).toEqual([]);
     await manager.sendToTarget("target-1", "Runtime.evaluate", { expression: "2" });
 
     expect(calls.filter((call) => call.name === "attach")).toEqual([
@@ -161,5 +165,100 @@ describe("extension debugger manager", () => {
       { name: "attach", target: { targetId: "target-timeout" }, version: "1.3" },
       { name: "attach", target: { targetId: "target-timeout" }, version: "1.3" }
     ]);
+  });
+
+  it("serializes CDP commands for the same target", async () => {
+    let resolveEvaluate: ((value: unknown) => void) | undefined;
+    const { DebuggerManager, calls } = loadDebuggerManager({
+      sendCommand: async (_target, method) => {
+        if (method === "Runtime.evaluate") {
+          return new Promise((resolve) => {
+            resolveEvaluate = resolve;
+          });
+        }
+        return { method };
+      }
+    });
+    const manager = new DebuggerManager({ cdpVersion: "1.3", defaultTimeoutMs: 1000 });
+
+    const first = manager.sendToTarget("target-serial", "Runtime.evaluate", {
+      expression: "slow()"
+    });
+
+    await vi.waitFor(() => {
+      expect(calls).toContainEqual({
+        name: "sendCommand",
+        target: { targetId: "target-serial" },
+        method: "Runtime.evaluate",
+        params: { expression: "slow()" }
+      });
+    });
+
+    const second = manager.sendToTarget("target-serial", "DOM.getDocument");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(
+      calls.some(
+        (call) =>
+          call.name === "sendCommand" &&
+          call.target.targetId === "target-serial" &&
+          call.method === "DOM.getDocument"
+      )
+    ).toBe(false);
+
+    resolveEvaluate?.({ ok: true });
+    await expect(first).resolves.toEqual({ ok: true });
+    await expect(second).resolves.toEqual({ method: "DOM.getDocument" });
+
+    const commandMethods = calls
+      .filter(
+        (call): call is DebuggerSendCommandCall =>
+          call.name === "sendCommand" && call.target.targetId === "target-serial"
+      )
+      .map((call) => call.method);
+    expect(commandMethods).toEqual(["Runtime.evaluate", "DOM.getDocument"]);
+  });
+
+  it("does not serialize CDP commands across different targets", async () => {
+    let resolveEvaluate: ((value: unknown) => void) | undefined;
+    const { DebuggerManager, calls } = loadDebuggerManager({
+      sendCommand: async (_target, method) => {
+        if (method === "Runtime.evaluate") {
+          return new Promise((resolve) => {
+            resolveEvaluate = resolve;
+          });
+        }
+        return { method };
+      }
+    });
+    const manager = new DebuggerManager({ cdpVersion: "1.3", defaultTimeoutMs: 1000 });
+
+    const first = manager.sendToTarget("target-a", "Runtime.evaluate", {
+      expression: "slow()"
+    });
+
+    await vi.waitFor(() => {
+      expect(calls).toContainEqual({
+        name: "sendCommand",
+        target: { targetId: "target-a" },
+        method: "Runtime.evaluate",
+        params: { expression: "slow()" }
+      });
+    });
+
+    const second = manager.sendToTarget("target-b", "DOM.getDocument");
+
+    await vi.waitFor(() => {
+      expect(calls).toContainEqual({
+        name: "sendCommand",
+        target: { targetId: "target-b" },
+        method: "DOM.getDocument",
+        params: {}
+      });
+    });
+
+    resolveEvaluate?.({ ok: true });
+    await expect(first).resolves.toEqual({ ok: true });
+    await expect(second).resolves.toEqual({ method: "DOM.getDocument" });
   });
 });

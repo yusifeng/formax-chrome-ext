@@ -21,6 +21,25 @@
     | "deliverable"
     | "stopped"
     | "taken_over";
+  type FaviconBadgePhase = "active" | "handoff" | "deliverable";
+  type PendingApproval = {
+    action?: string;
+    approvalId: string;
+    expiresAt?: number;
+    host?: string | null;
+    kind?: string;
+    message?: string;
+    reasons?: string[];
+    requiredParams?: Record<string, unknown>;
+    status?: string;
+    subject?: Record<string, unknown>;
+    suggestedDecisions?: Record<string, Record<string, unknown> | null>;
+    target?: {
+      label?: string;
+      text?: string;
+      tagName?: string | null;
+    };
+  };
   type CursorArrival = {
     moveSequence: number;
     sessionId: string | null;
@@ -153,6 +172,21 @@
   root.appendChild(cursor);
   root.appendChild(label);
 
+  const approvalPanel = document.createElement("section");
+  approvalPanel.id = "agent-browser-controller-approvals";
+  approvalPanel.setAttribute("aria-live", "polite");
+  approvalPanel.style.all = "initial";
+  approvalPanel.style.position = "fixed";
+  approvalPanel.style.right = "18px";
+  approvalPanel.style.bottom = "18px";
+  approvalPanel.style.width = "min(380px, calc(100vw - 36px))";
+  approvalPanel.style.display = "none";
+  approvalPanel.style.flexDirection = "column";
+  approvalPanel.style.gap = "10px";
+  approvalPanel.style.pointerEvents = "auto";
+  approvalPanel.style.zIndex = "2147483647";
+  root.appendChild(approvalPanel);
+
   let current: Point = {
     x: Math.round(window.innerWidth * 0.58),
     y: Math.round(window.innerHeight * 0.55)
@@ -178,6 +212,9 @@
   let lastFrameAt = 0;
   let highlightHideTimer: number | null = null;
   const faviconBadgeId = "agent-browser-controller-favicon-badge";
+  const faviconBadgeMarker = "data-formax-favicon-badge";
+  const pendingApprovals = new Map<string, PendingApproval>();
+  const approvalExpiryTimers = new Map<string, number>();
 
   function mount() {
     const parent = document.documentElement || document.body;
@@ -271,7 +308,16 @@
   }
 
   function updateFaviconBadge(nextPhase: CursorPhase) {
+    setFaviconBadge(nextPhase, null);
+  }
+
+  function setFaviconBadge(nextPhase: CursorPhase | null, faviconDataUrl: string | null) {
     if (!document.head) {
+      return;
+    }
+
+    if (nextPhase == null) {
+      removeFaviconBadge();
       return;
     }
 
@@ -286,9 +332,12 @@
       nextPhase === "handoff" || nextPhase === "deliverable" || nextPhase === "stopped"
         ? `<circle cx="24" cy="24" r="7" fill="${color}" stroke="white" stroke-width="2"/>`
         : `<circle cx="22" cy="10" r="6" fill="${color}" stroke="white" stroke-width="2"/>`;
+    const baseImage = faviconDataUrl
+      ? `<image href="${escapeSvgAttribute(faviconDataUrl)}" width="32" height="32" opacity="${nextPhase === "active" ? "0.3" : "1"}"/>`
+      : '<rect width="32" height="32" rx="7" fill="#0f172a"/>';
     const svg = [
-      '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">',
-      '<rect width="32" height="32" rx="7" fill="#0f172a"/>',
+      `<svg xmlns="http://www.w3.org/2000/svg" ${faviconBadgeMarker}="true" width="32" height="32" viewBox="0 0 32 32">`,
+      baseImage,
       indicator,
       '<path d="M8 22V8l10 10h-6l-4 4z" fill="white"/>',
       "</svg>"
@@ -300,6 +349,7 @@
       link = document.createElement("link");
       link.id = faviconBadgeId;
       link.rel = "icon";
+      link.dataset.formaxFaviconBadge = "true";
       document.head.appendChild(link);
     }
 
@@ -308,6 +358,20 @@
 
   function removeFaviconBadge() {
     document.getElementById(faviconBadgeId)?.remove();
+  }
+
+  function normalizeFaviconBadge(value: unknown): FaviconBadgePhase | null {
+    return value === "active" || value === "handoff" || value === "deliverable"
+      ? value
+      : null;
+  }
+
+  function escapeSvgAttribute(value: string) {
+    return value
+      .replaceAll("&", "&amp;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;");
   }
 
   function sendCursorArrived() {
@@ -957,6 +1021,477 @@
     return { ok: true };
   }
 
+  function addPendingApproval(value: unknown) {
+    const approval = normalizePendingApproval(value);
+    if (!approval) {
+      return;
+    }
+
+    pendingApprovals.set(approval.approvalId, approval);
+    scheduleApprovalExpiry(approval);
+    renderApprovalPanel();
+  }
+
+  function removePendingApproval(approvalId: unknown) {
+    if (typeof approvalId !== "string") {
+      return;
+    }
+
+    clearApprovalExpiryTimer(approvalId);
+    pendingApprovals.delete(approvalId);
+    renderApprovalPanel();
+  }
+
+  function scheduleApprovalExpiry(approval: PendingApproval) {
+    clearApprovalExpiryTimer(approval.approvalId);
+    if (typeof approval.expiresAt !== "number") {
+      return;
+    }
+
+    const timeoutMs = approval.expiresAt - Date.now();
+    if (timeoutMs <= 0) {
+      pendingApprovals.delete(approval.approvalId);
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      pendingApprovals.delete(approval.approvalId);
+      approvalExpiryTimers.delete(approval.approvalId);
+      renderApprovalPanel();
+    }, timeoutMs);
+    approvalExpiryTimers.set(approval.approvalId, timeoutId);
+  }
+
+  function clearApprovalExpiryTimer(approvalId: string) {
+    const timeoutId = approvalExpiryTimers.get(approvalId);
+    if (timeoutId == null) {
+      return;
+    }
+
+    window.clearTimeout(timeoutId);
+    approvalExpiryTimers.delete(approvalId);
+  }
+
+  function normalizePendingApproval(value: unknown): PendingApproval | null {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return null;
+    }
+
+    const source = value as Record<string, unknown>;
+    if (typeof source.approvalId !== "string" || !source.approvalId.trim()) {
+      return null;
+    }
+
+    return {
+      action: typeof source.action === "string" ? source.action : undefined,
+      approvalId: source.approvalId,
+      expiresAt: typeof source.expiresAt === "number" ? source.expiresAt : undefined,
+      host: typeof source.host === "string" ? source.host : null,
+      kind: typeof source.kind === "string" ? source.kind : undefined,
+      message: typeof source.message === "string" ? source.message : undefined,
+      reasons: Array.isArray(source.reasons)
+        ? source.reasons.filter((reason): reason is string => typeof reason === "string")
+        : undefined,
+      requiredParams:
+        source.requiredParams &&
+        typeof source.requiredParams === "object" &&
+        !Array.isArray(source.requiredParams)
+          ? (source.requiredParams as Record<string, unknown>)
+          : undefined,
+      status: typeof source.status === "string" ? source.status : undefined,
+      subject:
+        source.subject &&
+        typeof source.subject === "object" &&
+        !Array.isArray(source.subject)
+          ? (source.subject as Record<string, unknown>)
+          : undefined,
+      suggestedDecisions:
+        source.suggestedDecisions &&
+        typeof source.suggestedDecisions === "object" &&
+        !Array.isArray(source.suggestedDecisions)
+          ? (source.suggestedDecisions as Record<string, Record<string, unknown>>)
+          : undefined,
+      target: normalizeApprovalTarget(source.target)
+    };
+  }
+
+  function normalizeApprovalTarget(value: unknown): PendingApproval["target"] | undefined {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return undefined;
+    }
+
+    const source = value as Record<string, unknown>;
+    const target = {
+      label: typeof source.label === "string" ? source.label : undefined,
+      text: typeof source.text === "string" ? source.text : undefined,
+      tagName: typeof source.tagName === "string" ? source.tagName : null
+    };
+    return target.label || target.text || target.tagName ? target : undefined;
+  }
+
+  function renderApprovalPanel() {
+    approvalPanel.textContent = "";
+
+    const now = Date.now();
+    const expiredApprovalIds: string[] = [];
+    const approvals = Array.from(pendingApprovals.values())
+      .filter((approval) => {
+        if (approval.status === "expired") {
+          expiredApprovalIds.push(approval.approvalId);
+          return false;
+        }
+
+        if (typeof approval.expiresAt === "number" && approval.expiresAt <= now) {
+          expiredApprovalIds.push(approval.approvalId);
+          return false;
+        }
+
+        return true;
+      })
+      .sort((left, right) => (right.expiresAt ?? 0) - (left.expiresAt ?? 0));
+
+    for (const approvalId of expiredApprovalIds) {
+      clearApprovalExpiryTimer(approvalId);
+      pendingApprovals.delete(approvalId);
+    }
+
+    approvalPanel.style.display = approvals.length ? "flex" : "none";
+
+    for (const approval of approvals.slice(0, 3)) {
+      approvalPanel.appendChild(createApprovalCard(approval));
+    }
+  }
+
+  function createApprovalCard(approval: PendingApproval) {
+    const card = document.createElement("article");
+    card.style.all = "initial";
+    card.style.display = "block";
+    card.style.padding = "14px";
+    card.style.border = "1px solid rgba(148, 163, 184, 0.62)";
+    card.style.borderRadius = "18px";
+    card.style.background =
+      "linear-gradient(135deg, rgba(15, 23, 42, 0.96), rgba(30, 41, 59, 0.94))";
+    card.style.boxShadow =
+      "0 18px 46px rgba(15, 23, 42, 0.28), inset 0 1px 0 rgba(255,255,255,0.08)";
+    card.style.color = "white";
+    card.style.font =
+      "500 13px/1.45 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif";
+    card.style.pointerEvents = "auto";
+
+    const title = document.createElement("div");
+    title.style.all = "initial";
+    title.style.display = "block";
+    title.style.color = "rgba(226, 232, 240, 0.92)";
+    title.style.font =
+      "700 12px/1.2 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif";
+    title.style.letterSpacing = "0.04em";
+    title.style.textTransform = "uppercase";
+    title.textContent = approvalTitle(approval);
+
+    const message = document.createElement("p");
+    message.style.all = "initial";
+    message.style.display = "block";
+    message.style.margin = "8px 0 0";
+    message.style.color = "white";
+    message.style.font =
+      "500 14px/1.45 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif";
+    message.textContent = approval.message || "Browser approval is required.";
+
+    const meta = document.createElement("div");
+    meta.style.all = "initial";
+    meta.style.display = "flex";
+    meta.style.flexWrap = "wrap";
+    meta.style.gap = "6px";
+    meta.style.marginTop = "10px";
+
+    for (const label of approvalLabels(approval)) {
+      const chip = document.createElement("span");
+      chip.style.all = "initial";
+      chip.style.display = "inline-flex";
+      chip.style.alignItems = "center";
+      chip.style.maxWidth = "180px";
+      chip.style.overflow = "hidden";
+      chip.style.padding = "3px 7px";
+      chip.style.border = "1px solid rgba(148, 163, 184, 0.45)";
+      chip.style.borderRadius = "9999px";
+      chip.style.color = "rgba(226, 232, 240, 0.88)";
+      chip.style.font =
+        "600 11px/1.2 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif";
+      chip.style.textOverflow = "ellipsis";
+      chip.style.whiteSpace = "nowrap";
+      chip.textContent = label;
+      meta.appendChild(chip);
+    }
+
+    const details = createApprovalDetails(approval);
+    const actions = document.createElement("div");
+    actions.style.all = "initial";
+    actions.style.display = "flex";
+    actions.style.gap = "8px";
+    actions.style.flexWrap = "wrap";
+    actions.style.justifyContent = "flex-end";
+    actions.style.marginTop = "12px";
+    for (const button of createApprovalButtons(approval)) {
+      actions.appendChild(button);
+    }
+
+    card.append(title, message, meta);
+    if (details) {
+      card.appendChild(details);
+    }
+    card.appendChild(actions);
+    return card;
+  }
+
+  function createApprovalDetails(approval: PendingApproval) {
+    const details = approvalDetails(approval);
+    if (!details.length) {
+      return null;
+    }
+
+    const list = document.createElement("dl");
+    list.style.all = "initial";
+    list.style.display = "grid";
+    list.style.gridTemplateColumns = "minmax(64px, auto) 1fr";
+    list.style.gap = "4px 8px";
+    list.style.margin = "10px 0 0";
+    list.style.color = "rgba(203, 213, 225, 0.86)";
+    list.style.font =
+      "500 11px/1.35 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif";
+
+    for (const detail of details) {
+      const term = document.createElement("dt");
+      term.style.all = "initial";
+      term.style.color = "rgba(148, 163, 184, 0.9)";
+      term.style.font =
+        "700 11px/1.35 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif";
+      term.textContent = detail.label;
+
+      const value = document.createElement("dd");
+      value.style.all = "initial";
+      value.style.minWidth = "0";
+      value.style.overflowWrap = "anywhere";
+      value.style.color = "rgba(241, 245, 249, 0.94)";
+      value.style.font =
+        "500 11px/1.35 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif";
+      value.textContent = detail.value;
+      list.append(term, value);
+    }
+
+    return list;
+  }
+
+  function approvalDetails(approval: PendingApproval) {
+    const details: Array<{ label: string; value: string }> = [];
+    if (approval.reasons?.length) {
+      details.push({ label: "Reasons", value: approval.reasons.join(", ") });
+    }
+
+    const subject = approvalSubjectSummary(approval.subject);
+    if (subject) {
+      details.push({ label: "Subject", value: subject });
+    }
+
+    const target = approval.target;
+    if (target) {
+      const targetParts = [
+        target.tagName ? `<${target.tagName}>` : null,
+        target.label ? `label "${target.label}"` : null,
+        target.text ? `text "${target.text}"` : null
+      ].filter((part): part is string => Boolean(part));
+      if (targetParts.length) {
+        details.push({ label: "Target", value: targetParts.join(" · ") });
+      }
+    }
+
+    const retryHints = approvalRetryHints(approval);
+    if (retryHints.length) {
+      details.push({ label: "Retry with", value: retryHints.join(", ") });
+    }
+
+    return details;
+  }
+
+  function approvalSubjectSummary(subject: Record<string, unknown> | undefined) {
+    if (!subject) {
+      return null;
+    }
+
+    if (subject.kind === "rawCdp") {
+      const parts = [
+        typeof subject.method === "string" ? `method ${subject.method}` : null,
+        typeof subject.targetId === "string" ? `target ${subject.targetId}` : null
+      ].filter((part): part is string => Boolean(part));
+      return parts.length ? parts.join(" · ") : "raw CDP";
+    }
+
+    if (subject.kind === "download") {
+      const parts = [
+        typeof subject.attribute === "string" ? `attribute ${subject.attribute}` : null,
+        typeof subject.filename === "string" ? `filename ${subject.filename}` : null,
+        typeof subject.url === "string" ? `url ${subject.url}` : null,
+        typeof subject.finalUrl === "string" ? `final URL ${subject.finalUrl}` : null,
+        approvalLocatorSummary(subject.locator)
+      ].filter((part): part is string => Boolean(part));
+      return parts.length ? parts.join(" · ") : "page asset download";
+    }
+
+    return null;
+  }
+
+  function approvalLocatorSummary(value: unknown) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return null;
+    }
+
+    const locator = value as Record<string, unknown>;
+    const parts = [
+      typeof locator.kind === "string" ? locator.kind : null,
+      typeof locator.selector === "string" ? locator.selector : null,
+      typeof locator.text === "string" ? `text "${locator.text}"` : null,
+      typeof locator.role === "string" ? `role ${locator.role}` : null
+    ].filter((part): part is string => Boolean(part));
+    return parts.length ? `locator ${parts.join(" ")}` : null;
+  }
+
+  function approvalRetryHints(approval: PendingApproval) {
+    const requiredParams = approval.requiredParams;
+    if (!requiredParams) {
+      return [];
+    }
+
+    const hints: string[] = [];
+    if (requiredParams.confirmed === true) {
+      hints.push("confirmed=true");
+    }
+    if (requiredParams.originApproved === true) {
+      hints.push("originApproved=true");
+    }
+    return hints;
+  }
+
+  function createApprovalButtons(approval: PendingApproval) {
+    if (approval.kind !== "host") {
+      return [
+        createApprovalButton(approval, "deny", "Deny"),
+        createApprovalButton(approval, "approve", "Approve")
+      ];
+    }
+
+    const buttons = [createApprovalButton(approval, "deny", "Deny", "deny")];
+    const allowForSession = approval.suggestedDecisions?.allowForSession;
+    if (allowForSession) {
+      buttons.push(
+        createApprovalButton(
+          approval,
+          "approve",
+          "Allow session",
+          hostPolicyDecision(allowForSession, "allow")
+        )
+      );
+    }
+    buttons.push(
+      createApprovalButton(
+        approval,
+        "approve",
+        "Always allow",
+        hostPolicyDecision(approval.suggestedDecisions?.alwaysAllow, "always_allow")
+      )
+    );
+    return buttons;
+  }
+
+  function createApprovalButton(
+    approval: PendingApproval,
+    decision: "approve" | "deny",
+    labelText: string,
+    policyDecision?: string
+  ) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.style.all = "initial";
+    button.style.display = "inline-flex";
+    button.style.alignItems = "center";
+    button.style.justifyContent = "center";
+    button.style.minWidth = "74px";
+    button.style.padding = "8px 11px";
+    button.style.border =
+      decision === "approve"
+        ? "1px solid rgba(16, 185, 129, 0.72)"
+        : "1px solid rgba(148, 163, 184, 0.5)";
+    button.style.borderRadius = "9999px";
+    button.style.background =
+      decision === "approve"
+        ? "linear-gradient(135deg, #10b981, #059669)"
+        : "rgba(15, 23, 42, 0.55)";
+    button.style.boxShadow =
+      decision === "approve" ? "0 8px 20px rgba(16, 185, 129, 0.25)" : "none";
+    button.style.color = "white";
+    button.style.cursor = "pointer";
+    button.style.font =
+      "700 12px/1 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif";
+    button.textContent = labelText;
+
+    button.addEventListener("click", async () => {
+      button.textContent = decision === "approve" ? "Approving..." : "Denying...";
+      await resolveApprovalFromContent(approval, decision, policyDecision);
+    });
+
+    return button;
+  }
+
+  async function resolveApprovalFromContent(
+    approval: PendingApproval,
+    decision: "approve" | "deny",
+    policyDecision?: string
+  ) {
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: "CONTENT_RESOLVE_APPROVAL",
+        approvalId: approval.approvalId,
+        decision,
+        ...(approval.kind === "host" && policyDecision
+          ? { policyDecision }
+          : {})
+      });
+
+      if (!response?.ok) {
+        throw new Error("Unable to resolve approval");
+      }
+
+      pendingApprovals.delete(approval.approvalId);
+      clearApprovalExpiryTimer(approval.approvalId);
+      renderApprovalPanel();
+    } catch {
+      approval.status = "pending";
+      renderApprovalPanel();
+    }
+  }
+
+  function approvalTitle(approval: PendingApproval) {
+    if (approval.kind === "host") return "Website access request";
+    if (approval.kind === "origin") return "Origin approval request";
+    if (approval.kind === "confirmation") return "Action confirmation";
+    return "Browser approval";
+  }
+
+  function hostPolicyDecision(
+    suggestedDecision: Record<string, unknown> | null | undefined,
+    fallback: string
+  ) {
+    return typeof suggestedDecision?.decision === "string" ? suggestedDecision.decision : fallback;
+  }
+
+  function approvalLabels(approval: PendingApproval) {
+    const labels = [
+      approval.kind,
+      approval.action,
+      approval.host || undefined,
+      ...(approval.reasons ?? []).slice(0, 2)
+    ];
+    return labels.filter((label): label is string => Boolean(label));
+  }
+
   mount();
   setCursor(current, { animate: false, visible: false });
   restoreCursorState();
@@ -1007,6 +1542,27 @@
 
     if (message.type === "AGENT_PAGE_STATUS") {
       applyPhase(message.phase);
+      sendResponse({ ok: true });
+      return true;
+    }
+
+    if (message.type === "TAB_FAVICON_BADGE") {
+      const badge = normalizeFaviconBadge(message.badge);
+      const faviconDataUrl =
+        typeof message.faviconDataUrl === "string" ? message.faviconDataUrl : null;
+      setFaviconBadge(badge, faviconDataUrl);
+      sendResponse({ ok: true });
+      return true;
+    }
+
+    if (message.type === "AGENT_APPROVAL_REQUEST") {
+      addPendingApproval(message.approval);
+      sendResponse({ ok: true });
+      return true;
+    }
+
+    if (message.type === "AGENT_APPROVAL_RESOLVED") {
+      removePendingApproval(message.approvalId);
       sendResponse({ ok: true });
       return true;
     }

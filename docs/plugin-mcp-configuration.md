@@ -100,6 +100,19 @@ Use direct flat browser methods only as backward-compatible SDK aliases inside
 the Node REPL, such as `browser.openUrl()` or `browser.observe()`. Do not expose
 separate direct tools to the model when the node_repl object API is available.
 
+After bootstrap, ask the runtime for the current browser-use guidance:
+
+```js
+await agent.documentation.get("browserUse");
+await agent.documentation.get("tabs");
+await agent.documentation.get("safety");
+```
+
+The `browserUse` topic mirrors the packaged skill's operating model: prefer
+structured integrations before Chrome, reuse or claim one working tab, verify
+after meaningful actions, resolve pending approvals only after user approval,
+and finalize handoff or deliverable tabs as the final browser action.
+
 ## Verify Configuration
 
 Run:

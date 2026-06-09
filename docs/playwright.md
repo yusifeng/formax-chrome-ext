@@ -30,13 +30,34 @@ Common helpers:
 await tab.getByRole("button", { name: "Search" }).click();
 await tab.getByLabel("Email").fill("user@example.com");
 await tab.getByPlaceholder("Search").fill("zod");
+await tab.getByDisplayValue("Alice").fill("Bob");
+await tab.locator("select#country").selectOption([{ label: "Canada" }, { value: "mx" }, { index: 2 }]);
+await tab.getByAltText("Product photo").click();
+await tab.getByTitle("Help").hover();
 await tab.getByText("Checkout").click();
 await tab.locator("input[name='q']").fill("OpenAI Codex");
 await tab.locator(".result-card", { hasText: "OpenAI" }).filter({ visible: true }).click();
 await tab.locator(".result-card", { has: tab.getByRole("button", { name: "Open" }) }).click();
+await tab.locator(".result-card").getByRole("button", { name: "Open" }).click();
 await tab.locator(".result-card").and(tab.getByText("Ready")).or(tab.getByText("Fallback")).count();
 await tab.frameLocator("#outer-frame").frameLocator("#inner-frame").getByRole("button", { name: "Run" }).click();
+await tab.locator("#submit").highlight({ color: "rgba(255, 190, 80, 0.92)" });
 ```
+
+Locator page-function helpers are available when a higher-level query is not
+enough:
+
+```js
+const label = await tab.locator("#submit").evaluate((element) => element.textContent, undefined, { mode: "read" });
+const texts = await tab.locator(".item").evaluateAll((elements) => elements.map((element) => element.textContent), undefined, { mode: "read" });
+await tab.locator("#submit").dispatchEvent("click", { detail: { source: "agent" } }, { confirmed: true });
+```
+
+`evaluate` receives the selected element, `evaluateAll` receives the matched
+element array, and both optionally receive a JSON-serializable second argument.
+They use the governed side-effecting locator action path because page functions
+can mutate the document; pass `mode: "read"` only for inspection code. Explicit
+read mode rejects scripts that match obvious mutation patterns before execution.
 
 When multiple elements match:
 
@@ -48,10 +69,27 @@ await items[0].click();
 Keep limits tight. `locator.all({ limit })` returns bounded `nth()` locator
 handles; it does not serialize DOM content.
 
+For conditional flows, prefer locator queries such as `isVisible()`,
+`isHidden()`, `isEnabled()`, `isDisabled()`, `isEditable()`, `isChecked()`, and
+`inputValue()` before falling back to `evaluate`.
+Use `allInnerTexts()` or `allTextContents()` for bounded text extraction from a
+locator set.
+
+For focused form/page interactions, use `locator.blur()`,
+`locator.scrollIntoViewIfNeeded()`, and `locator.selectText()` instead of
+custom page JavaScript when those actions express the intent.
+Use `locator.dragTo(targetLocator, options)` for locator-to-locator drag/drop
+before falling back to coordinate-based `tab.cua.drag`.
+Use `locator.highlight(options)` for debugging or visual verification; it draws
+a best-effort content-script overlay around the locator without taking a
+screenshot.
+Use `locator.selectOption(valueOrSpecs)` for selects; supported specs include
+strings and `{ value }`, `{ label }`, or `{ index }` objects.
+
 Top-frame locators pierce open shadow roots for `css`, `role`, `text`, `label`,
-`placeholder`, and `testId` queries. Closed shadow roots remain opaque; if a
-target lives there, use page-provided controls or coordinates after inspection
-instead of assuming DOM access exists.
+`placeholder`, `testId`, `altText`, `title`, and `displayValue` queries.
+Closed shadow roots remain opaque; if a target lives there, use page-provided
+controls or coordinates after inspection instead of assuming DOM access exists.
 
 Semantic locators use a lightweight accessible-name approximation across
 `observe`, `elementInfo`, and locator resolution. It covers `aria-labelledby`,
@@ -62,12 +100,21 @@ values, and visible text while skipping hidden or `aria-hidden` subtrees.
 `locator.filter({ has, hasNot, hasText, hasNotText, visible })` are supported.
 Nested `has`/`hasNot` filters accept another locator handle or a raw locator
 plan and match within each candidate element.
+`locator.locator(selector)` and locator-scoped `getByText`, `getByRole`,
+`getByLabel`, `getByPlaceholder`, `getByTestId`, `getByAltText`, `getByTitle`,
+and `getByDisplayValue` resolve inside the parent locator's matched subtree.
 `locator.and(other)` intersects two locators in the same page scope, while
 `locator.or(other)` returns the union with duplicates removed.
 
-`frameLocator(selector)` supports same-origin iframe and nested same-origin
-iframe paths. Cross-origin frames and OOPIFs are reported as unsupported by the
-backend rather than silently pierced.
+`frameLocator(selector)` supports iframe and nested iframe paths that can be
+resolved to a CDP frame id. Locator reads, waits, and actions use a
+frame-scoped execution context when available, then translate element
+coordinates back to the top-level viewport for mouse events. OOPIF edge cases
+are still best-effort rather than full Playwright parity.
+
+File chooser handles opened through a frame locator retain the original locator
+path, so `chooser.setFiles()` can set files in the same frame context while
+still using native-host absolute path validation.
 
 ## Actionability
 
@@ -79,6 +126,11 @@ Locator actions perform first-pass checks for:
 - enabled/editable controls
 - pointer occlusion
 
+Editable checks require an enabled text input, textarea, or contenteditable
+element and honor native `readonly` plus self/ancestor `aria-readonly="true"`.
+Pointer hit testing accounts for open shadow-root descendants when the locator
+targets the shadow host.
+
 Use `force: true` only after inspecting the page and confirming the target is
 safe to interact with:
 
@@ -87,6 +139,22 @@ await tab.getByRole("button", { name: "Continue" }).click({ force: true });
 ```
 
 `force: true` still requires locator resolution, attachment, and stable bounds.
+
+Use `trial: true` to preflight a locator action without changing the page:
+
+```js
+await tab.getByRole("button", { name: "Continue" }).click({ trial: true });
+```
+
+`trial: true` resolves the locator and runs actionability checks, then returns
+the target point/rect without dispatching pointer or keyboard input, focusing
+the element, mutating DOM state, registering file choosers, or drawing
+highlights.
+
+Locator strict/actionability failures are structured. Strict mismatches surface
+as `BrowserStrictModeError`; actionability failures surface as
+`BrowserActionabilityError` with a reason such as `not_visible`, `disabled`,
+`not_editable`, `occluded`, `outside_viewport`, `not_stable`, or `detached`.
 
 ## Waiting
 
@@ -101,12 +169,20 @@ await tab.waitForText("Example Domain");
 await tab.waitForSelector("main");
 ```
 
+Playwright-style SDK helpers accept `timeout` as an alias for the backend
+`timeoutMs` field:
+
+```js
+await tab.locator("#ready").waitFor({ state: "visible", timeout: 10_000 });
+await tab.getByRole("button", { name: "Continue" }).click({ timeout: 10_000 });
+```
+
 For action-triggered navigations, start the watcher before the action:
 
 ```js
 await tab.playwright.expectNavigation(
   () => tab.getByRole("link", { name: "Continue" }).click(),
-  { urlContains: "/next", waitUntil: "load", timeoutMs: 10000 }
+  { urlContains: "/next", waitUntil: "load", timeout: 10000 }
 );
 ```
 
@@ -118,6 +194,26 @@ const observed = await tab.observe();
 ```
 
 Do not retry a failing locator repeatedly without new page state.
+
+## Keyboard And Mouse Aliases
+
+`tab.playwright.keyboard` and `tab.playwright.mouse` expose common
+Playwright-style aliases over the governed CUA backend:
+
+```js
+await tab.playwright.keyboard.press("Enter");
+await tab.playwright.keyboard.press(["ControlOrMeta", "A"]);
+await tab.playwright.keyboard.type("OpenAI Codex");
+await tab.playwright.mouse.click(120, 240);
+await tab.playwright.mouse.dblclick(120, 240);
+await tab.playwright.mouse.move(160, 280);
+await tab.playwright.mouse.wheel(0, 600);
+await tab.playwright.mouse.drag([{ x: 10, y: 10 }, { x: 80, y: 80 }]);
+```
+
+Prefer locators for semantic page interactions. Use these aliases when the task
+really is keyboard/mouse oriented, when the page requires a global shortcut, or
+after DOM inspection shows that a coordinate action is the appropriate fallback.
 
 ## Evaluate
 
@@ -138,10 +234,15 @@ Mutating `evaluate` calls require explicit confirmation:
 
 ```js
 await tab.evaluate("document.querySelector('form').submit()", {
+  mode: "write",
   confirmed: true,
   reason: "submit the form the user approved",
 });
 ```
+
+Explicit `mode: "read"` calls use a conservative pre-execution guard that
+rejects obvious DOM/storage/cookie mutations. It is not a hardened JavaScript
+sandbox; use `mode: "write"` with confirmation for intentional page changes.
 
 ## Downloads
 

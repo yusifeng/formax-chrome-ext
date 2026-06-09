@@ -23,6 +23,8 @@ Reference sources used:
   browser, approvals/security, and MCP sections.
 - Local Codex Chrome plugin docs:
   `/Users/david/.codex/plugins/cache/openai-bundled/chrome/latest/docs/`
+- Local Codex resource readability map:
+  `docs/research/codex-resource-1.1.5/background-control-map.md`
 - Current Formax code and tests.
 
 ## P0 - Product Boundary And Policy
@@ -84,8 +86,12 @@ Reference sources used:
   - [x] Require origin-level approval for raw CDP on arbitrary websites.
   - [x] Provide a read-only evaluate mode for routine page inspection.
   - [x] Separate read-only evaluate from mutating evaluate in the protocol.
+  - [x] Reject obvious mutating scripts before execution when callers
+        explicitly request `mode: "read"`.
   - [x] Log raw CDP/evaluate calls with origin, method, action id, session id,
         and reason.
+  - [x] Special-case `Target.getTargets` through Chrome's debugger API while
+        still applying the caller's `timeoutMs` budget.
 
 ## P0 - Codex-Compatible SDK Shape
 
@@ -109,7 +115,7 @@ Reference sources used:
   - [x] Add deprecation docs for flat methods.
   - [x] Add tests proving old and new facades call the same backend actions.
 
-- [ ] Implement `browser.user` parity:
+- [x] Implement `browser.user` parity:
   - [x] `browser.user.openTabs()`
   - [x] `browser.user.claimTab(tabOrId)`
   - [x] `browser.user.history(options)`
@@ -128,6 +134,18 @@ Reference sources used:
   - [x] Support keep statuses: `handoff` and `deliverable`.
   - [x] Ensure agent-created omitted tabs close during finalize.
   - [x] Ensure claimed user tabs release instead of closing by default.
+  - [x] Persist finalized handoff/deliverable favicon badge state in
+        `chrome.storage.session` and clear unseen badges when the tab becomes
+        active in the focused window.
+  - [x] Publish active controlled-tab favicon badges and resolve effective
+        badges with active lease precedence before finalized handoff/deliverable
+        badges.
+  - [x] Read and cache page favicon data through Chrome's `/_favicon/` endpoint
+        for Codex-like badge overlays, with generated fallback icons when favicon
+        fetch is unavailable.
+  - [x] Resume live handoff tab leases on the next `startSession` call for the
+        same `sessionId`, refreshing `turnId`, active tab, extension instance,
+        stale tabs, and managed agent tab groups.
   - [x] Treat finalize as the final browser action for the turn in docs/skill.
 
 - [x] Implement tab metadata helpers:
@@ -151,8 +169,8 @@ Reference sources used:
 
 ## P0 - Protocol And Validation
 
-- [ ] Promote the protocol into a generated schema source:
-  - [ ] Keep `shared/types.ts` and `shared/protocol.md` synchronized.
+- [x] Promote the protocol into a generated schema source:
+  - [x] Keep `shared/types.ts` and `shared/protocol.md` synchronized.
   - [x] Add zod or JSON Schema definitions for every action.
   - [x] Generate agent tool schemas from shared schemas.
   - [x] Validate agent RPC params against shared schemas before sending.
@@ -182,7 +200,7 @@ Reference sources used:
 
 ## P1 - Page Observation And DOM Snapshots
 
-- [ ] Replace basic `observe()` with a model-oriented snapshot system:
+- [x] Replace basic `observe()` with a model-oriented snapshot system:
   - [x] Add `tab.playwright.domSnapshot(): Promise<string>`.
   - [x] Add `tab.dom_cua.get_visible_dom(): Promise<VisibleDomSnapshot>`.
   - [x] Keep existing `tab.observe()` as a compact summary.
@@ -220,16 +238,21 @@ Reference sources used:
 
 ## P1 - Playwright-Like Locator Runtime
 
-- [ ] Expand locator model:
+- [x] Expand locator model:
   - [x] CSS locator.
   - [x] `getByRole(role, { name, exact })`.
   - [x] `getByLabel(text, { exact })`.
   - [x] `getByPlaceholder(text, { exact })`.
   - [x] `getByText(text, { exact })`.
   - [x] `getByTestId(testId)`.
+  - [x] `getByAltText(text, { exact })`.
+  - [x] `getByTitle(text, { exact })`.
+  - [x] `getByDisplayValue(text, { exact })`.
   - [x] `frameLocator(selector)`.
   - [x] Nested frame locators.
   - [x] Locator scoping inside another locator for CSS locators.
+  - [x] Locator-scoped semantic child locators such as
+        `locator.getByRole(...)` and `locator.getByText(...)`.
   - [x] `locator(selector, { has, hasNot, hasText, hasNotText })`.
     - [x] `hasText` and `hasNotText`.
     - [x] Nested locator `has` and `hasNot`.
@@ -246,11 +269,15 @@ Reference sources used:
 - [x] Improve locator queries:
   - [x] `count()`.
   - [x] `allTextContents()`.
+  - [x] `allInnerTexts()`.
   - [x] `textContent()`.
   - [x] `innerText()`.
   - [x] `getAttribute(name)`.
   - [x] `isVisible()`.
+  - [x] `isHidden()`.
   - [x] `isEnabled()`.
+  - [x] `isDisabled()`.
+  - [x] `isEditable()`.
   - [x] `boundingBox()`.
   - [x] `inputValue()` if useful for forms.
   - [x] `isChecked()` for checkbox/radio/switch-like controls.
@@ -258,17 +285,30 @@ Reference sources used:
 - [x] Improve locator actions:
   - [x] `click(options)`.
   - [x] `dblclick(options)`.
+  - [x] `dragTo(target, options)`.
   - [x] `fill(value, options)`.
   - [x] `type(value, options)`.
   - [x] `press(key, options)`.
   - [x] `check(options)`.
   - [x] `uncheck(options)`.
   - [x] `setChecked(checked, options)`.
-  - [x] `selectOption(value, options)`.
+  - [x] `selectOption(value, options)` including value/label/index option
+        specs.
   - [x] `hover(options)`.
+  - [x] `highlight(options)`.
   - [x] `focus(options)`.
+  - [x] `blur(options)`.
+  - [x] `scrollIntoViewIfNeeded(options)`.
+  - [x] `selectText(options)`.
   - [x] `clear(options)`.
   - [x] `waitFor({ state, timeoutMs })`.
+  - [x] `evaluate(pageFunction, arg, options)` returning JSON-serializable
+        values through the governed locator action path.
+  - [x] `evaluateAll(pageFunction, arg, options)` returning JSON-serializable
+        values through the governed locator action path.
+  - [x] `dispatchEvent(type, eventInit, options)`.
+  - [x] Playwright-style `timeout` option alias for waits, locator
+        queries/actions, frame resolution, and navigation expectations.
 
 - [x] Add Playwright-style actionability checks:
   - [x] Attached.
@@ -280,6 +320,8 @@ Reference sources used:
   - [x] Scroll into correct scroll container.
   - [x] Detect detached element between resolve and action.
   - [x] Support `force` as an explicit escape hatch.
+  - [x] Support `trial: true` as an actionability preflight without dispatching
+        pointer/keyboard/focus/DOM side effects.
   - [x] Return clear strict-mode and timeout errors.
 
 - [x] Improve accessible-name computation:
@@ -297,6 +339,9 @@ Reference sources used:
   - [x] Attach to targets/OOPIFs when required.
   - [x] Evaluate within selected frame execution context.
   - [x] Resolve frame selector paths to CDP frame ids.
+  - [x] Route locator actions through frame-scoped execution contexts when a
+        frame id is resolvable, with viewport-offset coordinate translation.
+  - [x] Preserve frame locator context for file chooser events and uploads.
   - [x] Generate frame selector paths.
   - [x] Pierce open shadow roots for snapshots and locators.
   - [x] Clearly report unsupported closed shadow roots.
@@ -322,6 +367,9 @@ Reference sources used:
   - [x] `click({ node_id })`.
   - [x] `double_click({ node_id })`.
   - [x] `scroll({ node_id?, x, y })`.
+  - [x] Refresh the latest visible DOM snapshot before node-targeted actions and
+        surface stale node ids as `BrowserDomCuaStaleNodeError` with
+        `dom_cua_stale_node` plus current visible node/ref hints.
   - [x] `type({ text })`.
   - [x] `keypress({ keys })` for backend-supported single keys and modifier
         combos.
@@ -337,7 +385,7 @@ Reference sources used:
 
 ## P1 - Navigation, Waiting, And Events
 
-- [ ] Add richer load states:
+- [x] Add richer load states:
   - [x] `load`.
   - [x] `domcontentloaded`.
   - [x] `networkidle`.
@@ -349,7 +397,7 @@ Reference sources used:
   - [x] Wait for target URL/load state.
   - [x] Return action result or structured timeout error.
 
-- [ ] Improve URL waits:
+- [x] Improve URL waits:
   - [x] Exact URL.
   - [x] substring.
   - [x] regex.
@@ -357,7 +405,7 @@ Reference sources used:
   - [x] same-document navigation.
   - [x] hash changes.
 
-- [ ] Improve event model:
+- [x] Improve event model:
   - [x] Page lifecycle events.
   - [x] Dialog events.
   - [x] Console and exception events.
@@ -365,6 +413,8 @@ Reference sources used:
   - [x] File chooser events.
   - [x] Permission prompt events when observable.
   - [x] Debugger detach.
+  - [x] Per-tab and per-target CDP command serialization.
+  - [x] Native disconnect cleanup and debugger tab/target detach sweep events.
   - [x] Tab close/removal.
   - [x] User takeover/interruption.
   - [x] Event buffer persistence policy.
@@ -400,12 +450,16 @@ Reference sources used:
   - [x] Support visible upload buttons/labels that open the chooser.
   - [x] Keep direct `input[type=file]` fallback for simple cases.
   - [x] Support multiple files when input allows it.
+  - [x] Preserve frame locator context for file chooser `setFiles()`.
   - [x] Validate absolute local paths in native host.
   - [x] Provide clear Chrome "Allow access to file URLs" setup guidance.
 
-- [ ] Improve downloads:
+- [x] Improve downloads:
   - [x] `tab.playwright.waitForEvent("download")`.
   - [x] Download object with filename/path/url/state metadata.
+  - [x] Expose stable Chrome download ids with `id`, `downloadId`, and
+        Codex-style `download_id` aliases across download lists, waits, media
+        downloads, and SDK handles.
   - [x] `download.path()` equivalent where safe.
   - [x] `download.suggestedFilename()` equivalent.
   - [x] Support download timeout and filtering.
@@ -426,10 +480,12 @@ Reference sources used:
   - [x] `read()` for typed clipboard items.
   - [x] `write(items)` for typed clipboard items.
   - [x] Text and binary payload support.
+  - [x] SDK `dataUrl` convenience for typed clipboard binary payload reads and
+        writes.
   - [x] Permission/confirmation policy for sensitive clipboard use.
   - [x] Tests for text read/write and binary item shape.
 
-- [ ] Add browser history:
+- [x] Add browser history:
   - [x] `browser.user.history({ query, from, to, limit })`.
   - [x] Explicit confirmation for every history access request.
   - [x] No always-allow for history.
@@ -447,7 +503,7 @@ Reference sources used:
   - [x] Include runtime exceptions.
   - [x] Add filtering by substring and level array.
 
-- [ ] Improve health checks:
+- [x] Improve health checks:
   - [x] Extension installed.
   - [x] Native host installed.
   - [x] Native manifest origin matches extension id.
@@ -457,6 +513,9 @@ Reference sources used:
   - [x] Chrome permission status.
   - [x] File URL access status if detectable.
   - [x] Current allow/block policy state.
+  - [x] Pending extension update safety: defer reload while browser control is
+        active and reload after active leases, debugger tab/target attachments,
+        cursor waiters, and native disconnect cleanup are idle.
 
 - [x] Add user-facing troubleshooting docs:
   - [x] Extension disconnected.
@@ -534,7 +593,7 @@ Reference sources used:
 
 ## P2 - Testing And Evaluation Matrix
 
-- [ ] Add local fixture coverage:
+- [x] Add local fixture coverage:
   - [x] Basic form.
   - [x] Complex form.
   - [x] Disabled and readonly inputs.
@@ -561,12 +620,14 @@ Reference sources used:
   - [x] Full-page screenshot.
   - [x] Clip screenshot.
 
-- [ ] Add real-site smoke tests:
-  - [ ] Public search page.
-  - [ ] Public docs page.
-  - [ ] GitHub public repository page.
-  - [ ] npm package page.
-  - [ ] Optional signed-in manual smoke behind env flag.
+- [x] Add real-site smoke tests:
+  - [x] Public search page.
+  - [x] Public docs page.
+  - [x] GitHub public repository page.
+  - [x] npm package page.
+  - [x] Optional signed-in manual smoke behind env flag.
+  - [x] Add `npm run test:real-sites`; requires installed/connected extension
+        and native host to execute.
 
 - [x] Add negative tests:
   - [x] Blocked host navigation.
@@ -597,6 +658,9 @@ Reference sources used:
   - [x] Protocol docs list every action.
   - [x] Native host validates every action shape.
   - [x] TypeScript and generated JSON Schema stay in sync.
+  - [x] Locator plan/query/action enum sets stay aligned across shared schemas,
+        TypeScript types, protocol docs, extension validation/background logic,
+        and native host validation.
 
 ## P2 - Observability And Auditability
 
@@ -641,9 +705,11 @@ Reference sources used:
   - [x] If exposed in a future feature, require explicit confirmation and
         document sensitivity before adding any bookmarks action.
 
-- [ ] Notifications if needed:
+- [x] Notifications if needed:
   - [x] Detect permission prompts.
   - [x] Confirm before enabling notification permissions.
+  - [x] Do not expose browser/system notifications; keep the `notifications`
+        permission absent and advertise `browser.notifications` as unavailable.
 
 - [x] Multi-backend support:
   - [x] Discover extension backend.
@@ -652,19 +718,30 @@ Reference sources used:
   - [x] Close unused backend connections; currently a no-op because only the
         extension backend is available.
 
-- [ ] Browser content comments/annotations if building an in-app browser:
-  - [ ] Element/area comments.
-  - [ ] Style feedback controls.
-  - [ ] Comment-to-code workflow.
+- [x] Browser content comments/annotations are intentionally out of scope:
+  - [x] Element/area comments are not needed for the Chrome-extension browser
+        control target.
+  - [x] Style feedback controls are not needed unless an in-app browser is
+        added later.
+  - [x] Comment-to-code workflow is not part of this Codex-like Chrome control
+        parity effort.
 
 ## Current Known Non-Parity Items
 
 These are explicitly not equivalent to Codex yet:
 
-- [ ] Host allowlist/blocklist and first-host prompt request events exist, but
-      first-host prompt UI is still incomplete.
-- [ ] Browser-use confirmation policy and prompt request events exist for broad
-      risky-action coverage, but the approval UI is still incomplete.
+- [x] Host allowlist/blocklist, first-host prompt request events, pending
+      approvals, basic popup approval UI, and a best-effort in-page approval
+      banner with expiry cleanup exist.
+- [x] Browser-use confirmation policy and prompt request events exist for broad
+      risky-action coverage, and a pending approval engine can list/resolve
+      host, confirmation, and origin approvals through the SDK or extension
+      popup or in-page banner. Host approval UI now exposes session allow,
+      persistent allow, and deny choices; confirmation UI shows reasons,
+      redacted targets, and retry params; origin UI shows reasons, redacted
+      subjects, and retry params. Richer Codex-equivalent approval UX is
+      intentionally deferred and not blocking the current page-control parity
+      work.
 - [x] Browser history access exists with per-request confirmation, with policy
       redaction rules for sensitive entries.
 - [ ] Clipboard text and typed-item APIs exist with per-request confirmation,
@@ -674,32 +751,61 @@ These are explicitly not equivalent to Codex yet:
       discovery, explicit target attach/detach, frame selector path resolution,
       explicit `evaluate({ targetId, frameId })`, and
       `frameLocator(...).evaluate()` exist; locator query/wait can use
-      frame-scoped execution contexts when a CDP frame id is resolvable, but
-      automatic locator action routing into selected cross-origin frame
-      contexts is still incomplete.
+      frame-scoped execution contexts when a CDP frame id is resolvable, and
+      locator actions now use frame-scoped execution plus viewport-offset
+      translation when resolvable; debugger commands are serialized per
+      attached tab/target. `resolveFrame` now best-effort uses
+      `Target.getTargets` to locate matching OOPIF iframe/page targets when the
+      selected iframe is inaccessible or the top-level frame tree cannot
+      resolve a frame path, and it can continue resolving remaining nested
+      frame selectors inside the matched OOPIF target. Full OOPIF target edge
+      cases are still incomplete.
 - [x] Open shadow DOM-aware locator/snapshot support exists; closed shadow
       roots remain opaque and are clearly reported as unsupported when
       observable as custom-element hosts.
-- [ ] No Playwright-style full locator surface.
+- [ ] Playwright-style locator surface now includes common semantic locators,
+      chaining/filtering, locator-scoped `getBy*` helpers, `getByAltText`,
+      `getByTitle`, queries, actions, `getByDisplayValue`, `evaluate`,
+      `evaluateAll`, `dispatchEvent`, and `highlight`, but it is still not the
+      full Playwright locator API.
 - [ ] Playwright-style actionability checks and structured strict/timeout
-      errors exist for locator actions, but full Playwright edge cases are still
-      incomplete.
-- [ ] Read-only evaluate mode exists, but not a hardened sandbox.
-- [ ] Raw CDP origin approval, prompt request events, and audit logging exist,
-      but approval UI is still incomplete.
+      errors exist for locator actions, including backend `strict_mode_violation`
+      and `locator_actionability` codes mapped by the SDK, plus `trial: true`
+      actionability preflight and multi-point pointer hit testing, but full
+      Playwright edge cases are still incomplete. Explicit inert-subtree and
+      `pointer-events: none` failures are now reported as actionability codes,
+      and enabled checks account for ancestor `aria-disabled` plus disabled
+      fieldset first-legend exceptions. Editable checks account for native
+      `readonly`, ancestor `aria-readonly`, and contenteditable state. Locator
+      `isEnabled`, `isDisabled`, and `isEditable` query semantics are aligned
+      with those checks. Pointer hit testing now treats open shadow-root
+      descendants as belonging to their shadow host for host-targeted locators.
+- [x] Read-only evaluate mode exists with conservative pre-execution and
+      temporary runtime mutation guards. The protocol, docs, and skill now state
+      this is not a fully hardened JavaScript capability sandbox; hardened
+      sandboxing is intentionally out of scope for the current parity pass.
+- [x] Raw CDP origin approval, prompt request events, and audit logging exist,
+      and the extension popup or in-page banner can approve/deny pending origin
+      approvals with reason, subject, and retry-param details, but richer origin
+      approval UX is intentionally deferred with the broader approval UX work.
 - [x] File chooser event flow exists for controlled upload targets; no OS-level
       native chooser automation is attempted.
 - [x] Full-page, clipped, and element screenshot APIs exist with SDK data
       URL/bytes, save-to-file helpers, and optional element highlight overlays.
 - [x] CUA drag and pointer/scroll modifier-key support exist with
       real-browser drag/drop fixture coverage.
-- [ ] Keypress supports common Playwright-style key names, aliases, printable
-      keys, and modifier combos, but not IME/media/numpad-specific variants.
+- [x] Keypress supports common Playwright-style key names, aliases, printable
+      keys, modifier combos, F1-F24, IME/composition keys, media keys, and
+      numpad-specific variants.
 - [ ] Codex-compatible namespace split exists, but `tab.playwright`,
       `tab.cua`, `tab.dom_cua`, and `tab.clipboard` are still partial facades,
-      not full Codex behavior.
-- [ ] MCP server exposes only `js`, which is intentional, but docs and skill do
-      not yet match Codex's full browser-use guidance.
+      not full Codex behavior. `tab.playwright` now includes common
+      `keyboard` and `mouse` aliases over the governed CUA backend in addition
+      to locator, wait, evaluate, download, and file chooser helpers.
+- [ ] MCP server exposes only `js`, which is intentional. Skill, API docs, MCP
+      configuration docs, and runtime `agent.documentation.get("browserUse")`
+      now document the Formax browser-use operating model, but this still does
+      not fully match Codex's complete browser-use guidance.
 - [ ] Tests are strong for happy-path fixtures but not yet strong for complex
       real browser failures.
 
@@ -710,9 +816,9 @@ These are explicitly not equivalent to Codex yet:
   - [x] Add generated API docs.
   - [x] Keep all existing tests green.
 
-- [ ] M2: Policy foundation.
+- [x] M2: Policy foundation.
   - [x] Host allow/block.
-  - [ ] Confirmation engine.
+  - [x] Confirmation engine.
   - [x] Raw CDP/evaluate governance.
   - [x] Sensitive redaction.
 
@@ -721,7 +827,7 @@ These are explicitly not equivalent to Codex yet:
   - [x] `get_visible_dom()`.
   - [x] Selector candidates.
   - [ ] Actionability.
-  - [ ] Strict errors.
+  - [x] Strict errors.
 
 - [ ] M4: Complex page support.
   - [ ] Frames.

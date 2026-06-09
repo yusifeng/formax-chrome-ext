@@ -85,12 +85,20 @@ Prefer the object API:
 - `tab.getByRole(role, { name })`
 - `tab.getByLabel(text)`
 - `tab.getByPlaceholder(text)`
+- `tab.getByDisplayValue(text)`
+- `tab.getByAltText(text)`
+- `tab.getByTitle(text)`
 - `tab.getByText(text)`
 - `tab.evaluate(script)`
 - `tab.rawCdp(method, params)`
 - `tab.screenshot()`
+- `tab.playwright.keyboard.press("Enter")`
+- `tab.playwright.keyboard.type("search text")`
+- `tab.playwright.mouse.click(120, 240)`
+- `tab.playwright.mouse.wheel(0, 600)`
 - `tab.cua.click({ x, y, button: "back" })`
 - `tab.cua.keypress({ keys: ["ControlOrMeta", "Shift", "Space"] })`
+- `tab.cua.keypress({ keys: "NumpadEnter" })`
 - `tab.dom_cua.scroll({ node_id, y: 400 })`
 - `tab.clipboard.readText({ confirmed: true })`
 - `tab.clipboard.writeText(text, { confirmed: true })`
@@ -161,6 +169,52 @@ globalThis.__activeBrowserTab = first
   ? await browser.tabs.get(first.id, { sessionId: first.sessionId })
   : await browser.tabs.new();
 ```
+
+## Browser-Use Operating Model
+
+Use the Node REPL as the only MCP tool surface. Browser actions happen through
+the imported Formax SDK object model, not through separate direct MCP browser
+tools. This keeps session state, pending approvals, tab handoff, and cleanup in
+one place.
+
+For ordinary browser tasks, follow this loop:
+
+1. Bootstrap the runtime and get `browser`.
+2. Reuse or claim exactly one working tab unless the user asked for more.
+3. Navigate or claim the user tab.
+4. Wait for the required page state.
+5. Observe or inspect the DOM.
+6. Choose the safest locator/action.
+7. Verify the result from URL, title, DOM text, events, or screenshot.
+8. Resolve pending approvals only after user approval.
+9. Finalize, hand off, deliver, or clean up as the final browser action.
+
+Prefer current runtime docs over memory:
+
+```js
+await agent.documentation.get("browserUse");
+await agent.documentation.get("tabs");
+await agent.documentation.get("locators");
+await agent.documentation.get("safety");
+```
+
+Use Chrome only when the task needs the user's Chrome profile, cookies,
+logged-in state, extensions, or currently open tabs. If a structured connector,
+API, local CLI, or file parser can satisfy the request without driving a web
+page, use that instead.
+
+Do not use browser actions as a workaround for policy:
+
+- Do not use raw CDP to bypass host approval, confirmation, or origin approval.
+- Do not use mutating `evaluate` when a locator or form helper can express the
+  same action.
+- Do not use screenshots as a substitute for DOM text when structured text is
+  available.
+- Do not retry a failing action blindly; refresh page state first.
+
+When a page opens a browser permission prompt, first identify the site and the
+permission. Grant it only after explicit user approval for that exact site and
+permission. Dismiss unexpected permission prompts.
 
 ## Tab Reuse
 
@@ -263,11 +317,13 @@ Prefer semantic locators before brittle selectors:
 1. role + visible name
 2. label
 3. placeholder
-4. text
-5. test id
-6. CSS selector
-7. observed ref with `tab.click({ ref })`
-8. coordinate actions only as a last resort
+4. display value
+5. alt text or title
+6. text
+7. test id
+8. CSS selector
+9. observed ref with `tab.click({ ref })`
+10. coordinate actions only as a last resort
 
 Examples:
 
@@ -275,6 +331,9 @@ Examples:
 await tab.getByRole("button", { name: "Search" }).click();
 await tab.getByLabel("Email").fill("user@example.com");
 await tab.getByPlaceholder("Search").fill("zod");
+await tab.getByDisplayValue("Alice").fill("Bob");
+await tab.getByAltText("Product photo").click();
+await tab.getByTitle("Help").hover();
 await tab.locator("input[name='q']").fill("OpenAI Codex");
 ```
 
@@ -428,11 +487,23 @@ If a JavaScript error or tool error happens:
 
 Ask the user for explicit confirmation before file uploads, sensitive typing, deleting or modifying third-party records, sending messages or posts, submitting forms with external side effects, financial transactions, subscription changes, permission grants, raw CDP on arbitrary websites, or mutating `evaluate` calls. Only pass `confirmed: true` or `originApproved: true` after the user has approved that exact action and destination in the current task.
 
+When an action fails with `requires_host_approval`, `confirmation_required`, or
+`origin_approval_required`, inspect `browser.policy.pending()`, present the
+pending approval to the user, and call `browser.policy.resolve()` after the user
+decides. Retry the exact original action only with returned `requiredParams` or
+after the resolved host policy is applied.
+
 Browser history and clipboard access also require explicit confirmation for every request and have no always-allow path. Treat returned history entries and clipboard text as sensitive telemetry. Only use the minimum query/time range or clipboard operation needed for the task.
 
 Bookmarks are intentionally not exposed by this runtime. Do not claim bookmark
 access, and do not ask for Chrome bookmark data unless a future capability
 explicitly adds it with confirmation and sensitivity handling.
+
+Browser/system notifications are intentionally not exposed by this runtime. Do
+not claim notification API access or attempt to create, inspect, update, or
+clear Chrome notifications. If a page asks to enable site notifications, treat
+that as a browser/site permission grant and require explicit user confirmation
+for that exact site before clicking it.
 
 ## File Uploads
 
@@ -487,6 +558,22 @@ Prefer DOM extraction for structured data. Screenshots are supporting evidence, 
 When you need multiple matching elements, use `await locator.all({ limit })` and keep the limit tight. It returns bounded `nth()` locator handles, not serialized DOM content.
 
 Locator actions run first-pass actionability checks for attachment, visibility, stable bounds, enabled/editable controls, and pointer occlusion. Use `force: true` only when the user task explicitly requires bypassing those checks after inspecting the page state; it still requires locator resolution and a stable attached element.
+
+For targeted extraction that normal locator queries cannot express, use `locator.evaluate(fn, arg, { mode: "read" })` or `locator.evaluateAll(fn, arg, { mode: "read" })`; the function receives the selected element or matched element array plus an optional JSON argument. Explicit read mode rejects obvious mutation patterns before execution, but it is not a hardened JavaScript sandbox. Use `locator.dispatchEvent(type, eventInit, { confirmed: true })` only when a real click/type helper is not appropriate and the event is expected by the page.
+
+For form state checks, prefer locator queries such as `isVisible()`, `isHidden()`, `isEnabled()`, `isDisabled()`, `isEditable()`, `isChecked()`, and `inputValue()` before using custom page evaluation.
+
+For repeated visible text extraction, prefer `locator.allInnerTexts()` or `locator.allTextContents()` over custom page evaluation.
+
+When working inside a card, panel, row, or dialog, prefer locator-scoped helpers such as `card.getByRole("button", { name: "Open" })` or `dialog.getByLabel("Email")` over hand-built descendant CSS. These serialize as parent-scoped locator plans.
+
+For direct locator actions, prefer `blur()`, `scrollIntoViewIfNeeded()`, and `selectText()` over custom page JavaScript when the action matches the task.
+
+For `<select>` controls, use `locator.selectOption(...)` with strings or Playwright-style specs such as `{ value: "mx" }`, `{ label: "Canada" }`, or `{ index: 2 }` instead of custom page JavaScript.
+
+For drag and drop between page elements, prefer `locator.dragTo(targetLocator)` before coordinate-based `tab.cua.drag`.
+
+Use `locator.highlight({ color, durationMs })` when you need visual verification or debugging. It draws a best-effort page overlay around the locator without taking a screenshot.
 
 ## Raw CDP
 

@@ -8,12 +8,16 @@ const CDP_VERSION = "1.3";
 const HEARTBEAT_ALARM = "formax-native-reconnect";
 const CLIPBOARD_OFFSCREEN_URL = "clipboard-offscreen.html";
 const EVENT_SNAPSHOT_STORAGE_KEY = "formax.agentBrowser.eventSnapshots.v1";
+const FINALIZED_BADGE_STORAGE_KEY = "TAB_FAVICON_BADGES";
+const PENDING_UPDATE_STORAGE_KEY = "formax.pendingUpdateVersion.v1";
 const POLICY_STORAGE_KEY = "formax.browserPolicy.v1";
 const DEFAULT_CDP_TIMEOUT_MS = 10000;
 const MAX_EVENT_SNAPSHOTS = 50;
 const MAX_EVENTS_PER_SESSION_SNAPSHOT = 200;
 const FILE_CHOOSER_TTL_MS = 5 * 60 * 1000;
 const MAX_FILE_CHOOSERS = 100;
+const APPROVAL_TTL_MS = 10 * 60 * 1000;
+const MAX_PENDING_APPROVALS = 100;
 const BACKEND_REVISION = 5;
 const MAX_PROFILE_HINT_LENGTH = 80;
 const DESTRUCTIVE_BROWSER_ACTION_PATTERN = /\b(delete|remove|destroy|cancel|close\s+account|deactivate|terminate|drop)\b/i;
@@ -35,6 +39,8 @@ const SUPPORTED_ACTIONS = [
     "getDiagnostics",
     "getPolicy",
     "updatePolicy",
+    "getPendingApprovals",
+    "resolveApproval",
     "startSession",
     "nameSession",
     "openTabs",
@@ -104,23 +110,42 @@ const networkRequestsByTab = new Map();
 const cursorArrivalWaiters = new Map();
 const expectedDebuggerDetachTabs = new Set();
 const fileChoosers = new Map();
+const pendingApprovals = new Map();
+const approvalExpiryTimers = new Map();
+const finalizedBadgesByTab = new Map();
+const faviconDataUrlsByTab = new Map();
 let activeActionContext = null;
 let nextCursorMoveSequence = 0;
 let browserPolicyState = createDefaultBrowserPolicyState();
 let browserPolicyLoaded = false;
 let browserPolicyLoadPromise = null;
+let finalizedBadgesLoaded = false;
+let finalizedBadgesLoadPromise = null;
+let finalizedBadgeStateQueue = Promise.resolve();
+let finalizedBadgePublicationQueue = Promise.resolve();
+let nativeDisconnectCleanup = null;
+let pendingUpdateVersion = null;
+let pendingUpdateReloadInProgress = false;
 registerTopLevelListeners();
 connectNativeHost();
 ensureReconnectAlarm();
 void ensureBrowserPolicyLoaded();
+void ensureFinalizedBadgesLoaded();
+void restoreSessionFaviconBadges();
+void maybeReloadForPendingUpdate("startup");
 function registerTopLevelListeners() {
     chrome.runtime.onInstalled.addListener(() => {
         connectNativeHost();
         ensureReconnectAlarm();
+        void maybeReloadForPendingUpdate("installed");
     });
     chrome.runtime.onStartup.addListener(() => {
         connectNativeHost();
         ensureReconnectAlarm();
+        void maybeReloadForPendingUpdate("startup");
+    });
+    chrome.runtime.onUpdateAvailable.addListener((details) => {
+        void handleExtensionUpdateAvailable(details);
     });
     chrome.alarms.onAlarm.addListener((alarm) => {
         if (alarm.name === HEARTBEAT_ALARM) {
@@ -135,6 +160,59 @@ function registerTopLevelListeners() {
                         ok: nativePort != null,
                         health: healthResult
                     });
+                });
+            });
+            return true;
+        }
+        if (message?.type === "POPUP_PENDING_APPROVALS") {
+            void getPendingApprovals({
+                includeResolved: false,
+                limit: approvalLimit(message.limit)
+            }).then((result) => {
+                sendResponse({
+                    ok: true,
+                    ...result
+                });
+            }).catch((error) => {
+                sendResponse({
+                    ok: false,
+                    error: structuredError(error)
+                });
+            });
+            return true;
+        }
+        if (message?.type === "POPUP_RESOLVE_APPROVAL") {
+            void resolveApproval({
+                approvalId: message.approvalId,
+                decision: message.decision,
+                policyDecision: message.policyDecision
+            }).then((result) => {
+                sendResponse({
+                    ok: true,
+                    ...result
+                });
+            }).catch((error) => {
+                sendResponse({
+                    ok: false,
+                    error: structuredError(error)
+                });
+            });
+            return true;
+        }
+        if (message?.type === "CONTENT_RESOLVE_APPROVAL") {
+            void resolveApproval({
+                approvalId: message.approvalId,
+                decision: message.decision,
+                policyDecision: message.policyDecision
+            }).then((result) => {
+                sendResponse({
+                    ok: true,
+                    ...result
+                });
+            }).catch((error) => {
+                sendResponse({
+                    ok: false,
+                    error: structuredError(error)
                 });
             });
             return true;
@@ -222,6 +300,8 @@ function registerTopLevelListeners() {
             sessionId: sessionIdForTab(tabId),
             tabId
         });
+        faviconDataUrlsByTab.delete(tabId);
+        void forgetFinalizedBadge(tabId);
         debuggerManager.markTabRemoved(tabId);
         sessionManager.onTabRemoved(tabId);
         cursorOverlayStateByTab.delete(tabId);
@@ -232,6 +312,28 @@ function registerTopLevelListeners() {
     chrome.tabs.onCreated.addListener((tab) => {
         if (typeof tab.id === "number") {
             tabOpenedAt.set(tab.id, Date.now());
+        }
+    });
+    chrome.tabs.onActivated.addListener((activeInfo) => {
+        void clearFinalizedBadge(activeInfo.tabId);
+    });
+    chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+        if (changeInfo.url != null ||
+            (typeof changeInfo.favIconUrl === "string" && !isFormaxFaviconBadgeUrl(changeInfo.favIconUrl))) {
+            faviconDataUrlsByTab.delete(tabId);
+        }
+        if (changeInfo.url != null || changeInfo.favIconUrl != null || changeInfo.status === "complete") {
+            void republishFinalizedBadge(tabId);
+        }
+    });
+    chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
+        faviconDataUrlsByTab.delete(addedTabId);
+        faviconDataUrlsByTab.delete(removedTabId);
+        void replaceFinalizedBadge(addedTabId, removedTabId);
+    });
+    chrome.windows.onFocusChanged.addListener((windowId) => {
+        if (windowId !== chrome.windows.WINDOW_ID_NONE) {
+            void clearFocusedWindowFinalizedBadge(windowId);
         }
     });
     chrome.downloads.onCreated.addListener((downloadItem) => {
@@ -289,6 +391,13 @@ function connectNativeHost() {
             lastNativeError = lastError?.message || "Native host disconnected";
             console.warn("Native host disconnected", lastNativeError);
             nativePort = null;
+            safePostEvent({
+                name: "nativeDisconnected",
+                sessionId: null,
+                tabId: null,
+                reason: lastNativeError
+            });
+            void cleanupAfterNativeDisconnect(lastNativeError);
         });
         port.postMessage({
             type: "hello",
@@ -399,6 +508,10 @@ async function dispatchActionRaw(action, params) {
             return getPolicy(params);
         case "updatePolicy":
             return updatePolicy(params);
+        case "getPendingApprovals":
+            return getPendingApprovals(params);
+        case "resolveApproval":
+            return resolveApproval(params);
         case "startSession":
             return startSession(params);
         case "nameSession":
@@ -718,6 +831,12 @@ function userFacingErrorMessage(code, message) {
             return "Raw browser diagnostics require origin approval before continuing.";
         case "user_handoff_required":
             return "This browser action must be handed off to the user.";
+        case "strict_mode_violation":
+            return "The locator matched an unexpected number of elements.";
+        case "locator_not_found":
+            return "The locator did not match an element.";
+        case "locator_actionability":
+            return "The locator matched an element, but it was not ready for the requested action.";
         case "invalid_params":
             return message.length <= 180 ? message : "The browser action parameters are invalid.";
         case "internal_error":
@@ -740,6 +859,7 @@ async function health(params = {}) {
         policy: cloneBrowserPolicyState(browserPolicyState),
         extensionInstanceId: sessionManager.getExtensionInstanceId(),
         attachedTabs: debuggerManager.listAttachedTabs(),
+        attachedTargets: debuggerManager.listAttachedTargets(),
         supportedActions: SUPPORTED_ACTIONS,
         backendRevision: BACKEND_REVISION,
         profile,
@@ -865,6 +985,86 @@ function reloadExtension() {
         backendRevision: BACKEND_REVISION
     };
 }
+async function handleExtensionUpdateAvailable(details) {
+    pendingUpdateVersion =
+        typeof details.version === "string" && details.version.trim()
+            ? details.version.trim()
+            : "unknown";
+    await storageSessionSet(PENDING_UPDATE_STORAGE_KEY, pendingUpdateVersion);
+    safePostEvent({
+        name: "extensionUpdateAvailable",
+        sessionId: null,
+        tabId: null,
+        version: pendingUpdateVersion
+    });
+    await maybeReloadForPendingUpdate("updateAvailable");
+}
+async function maybeReloadForPendingUpdate(reason) {
+    if (pendingUpdateReloadInProgress) {
+        return;
+    }
+    await sessionManager.initialize();
+    if (pendingUpdateVersion == null) {
+        const stored = await storageSessionGet(PENDING_UPDATE_STORAGE_KEY);
+        pendingUpdateVersion =
+            typeof stored === "string" && stored.trim() ? stored.trim() : null;
+    }
+    if (pendingUpdateVersion == null) {
+        return;
+    }
+    const currentVersion = chrome.runtime.getManifest().version;
+    if (pendingUpdateVersion === currentVersion) {
+        pendingUpdateVersion = null;
+        await storageSessionRemove(PENDING_UPDATE_STORAGE_KEY);
+        return;
+    }
+    if (browserControlIsInUseForUpdate()) {
+        safePostEvent({
+            name: "extensionUpdateDeferred",
+            sessionId: null,
+            tabId: null,
+            reason,
+            version: pendingUpdateVersion,
+            activeLeaseCount: activeControlledLeaseCount(),
+            attachedTabCount: debuggerManager.listAttachedTabs().length,
+            attachedTargetCount: debuggerManager.listAttachedTargets().length,
+            cursorWaiterCount: cursorArrivalWaiters.size
+        });
+        return;
+    }
+    pendingUpdateReloadInProgress = true;
+    const version = pendingUpdateVersion;
+    pendingUpdateVersion = null;
+    await storageSessionRemove(PENDING_UPDATE_STORAGE_KEY);
+    safePostEvent({
+        name: "extensionUpdateReloading",
+        sessionId: null,
+        tabId: null,
+        reason,
+        version
+    });
+    setTimeout(() => {
+        chrome.runtime.reload();
+    }, 50);
+}
+function browserControlIsInUseForUpdate() {
+    return (activeControlledLeaseCount() > 0 ||
+        debuggerManager.listAttachedTabs().length > 0 ||
+        debuggerManager.listAttachedTargets().length > 0 ||
+        cursorArrivalWaiters.size > 0 ||
+        nativeDisconnectCleanup != null);
+}
+function activeControlledLeaseCount() {
+    let count = 0;
+    for (const session of sessionManager.listSessions()) {
+        if (session.status !== "active") {
+            continue;
+        }
+        count += sessionManager.getSessionLeases(session.sessionId)
+            .filter((lease) => lease.state === "active").length;
+    }
+    return count;
+}
 async function getEvents(params = {}) {
     const result = {
         events: eventBuffer.list(params)
@@ -936,6 +1136,7 @@ async function getDiagnostics(params = {}) {
         devLogs: devLogs.logs,
         activeSessions: healthSnapshot.sessions,
         attachedTabs: healthSnapshot.attachedTabs,
+        attachedTargets: healthSnapshot.attachedTargets,
         nativeManifest: healthSnapshot.nativeManifest ?? normalizeNativeManifestDiagnostics(params.nativeDiagnostics),
         extension: {
             id: healthSnapshot.extensionId,
@@ -1106,6 +1307,208 @@ async function updatePolicy(params = {}) {
         policy: cloneBrowserPolicyState(browserPolicyState, params.sessionId)
     };
 }
+function approvalLimit(value) {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+        return MAX_PENDING_APPROVALS;
+    }
+    return Math.max(1, Math.min(Math.floor(value), MAX_PENDING_APPROVALS));
+}
+function prunePendingApprovals() {
+    const now = Date.now();
+    for (const approval of pendingApprovals.values()) {
+        if (approval.status === "pending" && approval.expiresAt <= now) {
+            expirePendingApproval(approval.approvalId);
+        }
+    }
+    while (pendingApprovals.size > MAX_PENDING_APPROVALS) {
+        const oldest = Array.from(pendingApprovals.values())
+            .sort((left, right) => left.createdAt - right.createdAt)[0];
+        if (!oldest)
+            break;
+        deletePendingApproval(oldest);
+    }
+}
+function scheduleApprovalExpiry(approval) {
+    clearApprovalExpiryTimer(approval.approvalId);
+    if (approval.status !== "pending") {
+        return;
+    }
+    const timeoutId = self.setTimeout(() => {
+        expirePendingApproval(approval.approvalId);
+    }, Math.max(0, approval.expiresAt - Date.now()));
+    approvalExpiryTimers.set(approval.approvalId, timeoutId);
+}
+function clearApprovalExpiryTimer(approvalId) {
+    const timeoutId = approvalExpiryTimers.get(approvalId);
+    if (timeoutId == null) {
+        return;
+    }
+    self.clearTimeout(timeoutId);
+    approvalExpiryTimers.delete(approvalId);
+}
+function expirePendingApproval(approvalId) {
+    const approval = pendingApprovals.get(approvalId);
+    if (!approval || approval.status !== "pending") {
+        clearApprovalExpiryTimer(approvalId);
+        return;
+    }
+    if (approval.expiresAt > Date.now()) {
+        scheduleApprovalExpiry(approval);
+        return;
+    }
+    approval.status = "expired";
+    clearApprovalExpiryTimer(approval.approvalId);
+    void clearPendingApprovalFromTab(approval);
+}
+function deletePendingApproval(approval) {
+    clearApprovalExpiryTimer(approval.approvalId);
+    pendingApprovals.delete(approval.approvalId);
+    void clearPendingApprovalFromTab(approval);
+}
+function sanitizePendingApproval(approval) {
+    return {
+        approvalId: approval.approvalId,
+        kind: approval.kind,
+        status: approval.status,
+        action: approval.action,
+        host: approval.host,
+        sessionId: approval.sessionId,
+        tabId: approval.tabId,
+        message: approval.message,
+        createdAt: approval.createdAt,
+        expiresAt: approval.expiresAt,
+        ...(approval.reasons ? { reasons: approval.reasons } : {}),
+        ...(approval.subject ? { subject: approval.subject } : {}),
+        ...(approval.target ? { target: approval.target } : {}),
+        ...(approval.requiredParams ? { requiredParams: approval.requiredParams } : {}),
+        ...(approval.suggestedDecisions ? { suggestedDecisions: approval.suggestedDecisions } : {})
+    };
+}
+function registerPendingApproval(approval) {
+    prunePendingApprovals();
+    const now = Date.now();
+    const existing = pendingApprovals.get(approval.approvalId);
+    const record = {
+        ...approval,
+        status: "pending",
+        createdAt: existing?.createdAt ?? now,
+        expiresAt: now + APPROVAL_TTL_MS
+    };
+    pendingApprovals.set(record.approvalId, record);
+    scheduleApprovalExpiry(record);
+    void publishPendingApprovalToTab(record);
+    return record;
+}
+async function publishPendingApprovalToTab(approval) {
+    if (approval.status !== "pending" || typeof approval.tabId !== "number") {
+        return;
+    }
+    try {
+        if (!(await prepareContentScript(approval.tabId))) {
+            return;
+        }
+        await withChromeMessageTimeout(chrome.tabs.sendMessage(approval.tabId, {
+            type: "AGENT_APPROVAL_REQUEST",
+            approval: sanitizePendingApproval(approval)
+        }), 250);
+    }
+    catch {
+        // Approval remains available through the SDK and popup when the page cannot host UI.
+    }
+}
+async function clearPendingApprovalFromTab(approval) {
+    if (typeof approval.tabId !== "number") {
+        return;
+    }
+    try {
+        if (!(await prepareContentScript(approval.tabId))) {
+            return;
+        }
+        await withChromeMessageTimeout(chrome.tabs.sendMessage(approval.tabId, {
+            type: "AGENT_APPROVAL_RESOLVED",
+            approvalId: approval.approvalId,
+            status: approval.status
+        }), 250);
+    }
+    catch {
+        // Best-effort cleanup; stale in-page UI cannot affect the approval registry.
+    }
+}
+async function getPendingApprovals(params = {}) {
+    prunePendingApprovals();
+    const sessionId = typeof params.sessionId === "string" && params.sessionId.trim()
+        ? params.sessionId.trim()
+        : null;
+    const kind = ["host", "confirmation", "origin"].includes(params.kind)
+        ? params.kind
+        : null;
+    const includeResolved = params.includeResolved === true;
+    const approvals = Array.from(pendingApprovals.values())
+        .filter((approval) => includeResolved || approval.status === "pending")
+        .filter((approval) => !sessionId || approval.sessionId === sessionId)
+        .filter((approval) => !kind || approval.kind === kind)
+        .sort((left, right) => right.createdAt - left.createdAt)
+        .slice(0, approvalLimit(params.limit))
+        .map(sanitizePendingApproval);
+    return { approvals };
+}
+async function resolveApproval(params = {}) {
+    prunePendingApprovals();
+    const approvalId = requireString(params.approvalId, "resolveApproval.params.approvalId");
+    const decision = requireString(params.decision, "resolveApproval.params.decision");
+    if (decision !== "approve" && decision !== "deny") {
+        throw new Error("resolveApproval.params.decision must be approve or deny");
+    }
+    const approval = pendingApprovals.get(approvalId);
+    if (!approval) {
+        throw new Error(`resolveApproval.params.approvalId not found: ${approvalId}`);
+    }
+    if (approval.status !== "pending") {
+        return {
+            approval: sanitizePendingApproval(approval),
+            ...(approval.requiredParams ? { requiredParams: approval.requiredParams } : {})
+        };
+    }
+    approval.status = decision === "approve" ? "approved" : "denied";
+    clearApprovalExpiryTimer(approval.approvalId);
+    let policy;
+    let requiredParams = approval.requiredParams;
+    if (approval.kind === "host") {
+        await ensureBrowserPolicyLoaded();
+        const policyDecision = decision === "deny"
+            ? "deny"
+            : normalizePolicyDecision(params.policyDecision ?? (approval.sessionId ? "allow" : "always_allow"));
+        if (approval.host) {
+            applyHostAccessDecision(browserPolicyState, {
+                decision: policyDecision,
+                host: approval.host,
+                sessionId: typeof params.sessionId === "string" && params.sessionId.trim()
+                    ? params.sessionId.trim()
+                    : approval.sessionId ?? undefined
+            });
+            await persistBrowserPolicyState();
+            policy = cloneBrowserPolicyState(browserPolicyState, approval.sessionId ?? params.sessionId);
+        }
+        requiredParams = {};
+    }
+    safePostEvent({
+        name: "approvalResolved",
+        approvalId: approval.approvalId,
+        kind: approval.kind,
+        status: approval.status,
+        action: approval.action,
+        host: approval.host,
+        sessionId: approval.sessionId,
+        tabId: approval.tabId,
+        decision
+    });
+    void clearPendingApprovalFromTab(approval);
+    return {
+        approval: sanitizePendingApproval(approval),
+        ...(requiredParams ? { requiredParams } : {}),
+        ...(policy ? { policy } : {})
+    };
+}
 async function startSession(params = {}) {
     if (typeof params.initialUrl === "string" && params.initialUrl.trim()) {
         await assertBrowserPolicyForUrl("navigate", params.initialUrl, params.sessionId, params);
@@ -1114,6 +1517,7 @@ async function startSession(params = {}) {
     if (typeof session.activeTabId === "number") {
         await debuggerManager.attachTab(session.activeTabId);
     }
+    scheduleSessionFaviconBadges(session.sessionId);
     return sessionManager.serializeSession(session);
 }
 async function nameSession(params = {}) {
@@ -1131,6 +1535,7 @@ async function claimTab(params = {}) {
     };
     const { session, tab } = await sessionManager.claimTab(claimParams);
     await debuggerManager.attachTab(tab.id);
+    scheduleSessionFaviconBadges(session.sessionId);
     return sessionManager.serializeSession(session);
 }
 async function createTab(params = {}) {
@@ -1139,6 +1544,7 @@ async function createTab(params = {}) {
     }
     const { session, tab } = await sessionManager.createTab(params);
     await debuggerManager.attachTab(tab.id);
+    scheduleSessionFaviconBadges(session.sessionId);
     return {
         session: sessionManager.serializeSession(session),
         tab: await summarizeTab(tab)
@@ -1148,6 +1554,12 @@ async function switchTab(params = {}) {
     const { tabId } = sessionManager.resolveSessionAndTab(params);
     const session = await sessionManager.switchTab(params);
     await debuggerManager.attachTab(tabId);
+    if (session) {
+        scheduleSessionFaviconBadges(session.sessionId);
+    }
+    else {
+        schedulePublishFinalizedBadge(tabId);
+    }
     const tab = await chrome.tabs.get(tabId);
     return {
         session: sessionManager.serializeSession(session),
@@ -1178,6 +1590,7 @@ async function openUrl(params = {}) {
         throw new Error("No active tab in session");
     }
     await debuggerManager.attachTab(tabId);
+    scheduleSessionFaviconBadges(session.sessionId);
     const loadPromise = waitForPageLoad(tabId, numberOrDefault(params.timeoutMs, 15000));
     await cdp(tabId, "Page.navigate", { url });
     await loadPromise;
@@ -2342,7 +2755,11 @@ async function locatorQuery(params = {}) {
     });
     const value = readRuntimeValue(evaluated);
     if (!value || value.ok !== true) {
-        throw new Error(value?.error || `Locator query failed: ${locator.selector}`);
+        throwLocatorRuntimeError(value, `Locator query failed: ${locator.selector}`, {
+            operation: "locatorQuery",
+            queryKind: kind,
+            selector: typeof locator.selector === "string" ? locator.selector : locator.kind
+        });
     }
     sessionManager.touchSession(session?.sessionId);
     return {
@@ -2360,36 +2777,126 @@ async function locatorAction(params = {}) {
     const locator = normalizeLocatorPlan(params.locator);
     const kind = normalizeLocatorActionKind(params.kind);
     const args = params.args && typeof params.args === "object" ? params.args : {};
+    const trial = args.trial === true;
     const waitMs = numberOrDefault(params.waitMs, 300);
     await debuggerManager.attachTab(tabId);
+    const target = await locatorExecutionTarget(tabId, locator, {
+        sessionId: session?.sessionId,
+        timeoutMs: numberOrDefault(params.timeoutMs, DEFAULT_CDP_TIMEOUT_MS)
+    });
     if (kind === "click" || kind === "dblclick") {
-        const target = await resolveLocatorRef(tabId, locator, `locatorAction.${kind}`, kind, args);
-        return click({
+        const pointerTarget = await resolveLocatorRef(tabId, target.locator, `locatorAction.${kind}`, kind, args, target);
+        await assertBrowserPolicyForTab("click", tabId, session?.sessionId, {
+            ...params,
+            ...args,
+            confirmed: args.confirmed ?? params.confirmed,
+            confirmationId: args.confirmationId ?? params.confirmationId,
+            label: typeof pointerTarget.label === "string" ? pointerTarget.label : undefined,
+            text: typeof pointerTarget.text === "string" ? pointerTarget.text : undefined,
+            tagName: typeof pointerTarget.tagName === "string" ? pointerTarget.tagName : undefined
+        });
+        await assertUserHandoffNotRequired(tabId, session?.sessionId ?? null, pointerTarget);
+        if (trial) {
+            return locatorTrialResult(session?.sessionId ?? null, tabId, kind, target, pointerTarget);
+        }
+        await showCursor(tabId, pointerTarget.x, pointerTarget.y);
+        if (pointerTarget.fileChooser) {
+            await showCursorClick(tabId, pointerTarget.x, pointerTarget.y);
+            const fileChooser = registerFileChooser({
+                sessionId: session?.sessionId ?? null,
+                tabId,
+                fileChooser: {
+                    ...pointerTarget.fileChooser,
+                    locator
+                }
+            });
+            safePostEvent({
+                name: "fileChooserOpened",
+                sessionId: session?.sessionId ?? null,
+                tabId,
+                fileChooserId: fileChooser.fileChooserId,
+                file_chooser_id: fileChooser.file_chooser_id,
+                isMultiple: fileChooser.isMultiple,
+                is_multiple: fileChooser.is_multiple,
+                fileChooser
+            });
+        }
+        else {
+            await dispatchMouseClick(tabId, pointerTarget.x, pointerTarget.y, {
+                ...args,
+                clickCount: kind === "dblclick" ? 2 : numberOrDefault(args.clickCount, 1)
+            });
+            await showCursorClick(tabId, pointerTarget.x, pointerTarget.y);
+        }
+        await sleep(waitMs);
+        return observe({
             sessionId: session?.sessionId,
-            tabId,
-            ref: target.ref,
-            clickCount: kind === "dblclick" ? 2 : numberOrDefault(args.clickCount, 1),
-            button: args.button,
-            waitMs,
-            confirmed: args.confirmed,
-            confirmationId: args.confirmationId
+            tabId
+        });
+    }
+    if (kind === "dragTo") {
+        const targetLocator = normalizeLocatorPlan(args.targetLocator);
+        const sourcePoint = await resolveLocatorRef(tabId, target.locator, "locatorAction.dragTo.source", kind, args, target);
+        const targetExecution = await locatorExecutionTarget(tabId, targetLocator, {
+            sessionId: session?.sessionId,
+            timeoutMs: numberOrDefault(params.timeoutMs, DEFAULT_CDP_TIMEOUT_MS)
+        });
+        const targetPoint = await resolveLocatorRef(tabId, targetExecution.locator, "locatorAction.dragTo.target", kind, args, targetExecution);
+        await assertBrowserPolicyForTab("click", tabId, session?.sessionId, {
+            ...params,
+            ...args,
+            confirmed: args.confirmed ?? params.confirmed,
+            confirmationId: args.confirmationId ?? params.confirmationId,
+            label: typeof sourcePoint.label === "string" ? sourcePoint.label : undefined,
+            text: typeof sourcePoint.text === "string" ? sourcePoint.text : undefined,
+            tagName: typeof sourcePoint.tagName === "string" ? sourcePoint.tagName : undefined
+        });
+        await assertUserHandoffNotRequired(tabId, session?.sessionId ?? null, sourcePoint);
+        await assertUserHandoffNotRequired(tabId, session?.sessionId ?? null, targetPoint);
+        if (trial) {
+            return {
+                ...locatorTrialResult(session?.sessionId ?? null, tabId, kind, target, sourcePoint),
+                target: locatorTrialTarget(targetPoint)
+            };
+        }
+        await showCursor(tabId, sourcePoint.x, sourcePoint.y);
+        await dispatchMouseDrag(tabId, [
+            { x: sourcePoint.x, y: sourcePoint.y },
+            { x: targetPoint.x, y: targetPoint.y }
+        ], args);
+        await sleep(waitMs);
+        return observe({
+            sessionId: session?.sessionId,
+            tabId
         });
     }
     if (kind === "fill" || kind === "type") {
         const text = requireString(args.value ?? args.text, `locatorAction.${kind}.text`);
-        const target = await resolveLocatorRef(tabId, locator, `locatorAction.${kind}`, kind, args);
-        return typeText({
+        await assertBrowserPolicyForTab("type", tabId, session?.sessionId, {
+            ...params,
+            ...args,
+            text
+        });
+        const pointerTarget = await resolveLocatorRef(tabId, target.locator, `locatorAction.${kind}`, kind, args, target);
+        if (trial) {
+            return locatorTrialResult(session?.sessionId ?? null, tabId, kind, target, pointerTarget);
+        }
+        await focusLocator(tabId, target.locator, args, target, kind === "fill" ? args.clear !== false : args.clear === true);
+        await showCursor(tabId, pointerTarget.x, pointerTarget.y);
+        await cdp(tabId, "Input.insertText", { text });
+        await sleep(waitMs);
+        return observe({
             sessionId: session?.sessionId,
-            tabId,
-            ref: target.ref,
-            text,
-            clear: kind === "fill" ? args.clear !== false : args.clear === true,
-            waitMs
+            tabId
         });
     }
     if (kind === "press") {
         const key = requireString(args.key, "locatorAction.press.key");
-        await focusLocator(tabId, locator, args);
+        if (trial) {
+            const pointerTarget = await resolveLocatorRef(tabId, target.locator, "locatorAction.press", kind, args, target);
+            return locatorTrialResult(session?.sessionId ?? null, tabId, kind, target, pointerTarget);
+        }
+        await focusLocator(tabId, target.locator, args, target);
         return pressKey({
             sessionId: session?.sessionId,
             tabId,
@@ -2397,18 +2904,74 @@ async function locatorAction(params = {}) {
             waitMs
         });
     }
-    if (kind === "clear" || kind === "focus" || kind === "hover") {
-        const target = await resolveLocatorRef(tabId, locator, `locatorAction.${kind}`, kind, args);
+    if (kind === "clear" || kind === "focus" || kind === "hover" || kind === "highlight") {
+        const pointerTarget = await resolveLocatorRef(tabId, target.locator, `locatorAction.${kind}`, kind, args, target);
+        if (trial) {
+            return locatorTrialResult(session?.sessionId ?? null, tabId, kind, target, pointerTarget);
+        }
         if (kind === "focus" || kind === "clear") {
-            await focusAndMaybeClearElement(tabId, { ref: target.ref }, kind === "clear");
+            await focusLocator(tabId, target.locator, args, target, kind === "clear");
         }
         if (kind === "hover") {
-            await showCursor(tabId, target.x, target.y);
+            await showCursor(tabId, pointerTarget.x, pointerTarget.y);
             await cdp(tabId, "Input.dispatchMouseEvent", {
                 type: "mouseMoved",
-                x: target.x,
-                y: target.y,
+                x: pointerTarget.x,
+                y: pointerTarget.y,
                 button: "none"
+            });
+        }
+        if (kind === "highlight") {
+            const rect = pointerTarget.rect && typeof pointerTarget.rect === "object"
+                ? pointerTarget.rect
+                : {
+                    x: pointerTarget.x,
+                    y: pointerTarget.y,
+                    width: pointerTarget.width,
+                    height: pointerTarget.height
+                };
+            await showHighlightRect(tabId, normalizeScreenshotHighlightClip(rect), {
+                color: typeof args.color === "string" ? args.color : undefined,
+                durationMs: numberOrDefault(args.durationMs, numberOrDefault(args.highlightDurationMs, 2000))
+            });
+        }
+        await sleep(waitMs);
+        if (kind === "highlight") {
+            sessionManager.touchSession(session?.sessionId);
+            return {
+                sessionId: session?.sessionId ?? null,
+                tabId,
+                kind,
+                frameId: target.frameId,
+                targetId: target.targetId,
+                rect: pointerTarget.rect ?? null
+            };
+        }
+        return observe({
+            sessionId: session?.sessionId,
+            tabId
+        });
+    }
+    if (kind === "blur" || kind === "scrollIntoViewIfNeeded" || kind === "selectText") {
+        if (trial) {
+            const pointerTarget = await resolveLocatorRef(tabId, target.locator, `locatorAction.${kind}`, kind, args, target);
+            return locatorTrialResult(session?.sessionId ?? null, tabId, kind, target, pointerTarget);
+        }
+        const evaluated = await cdp(tabId, "Runtime.evaluate", {
+            expression: locatorDomUtilityExpression(target.locator, kind, args),
+            ...(target.executionContextId != null ? { contextId: target.executionContextId } : {}),
+            returnByValue: true,
+            awaitPromise: true
+        }, {
+            targetId: target.targetId,
+            timeoutMs: numberOrDefault(params.timeoutMs, DEFAULT_CDP_TIMEOUT_MS)
+        });
+        const value = readRuntimeValue(evaluated);
+        if (!value || value.ok !== true) {
+            throwLocatorRuntimeError(value, `Locator action failed: ${locator.selector}`, {
+                operation: "locatorAction",
+                actionKind: kind,
+                selector: typeof target.locator.selector === "string" ? target.locator.selector : target.locator.kind
             });
         }
         await sleep(waitMs);
@@ -2418,14 +2981,26 @@ async function locatorAction(params = {}) {
         });
     }
     if (kind === "setChecked" || kind === "selectOption") {
+        if (trial) {
+            const pointerTarget = await resolveLocatorRef(tabId, target.locator, `locatorAction.${kind}`, kind, args, target);
+            return locatorTrialResult(session?.sessionId ?? null, tabId, kind, target, pointerTarget);
+        }
         const evaluated = await cdp(tabId, "Runtime.evaluate", {
-            expression: locatorMutationExpression(locator, kind, args),
+            expression: locatorMutationExpression(target.locator, kind, args),
+            ...(target.executionContextId != null ? { contextId: target.executionContextId } : {}),
             returnByValue: true,
             awaitPromise: true
+        }, {
+            targetId: target.targetId,
+            timeoutMs: numberOrDefault(params.timeoutMs, DEFAULT_CDP_TIMEOUT_MS)
         });
         const value = readRuntimeValue(evaluated);
         if (!value || value.ok !== true) {
-            throw new Error(value?.error || `Locator action failed: ${locator.selector}`);
+            throwLocatorRuntimeError(value, `Locator action failed: ${locator.selector}`, {
+                operation: "locatorAction",
+                actionKind: kind,
+                selector: typeof target.locator.selector === "string" ? target.locator.selector : target.locator.kind
+            });
         }
         await sleep(waitMs);
         return observe({
@@ -2433,7 +3008,94 @@ async function locatorAction(params = {}) {
             tabId
         });
     }
+    if (kind === "evaluate" || kind === "evaluateAll" || kind === "dispatchEvent") {
+        if (kind === "evaluate" || kind === "evaluateAll") {
+            const script = requireString(args.script, `locatorAction.${kind}.script`);
+            assertReadOnlyEvaluateAllowed(script, args, `locator.${kind}`);
+            await assertBrowserPolicyForTab("evaluate", tabId, session?.sessionId, {
+                ...params,
+                ...args,
+                script,
+                mode: args.mode === "read" ? "read" : "write",
+                confirmed: args.confirmed ?? params.confirmed,
+                confirmationId: args.confirmationId ?? params.confirmationId
+            });
+            await postDiagnosticActionAudit({
+                action: "evaluate",
+                tabId,
+                sessionId: session?.sessionId ?? null,
+                method: `locator.${kind}`,
+                reason: auditReason(args.reason ?? params.reason, `locator_${kind}`),
+                mode: args.mode === "read" ? "read" : "write",
+                readOnly: args.mode === "read"
+            });
+        }
+        else {
+            const eventType = requireString(args.type, "locatorAction.dispatchEvent.type");
+            await assertBrowserPolicyForTab("click", tabId, session?.sessionId, {
+                ...params,
+                ...args,
+                label: `dispatchEvent:${eventType}`,
+                text: eventType,
+                confirmed: args.confirmed ?? params.confirmed,
+                confirmationId: args.confirmationId ?? params.confirmationId
+            });
+        }
+        const evaluated = await cdp(tabId, "Runtime.evaluate", {
+            expression: locatorScriptActionExpression(target.locator, kind, args),
+            ...(target.executionContextId != null ? { contextId: target.executionContextId } : {}),
+            returnByValue: true,
+            awaitPromise: true
+        }, {
+            targetId: target.targetId,
+            timeoutMs: numberOrDefault(params.timeoutMs, DEFAULT_CDP_TIMEOUT_MS)
+        });
+        const value = readRuntimeValue(evaluated);
+        if (!value || value.ok !== true) {
+            throwLocatorRuntimeError(value, `Locator action failed: ${locator.selector}`, {
+                operation: "locatorAction",
+                actionKind: kind,
+                selector: typeof target.locator.selector === "string" ? target.locator.selector : target.locator.kind
+            });
+        }
+        await sleep(waitMs);
+        return {
+            sessionId: session?.sessionId ?? null,
+            tabId,
+            kind,
+            frameId: target.frameId,
+            targetId: target.targetId,
+            value: value.value ?? null,
+            count: value.count ?? 0
+        };
+    }
     throw new Error(`Unsupported locator action: ${kind}`);
+}
+function locatorTrialTarget(target) {
+    const rect = target?.rect && typeof target.rect === "object"
+        ? target.rect
+        : {
+            x: Number.isFinite(Number(target?.x)) ? Number(target.x) : null,
+            y: Number.isFinite(Number(target?.y)) ? Number(target.y) : null,
+            width: Number.isFinite(Number(target?.width)) ? Number(target.width) : null,
+            height: Number.isFinite(Number(target?.height)) ? Number(target.height) : null
+        };
+    return {
+        x: Number.isFinite(Number(target?.x)) ? Number(target.x) : null,
+        y: Number.isFinite(Number(target?.y)) ? Number(target.y) : null,
+        rect
+    };
+}
+function locatorTrialResult(sessionId, tabId, kind, executionTarget, target) {
+    return {
+        sessionId,
+        tabId,
+        kind,
+        trial: true,
+        frameId: executionTarget.frameId,
+        targetId: executionTarget.targetId,
+        ...locatorTrialTarget(target)
+    };
 }
 async function locatorWait(params = {}) {
     const { session, tabId } = sessionManager.resolveSessionAndTab(params);
@@ -2506,22 +3168,58 @@ async function resolveFrame(params = {}) {
         timeoutMs
     });
     const resolved = readRuntimeValue(evaluated);
-    if (!resolved || resolved.ok !== true) {
+    let effectiveResolved = resolved;
+    let resolvedTargetId = targetId;
+    let matchPathOffset = 0;
+    let precomputedMatch = null;
+    if (!effectiveResolved || effectiveResolved.ok !== true) {
+        const continued = !targetId
+            ? await continueResolveFramePathInTarget(tabId, frameSelectors, effectiveResolved, timeoutMs)
+            : null;
+        if (continued) {
+            effectiveResolved = continued.resolved;
+            resolvedTargetId = continued.targetId;
+            matchPathOffset = continued.matchPathOffset;
+            precomputedMatch = continued.match;
+        }
+    }
+    if (!effectiveResolved || effectiveResolved.ok !== true) {
         throw new Error(resolved?.error || "Unable to resolve frame selector path");
     }
-    const frameTree = await cdp(tabId, "Page.getFrameTree", {}, { targetId, timeoutMs });
-    const match = matchResolvedFramePathToFrameTree(resolved.path, frameTree?.frameTree);
+    const frameTree = precomputedMatch
+        ? null
+        : await cdp(tabId, "Page.getFrameTree", {}, { targetId: resolvedTargetId, timeoutMs });
+    let match = precomputedMatch ?? matchResolvedFramePathToFrameTree(effectiveResolved.path, frameTree?.frameTree);
+    const effectivePath = Array.isArray(effectiveResolved.path) ? effectiveResolved.path : [];
+    const finalResolvedStep = effectivePath.length ? effectivePath[effectivePath.length - 1] : null;
+    if (!resolvedTargetId && (!match.frame || finalResolvedStep?.accessible !== true)) {
+        const targetMatch = await resolveFramePathTarget(tabId, effectiveResolved.path, timeoutMs);
+        if (targetMatch) {
+            resolvedTargetId = targetMatch.targetId;
+            match = targetMatch.match;
+            matchPathOffset = targetMatch.matchPathOffset;
+            effectiveResolved = {
+                ...effectiveResolved,
+                targetViewportOffset: targetMatch.targetViewportOffset
+            };
+        }
+    }
     sessionManager.touchSession(session?.sessionId);
+    const path = effectivePath;
+    const lastPathViewportOffset = path.length ? path[path.length - 1]?.viewportOffset : null;
+    const targetViewportOffset = resolvedTargetId
+        ? coerceViewportOffset(effectiveResolved.targetViewportOffset ?? lastPathViewportOffset)
+        : { x: 0, y: 0 };
     return {
         sessionId: session?.sessionId ?? null,
         tabId,
-        targetId,
+        targetId: resolvedTargetId,
         frameSelectors,
         matched: match.frame != null,
-        accessible: resolved.accessible === true,
+        accessible: effectiveResolved.accessible === true,
         frameId: match.frame?.id ?? null,
         frame: match.node ? summarizePageFrameTreeNode(match.node) : null,
-        path: (Array.isArray(resolved.path) ? resolved.path : []).map((step, index) => ({
+        path: path.map((step, index) => ({
             selector: typeof step.selector === "string" ? step.selector : frameSelectors[index] ?? "",
             index,
             accessible: step.accessible === true,
@@ -2530,8 +3228,11 @@ async function resolveFrame(params = {}) {
             title: typeof step.title === "string" ? step.title : null,
             src: typeof step.src === "string" ? sanitizeDebugUrl(step.src) : null,
             url: typeof step.url === "string" ? sanitizeDebugUrl(step.url) : null,
-            frameId: match.path[index]?.frame?.id ?? null
-        }))
+            viewportOffset: coerceViewportOffset(step.viewportOffset),
+            frameId: match.path[index - matchPathOffset]?.frame?.id ?? null
+        })),
+        targetViewportOffset,
+        viewportOffset: coerceViewportOffset(lastPathViewportOffset)
     };
 }
 async function locatorExecutionTarget(tabId, locator, options = {}) {
@@ -2543,7 +3244,8 @@ async function locatorExecutionTarget(tabId, locator, options = {}) {
             locator,
             frameId: null,
             targetId: null,
-            executionContextId: null
+            executionContextId: null,
+            viewportOffset: { x: 0, y: 0 }
         };
     }
     const resolved = await resolveFrame({
@@ -2563,12 +3265,17 @@ async function locatorExecutionTarget(tabId, locator, options = {}) {
             locator,
             frameId: null,
             targetId: null,
-            executionContextId: null
+            executionContextId: null,
+            viewportOffset: { x: 0, y: 0 }
         };
     }
     if (!frameId) {
         throw new Error(`Unable to resolve frame context for locator frameSelectors: ${frameSelectors.join(" -> ")}`);
     }
+    const path = Array.isArray(resolved.path) ? resolved.path : [];
+    const viewportOffset = targetId
+        ? coerceViewportOffset(resolved.targetViewportOffset)
+        : coerceViewportOffset(path.length ? path[path.length - 1]?.viewportOffset : resolved.viewportOffset);
     return {
         locator: stripLocatorFrameSelectors(locator),
         frameId,
@@ -2576,16 +3283,90 @@ async function locatorExecutionTarget(tabId, locator, options = {}) {
         executionContextId: await createEvaluationContextForFrame(tabId, frameId, {
             targetId,
             timeoutMs: options.timeoutMs
-        })
+        }),
+        viewportOffset
     };
+}
+function coerceViewportOffset(value) {
+    if (!value || typeof value !== "object") {
+        return { x: 0, y: 0 };
+    }
+    const record = value;
+    return {
+        x: typeof record.x === "number" && Number.isFinite(record.x) ? record.x : 0,
+        y: typeof record.y === "number" && Number.isFinite(record.y) ? record.y : 0
+    };
+}
+function applyViewportOffsetToLocatorTarget(value, viewportOffset) {
+    const offsetX = typeof viewportOffset?.x === "number" && Number.isFinite(viewportOffset.x) ? viewportOffset.x : 0;
+    const offsetY = typeof viewportOffset?.y === "number" && Number.isFinite(viewportOffset.y) ? viewportOffset.y : 0;
+    if (!value || typeof value !== "object" || (offsetX === 0 && offsetY === 0)) {
+        return value;
+    }
+    return {
+        ...value,
+        ...(typeof value.x === "number" ? { x: value.x + offsetX } : {}),
+        ...(typeof value.y === "number" ? { y: value.y + offsetY } : {}),
+        ...(value.rect && typeof value.rect === "object"
+            ? {
+                rect: {
+                    ...value.rect,
+                    ...(typeof value.rect.x === "number" ? { x: value.rect.x + offsetX } : {}),
+                    ...(typeof value.rect.y === "number" ? { y: value.rect.y + offsetY } : {}),
+                    ...(typeof value.rect.left === "number" ? { left: value.rect.left + offsetX } : {}),
+                    ...(typeof value.rect.top === "number" ? { top: value.rect.top + offsetY } : {}),
+                    ...(typeof value.rect.right === "number" ? { right: value.rect.right + offsetX } : {}),
+                    ...(typeof value.rect.bottom === "number" ? { bottom: value.rect.bottom + offsetY } : {})
+                }
+            }
+            : {})
+    };
+}
+function throwLocatorRuntimeError(value, fallback, details = {}) {
+    const message = typeof value?.error === "string" && value.error.trim()
+        ? value.error
+        : fallback;
+    const runtimeCode = typeof value?.code === "string" && /^[a-z][a-z0-9_]+$/.test(value.code)
+        ? value.code
+        : null;
+    const actionabilityCodes = new Set([
+        "detached",
+        "not_stable",
+        "outside_viewport",
+        "occluded",
+        "not_visible",
+        "pointer_events_none",
+        "inert",
+        "disabled",
+        "not_editable"
+    ]);
+    const code = runtimeCode === "strict_mode_violation" ||
+        runtimeCode === "locator_not_found" ||
+        runtimeCode === "locator_resolution_failed"
+        ? runtimeCode
+        : runtimeCode && actionabilityCodes.has(runtimeCode)
+            ? "locator_actionability"
+            : "internal_error";
+    const error = new Error(message);
+    error.code = code;
+    error.details = {
+        ...details,
+        ...(runtimeCode && code === "locator_actionability" ? { actionabilityCode: runtimeCode } : {}),
+        ...(typeof value?.count === "number" ? { count: value.count } : {}),
+        ...(typeof value?.index === "number" ? { index: value.index } : {}),
+        ...(typeof value?.kind === "string" ? { kind: value.kind } : {}),
+        ...(typeof value?.selector === "string" ? { selector: value.selector } : {})
+    };
+    throw error;
 }
 function stripLocatorFrameSelectors(locator) {
     if (!locator || typeof locator !== "object") {
         return locator;
     }
-    const { frameSelectors: _frameSelectors, and, or, has, hasNot, ...rest } = locator;
+    const { frameSelectors: _frameSelectors, within, and, or, has, hasNot, ...rest } = locator;
     return {
         ...rest,
+        ...(within ? { within: stripLocatorFrameSelectors(within) } : {}),
         ...(and ? { and: stripLocatorFrameSelectors(and) } : {}),
         ...(or ? { or: stripLocatorFrameSelectors(or) } : {}),
         ...(has ? { has: stripLocatorFrameSelectors(has) } : {}),
@@ -2740,6 +3521,7 @@ async function typeText(params = {}) {
 async function evaluate(params = {}) {
     const { session, tabId } = sessionManager.resolveSessionAndTab(params);
     const script = requireString(params.script, "evaluate.params.script");
+    assertReadOnlyEvaluateAllowed(script, params, "evaluate");
     const targetId = typeof params.targetId === "string" && params.targetId.trim()
         ? params.targetId.trim()
         : null;
@@ -2758,7 +3540,7 @@ async function evaluate(params = {}) {
         method: "Runtime.evaluate",
         reason: auditReason(params.reason, evaluateAuditReason(script, params)),
         mode: params.mode === "write" ? "write" : "read",
-        readOnly: params.mode !== "write" && !looksLikeMutatingScript(script)
+        readOnly: params.mode !== "write"
     });
     await showCursorActivity(tabId, "thinking");
     const executionContextId = frameId
@@ -2767,11 +3549,12 @@ async function evaluate(params = {}) {
             timeoutMs
         })
         : null;
+    const readOnly = params.mode !== "write";
     const evaluated = await cdp(tabId, "Runtime.evaluate", {
-        expression: script,
+        expression: readOnly ? readOnlyEvaluateExpression(script) : script,
         ...(executionContextId != null ? { contextId: executionContextId } : {}),
         returnByValue: true,
-        awaitPromise: params.awaitPromise !== false
+        awaitPromise: readOnly ? true : params.awaitPromise !== false
     }, {
         timeoutMs,
         targetId
@@ -2785,6 +3568,92 @@ async function evaluate(params = {}) {
         executionContextId,
         value: readRuntimeValue(evaluated)
     };
+}
+function readOnlyEvaluateExpression(script) {
+    return `(() => {
+  const __formaxReadOnlyScript = ${JSON.stringify(script)};
+  ${readOnlyMutationGuardSource()}
+
+  try {
+    const __formaxValue = (0, eval)(__formaxReadOnlyScript);
+    if (__formaxValue && typeof __formaxValue.then === "function") {
+      return Promise.resolve(__formaxValue).finally(__formaxRestoreAll);
+    }
+    __formaxRestoreAll();
+    return __formaxValue;
+  } catch (error) {
+    __formaxRestoreAll();
+    throw error;
+  }
+})()`;
+}
+function readOnlyMutationGuardSource(options = {}) {
+    const restoreAllDeclaration = options.restoreAllDeclaration ?? "const";
+    return `const __formaxRestore = [];
+  const __formaxViolation = (api) => {
+    throw new Error("read_only_evaluate_violation: " + api);
+  };
+  const __formaxPatchMethod = (owner, name, api) => {
+    if (!owner) return;
+    const descriptor = Object.getOwnPropertyDescriptor(owner, name);
+    if (!descriptor || typeof descriptor.value !== "function" || descriptor.configurable === false) return;
+    __formaxRestore.push(() => Object.defineProperty(owner, name, descriptor));
+    Object.defineProperty(owner, name, {
+      ...descriptor,
+      value: function guardedReadOnlyMutation() {
+        return __formaxViolation(api);
+      }
+    });
+  };
+  const __formaxPatchSetter = (owner, name, api) => {
+    let target = owner;
+    while (target && !Object.prototype.hasOwnProperty.call(target, name)) {
+      target = Object.getPrototypeOf(target);
+    }
+    if (!target) return;
+    const descriptor = Object.getOwnPropertyDescriptor(target, name);
+    if (!descriptor || typeof descriptor.set !== "function" || descriptor.configurable === false) return;
+    __formaxRestore.push(() => Object.defineProperty(target, name, descriptor));
+    Object.defineProperty(target, name, {
+      ...descriptor,
+      set: function guardedReadOnlySetter() {
+        return __formaxViolation(api);
+      }
+    });
+  };
+  ${restoreAllDeclaration} __formaxRestoreAll = () => {
+    for (let index = __formaxRestore.length - 1; index >= 0; index -= 1) {
+      try {
+        __formaxRestore[index]();
+      } catch {
+        // Restoration is best-effort inside the temporary evaluation world.
+      }
+    }
+  };
+
+  __formaxPatchMethod(globalThis.HTMLElement && globalThis.HTMLElement.prototype, "click", "HTMLElement.click");
+  __formaxPatchMethod(globalThis.HTMLFormElement && globalThis.HTMLFormElement.prototype, "submit", "HTMLFormElement.submit");
+  __formaxPatchMethod(globalThis.HTMLFormElement && globalThis.HTMLFormElement.prototype, "requestSubmit", "HTMLFormElement.requestSubmit");
+  __formaxPatchMethod(globalThis.EventTarget && globalThis.EventTarget.prototype, "dispatchEvent", "EventTarget.dispatchEvent");
+  __formaxPatchMethod(globalThis.Node && globalThis.Node.prototype, "appendChild", "Node.appendChild");
+  __formaxPatchMethod(globalThis.Node && globalThis.Node.prototype, "insertBefore", "Node.insertBefore");
+  __formaxPatchMethod(globalThis.Node && globalThis.Node.prototype, "replaceChild", "Node.replaceChild");
+  __formaxPatchMethod(globalThis.Node && globalThis.Node.prototype, "removeChild", "Node.removeChild");
+  __formaxPatchMethod(globalThis.Element && globalThis.Element.prototype, "setAttribute", "Element.setAttribute");
+  __formaxPatchMethod(globalThis.Element && globalThis.Element.prototype, "removeAttribute", "Element.removeAttribute");
+  __formaxPatchMethod(globalThis.Document && globalThis.Document.prototype, "write", "Document.write");
+  __formaxPatchMethod(globalThis.Document && globalThis.Document.prototype, "writeln", "Document.writeln");
+  __formaxPatchMethod(globalThis.Storage && globalThis.Storage.prototype, "setItem", "Storage.setItem");
+  __formaxPatchMethod(globalThis.Storage && globalThis.Storage.prototype, "removeItem", "Storage.removeItem");
+  __formaxPatchMethod(globalThis.Storage && globalThis.Storage.prototype, "clear", "Storage.clear");
+  __formaxPatchMethod(globalThis.IDBFactory && globalThis.IDBFactory.prototype, "deleteDatabase", "IDBFactory.deleteDatabase");
+  __formaxPatchSetter(globalThis.Document && globalThis.Document.prototype, "cookie", "Document.cookie");
+  __formaxPatchSetter(globalThis.Element && globalThis.Element.prototype, "innerHTML", "Element.innerHTML");
+  __formaxPatchSetter(globalThis.Node && globalThis.Node.prototype, "textContent", "Node.textContent");
+  __formaxPatchSetter(globalThis.HTMLInputElement && globalThis.HTMLInputElement.prototype, "value", "HTMLInputElement.value");
+  __formaxPatchSetter(globalThis.HTMLInputElement && globalThis.HTMLInputElement.prototype, "checked", "HTMLInputElement.checked");
+  __formaxPatchSetter(globalThis.HTMLTextAreaElement && globalThis.HTMLTextAreaElement.prototype, "value", "HTMLTextAreaElement.value");
+  __formaxPatchSetter(globalThis.HTMLSelectElement && globalThis.HTMLSelectElement.prototype, "value", "HTMLSelectElement.value");`;
 }
 async function createEvaluationContextForFrame(tabId, frameId, options = {}) {
     const result = await cdp(tabId, "Page.createIsolatedWorld", {
@@ -3075,6 +3944,7 @@ async function setFileChooserFiles(params = {}) {
         ...params,
         sessionId: record.sessionId ?? params.sessionId,
         tabId: record.tabId,
+        locator: record.fileChooser.locator,
         ref: record.fileChooser.ref,
         selector: record.fileChooser.selector,
         filePath: undefined,
@@ -3103,30 +3973,51 @@ async function uploadFile(params = {}) {
     }
     await debuggerManager.attachTab(tabId);
     const marker = `agent-upload-${crypto.randomUUID()}`;
+    const locatorTarget = locator
+        ? await locatorExecutionTarget(tabId, locator, {
+            sessionId: session?.sessionId,
+            timeoutMs: numberOrDefault(params.timeoutMs, DEFAULT_CDP_TIMEOUT_MS)
+        })
+        : {
+            locator: null,
+            frameId: null,
+            targetId: null,
+            executionContextId: null,
+            viewportOffset: { x: 0, y: 0 }
+        };
     const checked = await cdp(tabId, "Runtime.evaluate", {
-        expression: uploadTargetExpression({ ref, locator, marker }),
+        expression: uploadTargetExpression({ ref, locator: locatorTarget.locator, marker }),
+        ...(locatorTarget.executionContextId != null ? { contextId: locatorTarget.executionContextId } : {}),
         returnByValue: true,
         awaitPromise: true
+    }, {
+        targetId: locatorTarget.targetId,
+        timeoutMs: numberOrDefault(params.timeoutMs, DEFAULT_CDP_TIMEOUT_MS)
     });
-    const target = readRuntimeValue(checked);
+    const target = applyViewportOffsetToLocatorTarget(readRuntimeValue(checked), locatorTarget.viewportOffset);
     if (!target || target.ok !== true) {
         throw new Error(target?.error || "Unable to locate file input");
     }
     await showCursor(tabId, target.x, target.y);
-    const doc = await cdp(tabId, "DOM.getDocument", {
-        depth: -1,
-        pierce: true
+    const object = await cdp(tabId, "Runtime.evaluate", {
+        expression: `document.querySelector(${JSON.stringify(`[data-agent-upload-marker="${cssStringEscape(marker)}"]`)})`,
+        ...(locatorTarget.executionContextId != null ? { contextId: locatorTarget.executionContextId } : {}),
+        returnByValue: false,
+        awaitPromise: false
+    }, {
+        targetId: locatorTarget.targetId,
+        timeoutMs: numberOrDefault(params.timeoutMs, DEFAULT_CDP_TIMEOUT_MS)
     });
-    const node = await cdp(tabId, "DOM.querySelector", {
-        nodeId: doc.root.nodeId,
-        selector: `[data-agent-upload-marker="${cssStringEscape(marker)}"]`
-    });
-    if (!node.nodeId) {
+    const objectId = typeof object?.result?.objectId === "string" ? object.result.objectId : null;
+    if (!objectId) {
         throw new Error(`Could not resolve file input node for ref: ${ref}`);
     }
     await cdp(tabId, "DOM.setFileInputFiles", {
-        nodeId: node.nodeId,
+        objectId,
         files: filePaths
+    }, {
+        targetId: locatorTarget.targetId,
+        timeoutMs: numberOrDefault(params.timeoutMs, DEFAULT_CDP_TIMEOUT_MS)
     });
     await sleep(numberOrDefault(params.waitMs, 1000));
     sessionManager.touchSession(session?.sessionId);
@@ -3765,6 +4656,7 @@ async function closeTab(params = {}) {
     const { session, tabId } = sessionManager.resolveSessionAndTab(params);
     await detachTabForLifecycle(tabId);
     const changedSessions = sessionManager.removeTab(tabId);
+    schedulePublishFinalizedBadge(tabId);
     let closed = false;
     try {
         await chrome.tabs.remove(tabId);
@@ -3849,12 +4741,16 @@ async function finalizeSession(params = {}) {
         activeTabId: typeof params.activeTabId === "number" ? params.activeTabId : session.activeTabId,
         turnId: params.turnId
     });
+    for (const tabId of [...releasedTabs, ...handedOffTabs]) {
+        schedulePublishFinalizedBadge(tabId);
+    }
     if (handedOffTabs.length === 0) {
         await sessionManager.markSessionStopped(sessionId);
         sessionManager.deleteSession(sessionId);
     }
     const eventSnapshot = await persistSessionEventSnapshot(sessionId, "finalizeSession");
     const clearedEvents = eventBuffer.clear({ sessionId });
+    await maybeReloadForPendingUpdate("finalizeSession");
     return {
         finalized: true,
         sessionId,
@@ -3883,11 +4779,13 @@ async function endTurn(params = {}) {
         await setPageVisualStatus(tabId, "stopped", { sessionId, turnId, reason: "endTurn" });
         await detachTabForLifecycle(tabId);
         cursorOverlayStateByTab.delete(tabId);
+        schedulePublishFinalizedBadge(tabId);
     }
     if (session.tabIds.length === 0) {
         await sessionManager.markSessionStopped(sessionId);
         sessionManager.deleteSession(sessionId);
     }
+    await maybeReloadForPendingUpdate("endTurn");
     return {
         ended: true,
         sessionId,
@@ -3897,6 +4795,12 @@ async function endTurn(params = {}) {
 }
 async function stopSession(params = {}) {
     const sessionId = requireString(params.sessionId, "stopSession.params.sessionId");
+    return stopSessionInternal(sessionId, {
+        closeTabs: params.closeTabs === true,
+        reason: "stopSession"
+    });
+}
+async function stopSessionInternal(sessionId, options) {
     const session = await sessionManager.markSessionStopped(sessionId);
     if (!session) {
         return {
@@ -3908,12 +4812,12 @@ async function stopSession(params = {}) {
     const closedTabs = [];
     const tabIds = [...session.tabIds];
     for (const tabId of tabIds) {
-        if (params.closeTabs !== true) {
-            await setPageVisualStatus(tabId, "stopped", { sessionId, reason: "stopSession" });
+        if (options.closeTabs !== true) {
+            await setPageVisualStatus(tabId, "stopped", { sessionId, reason: options.reason });
         }
         await detachTabForLifecycle(tabId);
         cursorOverlayStateByTab.delete(tabId);
-        if (params.closeTabs === true) {
+        if (options.closeTabs === true) {
             try {
                 await chrome.tabs.remove(tabId);
                 closedTabs.push(tabId);
@@ -3924,14 +4828,129 @@ async function stopSession(params = {}) {
         }
     }
     sessionManager.deleteSession(sessionId);
-    const eventSnapshot = await persistSessionEventSnapshot(sessionId, "stopSession");
+    for (const tabId of tabIds) {
+        schedulePublishFinalizedBadge(tabId);
+    }
+    const eventSnapshot = await persistSessionEventSnapshot(sessionId, options.reason);
     const clearedEvents = eventBuffer.clear({ sessionId });
+    await maybeReloadForPendingUpdate(options.reason);
     return {
         stopped: true,
         sessionId,
         closedTabs,
         eventSnapshot: summarizeEventSnapshot(eventSnapshot),
         clearedEvents
+    };
+}
+async function cleanupAfterNativeDisconnect(reason) {
+    if (nativeDisconnectCleanup) {
+        return nativeDisconnectCleanup;
+    }
+    nativeDisconnectCleanup = cleanupAfterNativeDisconnectUnlocked(reason).finally(() => {
+        nativeDisconnectCleanup = null;
+    });
+    return nativeDisconnectCleanup;
+}
+async function cleanupAfterNativeDisconnectUnlocked(reason) {
+    try {
+        await sessionManager.initialize();
+    }
+    catch {
+        // Keep debugger cleanup running even if transient session restore failed.
+    }
+    const activeSessions = sessionManager.listSessions()
+        .filter((session) => session.status === "active")
+        .map((session) => ({
+        sessionId: session.sessionId,
+        tabIds: [...session.tabIds]
+    }));
+    const stoppedSessions = [];
+    for (const session of activeSessions) {
+        const result = await stopSessionInternal(session.sessionId, {
+            closeTabs: false,
+            reason: "nativeDisconnect"
+        });
+        stoppedSessions.push({
+            sessionId: session.sessionId,
+            tabIds: session.tabIds,
+            stopped: result.stopped === true
+        });
+    }
+    const detachedDebugger = await detachAllDebuggersBestEffort("nativeDisconnect");
+    await maybeReloadForPendingUpdate("nativeDisconnect");
+    safePostEvent({
+        name: "nativeDisconnectCleanup",
+        sessionId: null,
+        tabId: null,
+        reason,
+        stoppedSessions,
+        detachedTabs: detachedDebugger.tabIds,
+        detachedTargets: detachedDebugger.targetIds
+    });
+}
+async function detachAllDebuggersBestEffort(reason) {
+    const tabIds = new Set(debuggerManager.listAttachedTabs());
+    const targetIds = new Set(debuggerManager.listAttachedTargets());
+    try {
+        const targets = await chrome.debugger.getTargets();
+        for (const target of targets) {
+            const targetInfo = target;
+            if (typeof target.tabId === "number" && Number.isInteger(target.tabId)) {
+                tabIds.add(target.tabId);
+            }
+            if (typeof targetInfo.targetId === "string" &&
+                targetInfo.targetId.trim() &&
+                targetInfo.attached === true) {
+                targetIds.add(targetInfo.targetId.trim());
+            }
+        }
+    }
+    catch {
+        // `listAttachedTabs()` still gives us the extension's own bookkeeping.
+    }
+    const detachedTabs = [];
+    for (const tabId of tabIds) {
+        expectedDebuggerDetachTabs.add(tabId);
+        try {
+            await chrome.debugger.detach({ tabId });
+            detachedTabs.push(tabId);
+        }
+        catch {
+            // Another debugger, a closed tab, or an already-detached tab should not
+            // block cleanup for the rest of the browser.
+        }
+        finally {
+            debuggerManager.markDetached({ tabId });
+            self.setTimeout(() => {
+                expectedDebuggerDetachTabs.delete(tabId);
+            }, 1000);
+        }
+    }
+    const detachedTargets = [];
+    for (const targetId of targetIds) {
+        try {
+            await chrome.debugger.detach({ targetId });
+            detachedTargets.push(targetId);
+        }
+        catch {
+            // Same best-effort policy as tab-level cleanup. Target may have vanished
+            // or may not be attached by this extension anymore.
+        }
+        finally {
+            debuggerManager.markDetached({ targetId });
+        }
+    }
+    safePostEvent({
+        name: "debuggerCleanup",
+        sessionId: null,
+        tabId: null,
+        reason,
+        tabIds: detachedTabs,
+        targetIds: detachedTargets
+    });
+    return {
+        tabIds: detachedTabs,
+        targetIds: detachedTargets
     };
 }
 async function resolvePointerTarget(tabId, params, actionName) {
@@ -4352,12 +5371,12 @@ function normalizeLocatorPlan(locator, depth = 0) {
         throw new Error("locator nested filters exceed the supported depth");
     }
     const kind = requireString(locator.kind, "locator.kind");
-    const allowed = ["css", "text", "role", "label", "placeholder", "testId"];
+    const allowed = ["css", "text", "role", "label", "placeholder", "testId", "altText", "title", "displayValue"];
     if (!allowed.includes(kind)) {
         throw new Error(`Unsupported locator kind: ${String(locator.kind)}`);
     }
     const selector = kind === "css" ? requireString(locator.selector, "locator.selector") : undefined;
-    const text = kind === "text" || kind === "label" || kind === "placeholder"
+    const text = kind === "text" || kind === "label" || kind === "placeholder" || kind === "altText" || kind === "title" || kind === "displayValue"
         ? requireString(locator.text ?? locator.name, `locator.${kind}.text`)
         : typeof locator.text === "string"
             ? locator.text
@@ -4369,6 +5388,7 @@ function normalizeLocatorPlan(locator, depth = 0) {
     const frameSelectors = Array.isArray(locator.frameSelectors)
         ? locator.frameSelectors.map((selector, selectorIndex) => requireString(selector, `locator.frameSelectors[${selectorIndex}]`))
         : undefined;
+    const within = locator.within == null ? undefined : normalizeLocatorPlan(locator.within, depth + 1);
     const and = locator.and == null ? undefined : normalizeLocatorPlan(locator.and, depth + 1);
     const or = locator.or == null ? undefined : normalizeLocatorPlan(locator.or, depth + 1);
     const has = locator.has == null ? undefined : normalizeLocatorPlan(locator.has, depth + 1);
@@ -4384,6 +5404,7 @@ function normalizeLocatorPlan(locator, depth = 0) {
         name,
         testId,
         frameSelectors,
+        within,
         and,
         or,
         has,
@@ -4401,11 +5422,15 @@ function normalizeLocatorQueryKind(kind) {
     const allowed = [
         "count",
         "allTextContents",
+        "allInnerTexts",
         "textContent",
         "innerText",
         "getAttribute",
         "isVisible",
+        "isHidden",
         "isEnabled",
+        "isDisabled",
+        "isEditable",
         "inputValue",
         "isChecked",
         "boundingBox"
@@ -4420,37 +5445,54 @@ function normalizeLocatorActionKind(kind) {
     const allowed = [
         "click",
         "dblclick",
+        "dragTo",
         "fill",
         "type",
         "press",
         "clear",
         "focus",
+        "blur",
+        "scrollIntoViewIfNeeded",
+        "selectText",
         "hover",
+        "highlight",
         "setChecked",
-        "selectOption"
+        "selectOption",
+        "evaluate",
+        "evaluateAll",
+        "dispatchEvent"
     ];
     if (!allowed.includes(value)) {
         throw new Error(`Unsupported locator action kind: ${value}`);
     }
     return value;
 }
-async function resolveLocatorRef(tabId, locator, actionName, actionKind = "click", actionArgs = {}) {
+async function resolveLocatorRef(tabId, locator, actionName, actionKind = "click", actionArgs = {}, options = {}) {
     const evaluated = await cdp(tabId, "Runtime.evaluate", {
         expression: locatorTargetExpression(locator, `agent-locator-${crypto.randomUUID()}`, actionKind, actionArgs),
+        ...(options.executionContextId != null ? { contextId: options.executionContextId } : {}),
         returnByValue: true,
         awaitPromise: true
+    }, {
+        targetId: options.targetId ?? null,
+        timeoutMs: options.timeoutMs
     });
     const value = readRuntimeValue(evaluated);
     if (!value || value.ok !== true) {
-        throw new Error(value?.error || `Unable to resolve locator for ${actionName}: ${locator.selector}`);
+        throwLocatorRuntimeError(value, `Unable to resolve locator for ${actionName}: ${locator.selector}`, {
+            operation: "locatorAction",
+            actionKind,
+            selector: typeof locator.selector === "string" ? locator.selector : locator.kind
+        });
     }
-    return value;
+    return applyViewportOffsetToLocatorTarget(value, options.viewportOffset ?? { x: 0, y: 0 });
 }
-async function focusLocator(tabId, locator, actionArgs = {}) {
+async function focusLocator(tabId, locator, actionArgs = {}, options = {}, clear = false) {
     const evaluated = await cdp(tabId, "Runtime.evaluate", {
         expression: `(async () => {
   ${locatorResolverSource(locator)}
   ${locatorActionabilitySource("press", actionArgs)}
+  const shouldClear = ${clear ? "true" : "false"};
   const resolved = resolveLocator();
 
   if (!resolved.ok) {
@@ -4462,14 +5504,36 @@ async function focusLocator(tabId, locator, actionArgs = {}) {
   if (!actionability.ok) return actionability;
   el.focus();
 
+  if (shouldClear) {
+    if ("value" in el) {
+      el.value = "";
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    } else if (el.isContentEditable) {
+      el.textContent = "";
+      el.dispatchEvent(new InputEvent("input", {
+        bubbles: true,
+        inputType: "deleteContent"
+      }));
+    }
+  }
+
   return { ok: true };
 })()`,
+        ...(options.executionContextId != null ? { contextId: options.executionContextId } : {}),
         returnByValue: true,
         awaitPromise: true
+    }, {
+        targetId: options.targetId ?? null,
+        timeoutMs: options.timeoutMs
     });
     const value = readRuntimeValue(evaluated);
     if (!value || value.ok !== true) {
-        throw new Error(value?.error || `Unable to focus locator: ${locator.selector}`);
+        throwLocatorRuntimeError(value, `Unable to focus locator: ${locator.selector}`, {
+            operation: "locatorAction",
+            actionKind: clear ? "clear" : "focus",
+            selector: typeof locator.selector === "string" ? locator.selector : locator.kind
+        });
     }
 }
 function locatorTargetExpression(locator, ref, actionKind = "click", actionArgs = {}) {
@@ -4486,8 +5550,11 @@ function locatorTargetExpression(locator, ref, actionKind = "click", actionArgs 
   if (!el) {
     return {
       ok: false,
+      code: "locator_not_found",
       error: "Element target not found",
-      count: resolved.count
+      count: resolved.count,
+      kind: locatorKind,
+      selector: selector || locatorText || locatorRole || locatorTestId || ""
     };
   }
 
@@ -4500,13 +5567,118 @@ function locatorTargetExpression(locator, ref, actionKind = "click", actionArgs 
   window.__agentBrowserController.elements[ref] = el;
   el.setAttribute("data-agent-browser-ref", ref);
 
-  const rect = actionability.rect || el.getBoundingClientRect();
+  const rawRect = actionability.rect || el.getBoundingClientRect();
+  const rect = {
+    left: typeof rawRect.left === "number" ? rawRect.left : rawRect.x,
+    top: typeof rawRect.top === "number" ? rawRect.top : rawRect.y,
+    width: rawRect.width,
+    height: rawRect.height
+  };
+  const hitPoint = actionability.hitPoint && typeof actionability.hitPoint === "object"
+    ? actionability.hitPoint
+    : null;
+  const x = typeof hitPoint?.x === "number" ? hitPoint.x : rect.left + rect.width / 2;
+  const y = typeof hitPoint?.y === "number" ? hitPoint.y : rect.top + rect.height / 2;
+  const normalizeText = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+  const textForName = (candidate) => {
+    if (!candidate) return "";
+    if (candidate.nodeType === Node.TEXT_NODE) return candidate.nodeValue || "";
+    if (!(candidate instanceof Element)) return "";
+    if (candidate.hidden || candidate.getAttribute("aria-hidden") === "true") return "";
+    const style = getComputedStyle(candidate);
+    if (style.display === "none" || style.visibility === "hidden") return "";
+    const tag = candidate.tagName.toLowerCase();
+    if (tag === "script" || tag === "style") return "";
+    return Array.from(candidate.childNodes).map((child) => textForName(child)).join(" ");
+  };
+  const labelledBy = el.getAttribute?.("aria-labelledby");
+  const labelledText = labelledBy
+    ? labelledBy
+        .split(/\\s+/)
+        .map((id) => textForName(document.getElementById(id)))
+        .join(" ")
+    : "";
+  const labelText = normalizeText(
+    labelledText ||
+    el.getAttribute?.("aria-label") ||
+    Array.from(el.labels || []).map((label) => textForName(label)).join(" ") ||
+    el.getAttribute?.("alt") ||
+    el.getAttribute?.("title") ||
+    el.getAttribute?.("placeholder") ||
+    textForName(el) ||
+    el.getAttribute?.("name") ||
+    el.getAttribute?.("id")
+  );
+  const visibleText = normalizeText(el.innerText || el.textContent || "");
+  const nearestForm = el.closest?.("form, [role='form']");
+  const formText = normalizeText(nearestForm?.innerText || nearestForm?.textContent || "");
+  const pageText = normalizeText(document.body?.innerText || "");
+  const passwordFieldCount = nearestForm
+    ? nearestForm.querySelectorAll?.("input[type=password]").length || 0
+    : document.querySelectorAll("input[type=password]").length;
+  const fileChooserFor = (node) => {
+    const resolveFileInput = (candidate) => {
+      if (!candidate || !(candidate instanceof Element)) return null;
+      const tag = candidate.tagName.toLowerCase();
+      const type = (candidate.getAttribute("type") || "").toLowerCase();
+
+      if (tag === "input" && type === "file") {
+        return candidate;
+      }
+
+      if (tag === "label") {
+        if (candidate.control && candidate.control.matches?.("input[type=file]")) {
+          return candidate.control;
+        }
+
+        const nested = candidate.querySelector?.("input[type=file]");
+        if (nested) return nested;
+      }
+
+      if (candidate.hasAttribute?.("for")) {
+        const control = document.getElementById(candidate.getAttribute("for") || "");
+        if (control?.matches?.("input[type=file]")) return control;
+      }
+
+      const childInput = candidate.querySelector?.("input[type=file]");
+      if (childInput) return childInput;
+
+      return null;
+    };
+    const input = resolveFileInput(node);
+    if (!input) return null;
+    return {
+      ref,
+      selector: locatorKind === "css" ? selector : null,
+      multiple: input.multiple === true,
+      accept: input.getAttribute("accept") || "",
+      name: input.getAttribute("name") || "",
+      inputId: input.getAttribute("id") || ""
+    };
+  };
 
   return {
     ok: true,
     ref,
-    x: rect.left + rect.width / 2,
-    y: rect.top + rect.height / 2,
+    x,
+    y,
+    hitPoint: hitPoint
+      ? {
+          x,
+          y,
+          name: typeof hitPoint.name === "string" ? hitPoint.name : "candidate"
+        }
+      : null,
+    label: labelText.slice(0, 160),
+    text: visibleText.slice(0, 160),
+    tagName: el.tagName,
+    riskContext: {
+      pageTitle: document.title.slice(0, 160),
+      formText: formText.slice(0, 500),
+      pageText: pageText.slice(0, 1000),
+      passwordFieldCount
+    },
+    fileChooser: fileChooserFor(el),
     rect: {
       x: rect.left,
       y: rect.top,
@@ -4560,6 +5732,32 @@ function resolveFrameSelectorPathExpression(frameSelectors) {
       return String(value);
     }
   };
+  const rectInTopViewport = (node) => {
+    const rect = node.getBoundingClientRect();
+    let x = rect.left;
+    let y = rect.top;
+    let currentWindow = node.ownerDocument?.defaultView || null;
+
+    while (currentWindow && currentWindow !== window) {
+      const frame = currentWindow.frameElement;
+      if (!frame) break;
+      const frameRect = frame.getBoundingClientRect();
+      x += frameRect.left;
+      y += frameRect.top;
+      currentWindow = currentWindow.parent;
+    }
+
+    return {
+      x,
+      y,
+      left: x,
+      top: y,
+      right: x + rect.width,
+      bottom: y + rect.height,
+      width: rect.width,
+      height: rect.height
+    };
+  };
   let currentRoot = document;
   const path = [];
 
@@ -4585,6 +5783,7 @@ function resolveFrameSelectorPathExpression(frameSelectors) {
 
     const src = frame.getAttribute("src") || frame.src || null;
     const url = frameDocument?.location?.href || absoluteUrl(src, currentRoot?.baseURI || document.baseURI);
+    const rect = rectInTopViewport(frame);
     path.push({
       selector,
       id: frame.getAttribute("id") || null,
@@ -4592,7 +5791,17 @@ function resolveFrameSelectorPathExpression(frameSelectors) {
       title: frame.getAttribute("title") || null,
       src: src ? absoluteUrl(src, currentRoot?.baseURI || document.baseURI) : null,
       url,
-      accessible: frameDocument != null
+      accessible: frameDocument != null,
+      rect: {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height
+      },
+      viewportOffset: {
+        x: rect.x,
+        y: rect.y
+      }
     });
 
     if (!frameDocument && index < frameSelectors.length - 1) {
@@ -4650,6 +5859,126 @@ function matchResolvedFramePathToFrameTree(path, frameTree) {
         path: matchedPath
     };
 }
+async function resolveFramePathTarget(tabId, path, timeoutMs) {
+    if (!Array.isArray(path) || path.length === 0) {
+        return null;
+    }
+    const lastStep = path[path.length - 1];
+    const targets = await cdp(tabId, "Target.getTargets", {}, { timeoutMs });
+    const targetInfos = Array.isArray(targets?.targetInfos) ? targets.targetInfos : [];
+    const candidates = targetInfos
+        .map((targetInfo) => {
+        const targetId = normalizeDebuggerTargetId(targetInfo);
+        if (!targetId) {
+            return null;
+        }
+        const targetTabId = typeof targetInfo.tabId === "number" ? targetInfo.tabId : null;
+        if (targetTabId != null && targetTabId !== tabId) {
+            return null;
+        }
+        const targetType = typeof targetInfo.type === "string" ? targetInfo.type : "";
+        if (targetType && !["iframe", "page", "background_page", "webview"].includes(targetType)) {
+            return null;
+        }
+        return {
+            targetId,
+            score: scoreResolvedFrameCandidate(lastStep, {
+                id: targetId,
+                name: targetInfo.title,
+                url: targetInfo.url
+            })
+        };
+    })
+        .filter((entry) => entry != null && entry.score > 0)
+        .sort((left, right) => right.score - left.score);
+    for (const candidate of candidates) {
+        try {
+            const frameTree = await cdp(tabId, "Page.getFrameTree", {}, {
+                targetId: candidate.targetId,
+                timeoutMs
+            });
+            const match = matchResolvedFramePathToFrameTree(path, frameTree?.frameTree);
+            const rootMatch = match.frame
+                ? match
+                : matchResolvedFramePathToFrameTreeRoot(path, frameTree?.frameTree);
+            if (rootMatch.frame) {
+                return {
+                    targetId: candidate.targetId,
+                    match: rootMatch,
+                    matchPathOffset: Math.max(0, path.length - rootMatch.path.length),
+                    targetViewportOffset: { x: 0, y: 0 }
+                };
+            }
+        }
+        catch {
+            // Some discovered targets disappear or reject debugger attachment. Try the
+            // next candidate before reporting the frame as unresolved.
+        }
+    }
+    return null;
+}
+async function continueResolveFramePathInTarget(tabId, frameSelectors, resolved, timeoutMs) {
+    const partialPath = Array.isArray(resolved?.path) ? resolved.path : [];
+    if (partialPath.length === 0 || partialPath.length >= frameSelectors.length) {
+        return null;
+    }
+    const targetMatch = await resolveFramePathTarget(tabId, partialPath, timeoutMs);
+    if (!targetMatch) {
+        return null;
+    }
+    const remainingSelectors = frameSelectors.slice(partialPath.length);
+    const evaluated = await cdp(tabId, "Runtime.evaluate", {
+        expression: resolveFrameSelectorPathExpression(remainingSelectors),
+        returnByValue: true,
+        awaitPromise: true
+    }, {
+        targetId: targetMatch.targetId,
+        timeoutMs
+    });
+    const continued = readRuntimeValue(evaluated);
+    if (!continued || continued.ok !== true) {
+        return null;
+    }
+    const targetPath = Array.isArray(continued.path) ? continued.path : [];
+    if (targetPath.length === 0) {
+        return null;
+    }
+    const frameTree = await cdp(tabId, "Page.getFrameTree", {}, {
+        targetId: targetMatch.targetId,
+        timeoutMs
+    });
+    const match = matchResolvedFramePathToFrameTree(targetPath, frameTree?.frameTree);
+    if (!match.frame) {
+        return null;
+    }
+    return {
+        targetId: targetMatch.targetId,
+        match,
+        matchPathOffset: partialPath.length,
+        resolved: {
+            ok: true,
+            accessible: continued.accessible === true,
+            path: [...partialPath, ...targetPath],
+            targetViewportOffset: coerceViewportOffset(targetPath.length ? targetPath[targetPath.length - 1]?.viewportOffset : null)
+        }
+    };
+}
+function matchResolvedFramePathToFrameTreeRoot(path, frameTree) {
+    const root = frameTree && typeof frameTree === "object" ? frameTree : null;
+    const lastStep = Array.isArray(path) && path.length ? path[path.length - 1] : null;
+    if (!root || !lastStep || scoreResolvedFrameCandidate(lastStep, root.frame) <= 0) {
+        return {
+            node: null,
+            frame: null,
+            path: []
+        };
+    }
+    return {
+        node: root,
+        frame: root.frame ?? null,
+        path: [root]
+    };
+}
 function scoreResolvedFrameCandidate(step, frame) {
     if (!frame || typeof frame !== "object") {
         return 0;
@@ -4670,6 +5999,14 @@ function scoreResolvedFrameCandidate(step, frame) {
         score += 1;
     return score;
 }
+function normalizeDebuggerTargetId(targetInfo) {
+    const value = typeof targetInfo.targetId === "string" && targetInfo.targetId.trim()
+        ? targetInfo.targetId
+        : typeof targetInfo.id === "string" && targetInfo.id.trim()
+            ? targetInfo.id
+            : null;
+    return value ? value.trim() : null;
+}
 function stripUrlHash(value) {
     try {
         const parsed = new URL(value);
@@ -4682,10 +6019,11 @@ function stripUrlHash(value) {
 }
 function locatorActionabilitySource(actionKind, actionArgs = {}) {
     const requiresEditable = ["fill", "type", "clear"].includes(actionKind);
-    const requiresPointer = ["click", "dblclick", "hover"].includes(actionKind);
+    const requiresPointer = ["click", "dblclick", "dragTo", "hover"].includes(actionKind);
     const requiresEnabled = [
         "click",
         "dblclick",
+        "dragTo",
         "fill",
         "type",
         "press",
@@ -4745,6 +6083,26 @@ function locatorActionabilitySource(actionKind, actionArgs = {}) {
       rect.width > 0 &&
       rect.height > 0;
   };
+  const locatorActionabilityInert = (node) => {
+    return typeof node.closest === "function" && Boolean(node.closest("[inert]"));
+  };
+  const locatorActionabilityPointerEvents = (node) => {
+    const style = getComputedStyle(node);
+    if (style.pointerEvents === "none") {
+      return false;
+    }
+
+    let current = node.parentElement;
+    while (current) {
+      const currentStyle = getComputedStyle(current);
+      if (currentStyle.pointerEvents === "none") {
+        return false;
+      }
+      current = current.parentElement;
+    }
+
+    return true;
+  };
   const locatorActionabilityElementFromPoint = (x, y) => {
     let current = document.elementFromPoint(x, y);
     let localX = x;
@@ -4782,18 +6140,95 @@ function locatorActionabilitySource(actionKind, actionArgs = {}) {
 
     return current;
   };
+  const locatorActionabilityOwnsPointerTop = (node, top) => {
+    if (!top) return false;
+    if (top === node || node.contains(top)) return true;
+
+    let current = top;
+    while (current) {
+      const root = current.getRootNode?.();
+      const host = root?.host instanceof Element ? root.host : null;
+      if (!host) return false;
+      if (host === node || node.contains(host)) return true;
+      current = host;
+    }
+
+    return false;
+  };
+  const locatorActionabilityCandidatePoints = (rect) => {
+    const left = Math.max(0, rect.x);
+    const right = Math.min(window.innerWidth, rect.x + rect.width);
+    const top = Math.max(0, rect.y);
+    const bottom = Math.min(window.innerHeight, rect.y + rect.height);
+
+    if (right <= 0 || bottom <= 0 || left >= window.innerWidth || top >= window.innerHeight) {
+      return [];
+    }
+
+    const inset = Math.min(8, Math.max(1, Math.min(right - left, bottom - top) / 4));
+    const centerX = left + (right - left) / 2;
+    const centerY = top + (bottom - top) / 2;
+    const candidates = [
+      { x: centerX, y: centerY, name: "center" },
+      { x: left + inset, y: top + inset, name: "top-left" },
+      { x: right - inset, y: top + inset, name: "top-right" },
+      { x: left + inset, y: bottom - inset, name: "bottom-left" },
+      { x: right - inset, y: bottom - inset, name: "bottom-right" },
+      { x: centerX, y: top + inset, name: "top" },
+      { x: centerX, y: bottom - inset, name: "bottom" },
+      { x: left + inset, y: centerY, name: "left" },
+      { x: right - inset, y: centerY, name: "right" }
+    ];
+    const seen = new Set();
+    return candidates.filter((point) => {
+      if (point.x < 0 || point.y < 0 || point.x > window.innerWidth || point.y > window.innerHeight) {
+        return false;
+      }
+
+      const key = Math.round(point.x * 100) + ":" + Math.round(point.y * 100);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  };
   const locatorActionabilityEnabled = (node) => {
-    return !node.disabled &&
-      node.getAttribute("aria-disabled") !== "true" &&
-      !node.closest?.("fieldset[disabled]");
+    if (node.disabled || node.getAttribute("aria-disabled") === "true") {
+      return false;
+    }
+
+    if (typeof node.closest === "function" && node.closest("[aria-disabled='true']")) {
+      return false;
+    }
+
+    if (typeof node.closest === "function") {
+      const fieldset = node.closest("fieldset[disabled]");
+      if (fieldset) {
+        const firstLegend = Array.from(fieldset.children).find((child) => child.tagName?.toLowerCase() === "legend");
+        if (!firstLegend || (firstLegend !== node && !firstLegend.contains(node))) {
+          return false;
+        }
+      }
+    }
+
+    return true;
+  };
+  const locatorActionabilityReadonly = (node) => {
+    if (node.readOnly === true || node.getAttribute("aria-readonly") === "true") {
+      return true;
+    }
+
+    return typeof node.closest === "function" && Boolean(node.closest("[aria-readonly='true']"));
   };
   const locatorActionabilityEditable = (node) => {
+    if (!locatorActionabilityEnabled(node) || locatorActionabilityReadonly(node)) {
+      return false;
+    }
+
     const tag = node.tagName.toLowerCase();
     const type = (node.getAttribute("type") || "").toLowerCase();
     const isTextInput = tag === "textarea" ||
       (tag === "input" && !["button", "checkbox", "file", "hidden", "image", "radio", "reset", "submit"].includes(type));
-    return node.isContentEditable ||
-      (isTextInput && !node.readOnly && !node.disabled && node.getAttribute("aria-readonly") !== "true");
+    return node.isContentEditable || isTextInput;
   };
   const locatorActionabilityStable = async (node) => {
     const first = locatorActionabilityRect(node);
@@ -4823,27 +6258,39 @@ function locatorActionabilitySource(actionKind, actionArgs = {}) {
         };
   };
   const locatorActionabilityReceivesPointer = (node, rect) => {
-    const x = rect.x + rect.width / 2;
-    const y = rect.y + rect.height / 2;
+    const points = locatorActionabilityCandidatePoints(rect);
 
-    if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) {
+    if (!points.length) {
       return {
         ok: false,
-        error: "Locator actionability failed for " + locatorActionabilityKind + ": element center is outside the viewport",
+        error: "Locator actionability failed for " + locatorActionabilityKind + ": element is outside the viewport",
         code: "outside_viewport"
       };
     }
 
-    const top = locatorActionabilityElementFromPoint(x, y);
-    if (!top || (top !== node && !node.contains(top))) {
-      return {
-        ok: false,
-        error: "Locator actionability failed for " + locatorActionabilityKind + ": element does not receive pointer events",
-        code: "occluded"
-      };
+    const blocked = [];
+    for (const point of points) {
+      const top = locatorActionabilityElementFromPoint(point.x, point.y);
+      if (locatorActionabilityOwnsPointerTop(node, top)) {
+        return {
+          ok: true,
+          hitPoint: {
+            x: point.x,
+            y: point.y,
+            name: point.name
+          }
+        };
+      }
+
+      blocked.push(point.name);
     }
 
-    return { ok: true };
+    return {
+      ok: false,
+      error: "Locator actionability failed for " + locatorActionabilityKind + ": element does not receive pointer events at candidate points (" + blocked.join(", ") + ")",
+      code: "occluded",
+      blockedPoints: blocked
+    };
   };
   const checkLocatorActionability = async (node) => {
     if (!node || !node.isConnected) {
@@ -4876,6 +6323,14 @@ function locatorActionabilitySource(actionKind, actionArgs = {}) {
       };
     }
 
+    if (locatorActionabilityInert(node)) {
+      return {
+        ok: false,
+        error: "Locator actionability failed for " + locatorActionabilityKind + ": element is inside an inert subtree",
+        code: "inert"
+      };
+    }
+
     if (locatorActionabilityRequiresEnabled && !locatorActionabilityEnabled(node)) {
       return {
         ok: false,
@@ -4893,8 +6348,17 @@ function locatorActionabilitySource(actionKind, actionArgs = {}) {
     }
 
     if (locatorActionabilityRequiresPointer) {
+      if (!locatorActionabilityPointerEvents(node)) {
+        return {
+          ok: false,
+          error: "Locator actionability failed for " + locatorActionabilityKind + ": element or ancestor has pointer-events:none",
+          code: "pointer_events_none"
+        };
+      }
+
       const receivesPointer = locatorActionabilityReceivesPointer(node, rect);
       if (!receivesPointer.ok) return receivesPointer;
+      return { ok: true, rect, hitPoint: receivesPointer.hitPoint };
     }
 
     return { ok: true, rect };
@@ -5191,6 +6655,19 @@ function locatorResolverSource(locator) {
     }
     return "";
   };
+  const locatorDisplayValues = (el) => {
+    const tag = el.tagName.toLowerCase();
+    if (tag === "textarea") return [el.value || ""];
+    if (tag === "input") return [el.value || ""];
+    if (tag === "select") {
+      return Array.from(el.selectedOptions || []).flatMap((option) => [
+        option.value || "",
+        option.label || "",
+        option.textContent || ""
+      ]);
+    }
+    return [];
+  };
   const locatorElementVisible = (el) => {
     if (!el) return false;
     const style = getComputedStyle(el);
@@ -5266,6 +6743,24 @@ function locatorResolverSource(locator) {
         .filter((el) => locatorTextMatches(el.getAttribute("placeholder"), locatorText));
     }
 
+    if (locatorKind === "altText") {
+      return locatorQueryAllPiercingOpenShadow("img[alt], input[type=image][alt], area[alt]")
+        .filter((el) => locatorTextMatches(el.getAttribute("alt"), locatorText));
+    }
+
+    if (locatorKind === "title") {
+      const matches = locatorQueryAllPiercingOpenShadow("[title]")
+        .filter((el) => locatorTextMatches(el.getAttribute("title"), locatorText));
+      const svgMatches = locatorQueryAllPiercingOpenShadow("svg")
+        .filter((el) => locatorTextMatches(locatorSvgTitle(el), locatorText));
+      return Array.from(new Set([...matches, ...svgMatches]));
+    }
+
+    if (locatorKind === "displayValue") {
+      return locatorQueryAllPiercingOpenShadow("input, textarea, select")
+        .filter((el) => locatorDisplayValues(el).some((value) => locatorTextMatches(value, locatorText)));
+    }
+
     if (locatorKind === "label") {
       const matches = [];
       for (const label of locatorQueryAllPiercingOpenShadow("label")) {
@@ -5320,6 +6815,24 @@ function locatorResolverSource(locator) {
         .filter((el) => textMatches(el.getAttribute("placeholder"), configText));
     }
 
+    if (configKind === "altText") {
+      return locatorQueryAllPiercingOpenShadow("img[alt], input[type=image][alt], area[alt]", searchRoot)
+        .filter((el) => textMatches(el.getAttribute("alt"), configText));
+    }
+
+    if (configKind === "title") {
+      const matches = locatorQueryAllPiercingOpenShadow("[title]", searchRoot)
+        .filter((el) => textMatches(el.getAttribute("title"), configText));
+      const svgMatches = locatorQueryAllPiercingOpenShadow("svg", searchRoot)
+        .filter((el) => textMatches(locatorSvgTitle(el), configText));
+      return Array.from(new Set([...matches, ...svgMatches]));
+    }
+
+    if (configKind === "displayValue") {
+      return locatorQueryAllPiercingOpenShadow("input, textarea, select", searchRoot)
+        .filter((el) => locatorDisplayValues(el).some((value) => textMatches(value, configText)));
+    }
+
     if (configKind === "label") {
       const matches = [];
       for (const label of locatorQueryAllPiercingOpenShadow("label", searchRoot)) {
@@ -5351,6 +6864,31 @@ function locatorResolverSource(locator) {
     return [];
   };
   const locatorFilteredElementsForConfig = (config, root = document) => {
+    if (config?.within) {
+      const parentMatches = locatorFilteredElementsForConfig(config.within, root);
+      const parentIndex = config.within?.index == null ? null : Math.max(0, Math.floor(Number(config.within.index) || 0));
+      const parents = parentIndex == null
+        ? parentMatches
+        : parentMatches[parentIndex]
+          ? [parentMatches[parentIndex]]
+          : [];
+      const childConfig = { ...config };
+      delete childConfig.within;
+      delete childConfig.frameSelectors;
+
+      const scoped = [];
+      const seenScoped = new Set();
+      for (const parent of parents) {
+        for (const el of locatorFilteredElementsForConfig(childConfig, parent)) {
+          if (!seenScoped.has(el)) {
+            seenScoped.add(el);
+            scoped.push(el);
+          }
+        }
+      }
+      return scoped;
+    }
+
     let elements = locatorElementsForConfig(config, root);
 
     if (config?.and) {
@@ -5416,16 +6954,21 @@ function locatorResolverSource(locator) {
     } catch (error) {
       return {
         ok: false,
-        error: error instanceof Error ? error.message : String(error)
+        code: "locator_resolution_failed",
+        error: error instanceof Error ? error.message : String(error),
+        kind: locatorKind,
+        selector: selector || locatorText || locatorRole || locatorTestId || ""
       };
     }
 
     if (strict && elements.length !== 1) {
       return {
         ok: false,
+        code: "strict_mode_violation",
         error: "Strict locator expected exactly one match, found " + elements.length,
         count: elements.length,
-        elements
+        kind: locatorKind,
+        selector: selector || locatorText || locatorRole || locatorTestId || ""
       };
     }
 
@@ -5460,7 +7003,36 @@ function locatorQueryExpression(locator, kind, args) {
   };
   const isEnabled = (el) => {
     if (!el) return false;
-    return !el.disabled && el.getAttribute("aria-disabled") !== "true";
+    if (el.disabled || el.getAttribute("aria-disabled") === "true") return false;
+    if (typeof el.closest === "function" && el.closest("[aria-disabled='true']")) return false;
+    if (typeof el.closest === "function") {
+      const fieldset = el.closest("fieldset[disabled]");
+      if (fieldset) {
+        const firstLegend = Array.from(fieldset.children).find((child) => child.tagName?.toLowerCase() === "legend");
+        if (!firstLegend || (firstLegend !== el && !firstLegend.contains(el))) {
+          return false;
+        }
+      }
+    }
+    return true;
+  };
+  const isReadonly = (el) => {
+    if (!el) return true;
+    if (el.readOnly === true || el.getAttribute("aria-readonly") === "true") return true;
+    return typeof el.closest === "function" && Boolean(el.closest("[aria-readonly='true']"));
+  };
+  const isEditable = (el) => {
+    if (!el || !isEnabled(el) || isReadonly(el)) return false;
+    const tag = el.tagName?.toLowerCase?.() || "";
+    const type = (el.getAttribute?.("type") || "").toLowerCase();
+    if (tag === "textarea") return true;
+    if (tag === "input") {
+      if (["button", "checkbox", "color", "file", "hidden", "image", "radio", "range", "reset", "submit"].includes(type)) {
+        return false;
+      }
+      return true;
+    }
+    return el.isContentEditable === true || el.getAttribute?.("contenteditable") === "true";
   };
 
   const resolved = resolveLocator();
@@ -5473,6 +7045,8 @@ function locatorQueryExpression(locator, kind, args) {
     value = elements.length;
   } else if (kind === "allTextContents") {
     value = elements.map((el) => el.textContent || "");
+  } else if (kind === "allInnerTexts") {
+    value = elements.map((el) => normalizeText(el.innerText || el.textContent || ""));
   } else if (kind === "textContent") {
     value = first ? first.textContent : null;
   } else if (kind === "innerText") {
@@ -5482,8 +7056,14 @@ function locatorQueryExpression(locator, kind, args) {
     value = first && name ? first.getAttribute(name) : null;
   } else if (kind === "isVisible") {
     value = isVisible(first);
+  } else if (kind === "isHidden") {
+    value = !isVisible(first);
   } else if (kind === "isEnabled") {
     value = isEnabled(first);
+  } else if (kind === "isDisabled") {
+    value = Boolean(first) && !isEnabled(first);
+  } else if (kind === "isEditable") {
+    value = isEditable(first);
   } else if (kind === "inputValue") {
     value = first && "value" in first ? first.value : "";
   } else if (kind === "isChecked") {
@@ -5585,6 +7165,91 @@ function mediaDownloadTargetExpression(locator, attribute) {
   };
 })()`;
 }
+function locatorDomUtilityExpression(locator, kind, args) {
+    return `(async () => {
+  const kind = ${JSON.stringify(kind)};
+  const args = ${JSON.stringify(args && typeof args === "object" ? args : {})};
+  ${locatorResolverSource(locator)}
+  ${locatorActionabilitySource(kind, args)}
+  const resolved = resolveLocator();
+
+  if (!resolved.ok) {
+    return resolved;
+  }
+
+  const el = resolved.element;
+  const actionability = await checkLocatorActionability(el);
+  if (!actionability.ok) return actionability;
+
+  if (kind === "blur") {
+    if (typeof el.blur === "function") {
+      el.blur();
+    }
+    return { ok: true, count: resolved.count };
+  }
+
+  if (kind === "scrollIntoViewIfNeeded") {
+    const block = typeof args.block === "string" ? args.block : "center";
+    const inline = typeof args.inline === "string" ? args.inline : "center";
+    el.scrollIntoView({
+      block,
+      inline,
+      behavior: "instant"
+    });
+    const rect = locatorRectInTopViewport(el);
+    return {
+      ok: true,
+      count: resolved.count,
+      rect: {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height
+      }
+    };
+  }
+
+  if (kind === "selectText") {
+    const tag = el.tagName.toLowerCase();
+    const isTextControl = tag === "textarea" ||
+      (tag === "input" && !["button", "checkbox", "color", "file", "hidden", "image", "radio", "range", "reset", "submit"].includes((el.getAttribute("type") || "").toLowerCase()));
+
+    el.focus();
+
+    if (isTextControl && typeof el.select === "function") {
+      el.select();
+    } else {
+      const selection = el.ownerDocument?.getSelection?.();
+      if (!selection) {
+        return {
+          ok: false,
+          code: "selection_unavailable",
+          error: "Document selection API is unavailable",
+          count: resolved.count
+        };
+      }
+      const range = el.ownerDocument.createRange();
+      range.selectNodeContents(el);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+
+    const selectedText = el.ownerDocument?.getSelection?.()?.toString?.() || (isTextControl ? String(el.value || "") : "");
+    return {
+      ok: true,
+      count: resolved.count,
+      value: selectedText
+    };
+  }
+
+  return {
+    ok: false,
+    code: "unsupported_locator_utility",
+    error: "Unsupported locator utility action: " + kind,
+    count: resolved.count
+  };
+})()`;
+}
 function locatorMutationExpression(locator, kind, args) {
     return `(async () => {
   const kind = ${JSON.stringify(kind)};
@@ -5624,26 +7289,187 @@ function locatorMutationExpression(locator, kind, args) {
       };
     }
 
-    const rawValues = Array.isArray(args.values)
-      ? args.values
-      : Array.isArray(args.value)
-        ? args.value
-        : [args.value ?? args.values].filter((value) => value != null);
-    const values = new Set(rawValues.map((value) => String(value)));
+    const rawOptions = Array.isArray(args.options)
+      ? args.options
+      : Array.isArray(args.values)
+        ? args.values
+        : Array.isArray(args.value)
+          ? args.value
+          : [args.value ?? args.values].filter((value) => value != null);
+    const optionSpecs = rawOptions.map((candidate) => {
+      if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
+        return {
+          value: typeof candidate.value === "string" ? candidate.value : null,
+          label: typeof candidate.label === "string" ? candidate.label : null,
+          index: Number.isFinite(candidate.index) ? Math.max(0, Math.floor(candidate.index)) : null
+        };
+      }
 
-    for (const option of Array.from(el.options)) {
-      option.selected = values.has(option.value) || values.has(option.label);
+      const value = String(candidate);
+      return { value, label: value, index: null };
+    });
+
+    for (const [optionIndex, option] of Array.from(el.options).entries()) {
+      option.selected = optionSpecs.some((spec) =>
+        spec.index === optionIndex ||
+        (spec.value != null && spec.value === option.value) ||
+        (spec.label != null && (spec.label === option.label || spec.label === option.textContent))
+      );
     }
 
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
-    return { ok: true };
+    return {
+      ok: true,
+      value: Array.from(el.selectedOptions || []).map((option) => option.value),
+      count: Array.from(el.selectedOptions || []).length
+    };
   }
 
   return {
     ok: false,
     error: "Unsupported locator mutation"
   };
+})()`;
+}
+function locatorScriptActionExpression(locator, kind, args) {
+    return `(async () => {
+  const kind = ${JSON.stringify(kind)};
+  const args = ${JSON.stringify(args && typeof args === "object" ? args : {})};
+  ${locatorResolverSource(locator)}
+  const resolved = resolveLocator();
+
+  if (!resolved.ok) {
+    return resolved;
+  }
+
+  const selectedElement = resolved.element;
+  const elements = resolved.elements;
+  const eventInit = args.eventInit && typeof args.eventInit === "object" && !Array.isArray(args.eventInit)
+    ? args.eventInit
+    : {};
+
+  if (kind !== "evaluateAll" && !selectedElement) {
+    return {
+      ok: false,
+      code: "locator_not_found",
+      error: "Element target not found",
+      count: resolved.count,
+      kind: locatorKind,
+      selector: selector || locatorText || locatorRole || locatorTestId || ""
+    };
+  }
+
+  if (kind === "dispatchEvent") {
+    const eventType = typeof args.type === "string" ? args.type : "";
+
+    if (!eventType) {
+      return {
+        ok: false,
+        code: "invalid_params",
+        error: "dispatchEvent requires a non-empty event type",
+        count: resolved.count
+      };
+    }
+
+    try {
+      const init = {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        ...eventInit
+      };
+      const lowerType = eventType.toLowerCase();
+      let event;
+
+      if ("detail" in eventInit && typeof CustomEvent === "function") {
+        event = new CustomEvent(eventType, init);
+      } else if (/^(click|dblclick|mouse|pointer|drag|drop)/.test(lowerType)) {
+        event = new MouseEvent(eventType, init);
+      } else if (/^key/.test(lowerType)) {
+        event = new KeyboardEvent(eventType, init);
+      } else if ((lowerType === "input" || lowerType === "beforeinput") && typeof InputEvent === "function") {
+        event = new InputEvent(eventType, init);
+      } else {
+        event = new Event(eventType, init);
+      }
+
+      const dispatched = selectedElement.dispatchEvent(event);
+      return {
+        ok: true,
+        value: {
+          dispatched,
+          defaultPrevented: event.defaultPrevented
+        },
+        count: resolved.count
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        code: "locator_dispatch_event_failed",
+        error: error instanceof Error ? error.message : String(error),
+        count: resolved.count
+      };
+    }
+  }
+
+  const script = typeof args.script === "string" ? args.script.trim() : "";
+  let __formaxRestoreAll = () => {};
+
+  if (!script) {
+    return {
+      ok: false,
+      code: "invalid_params",
+      error: kind + " requires a page function script",
+      count: resolved.count
+    };
+  }
+
+  if (args.mode === "read") {
+    ${readOnlyMutationGuardSource({ restoreAllDeclaration: "" })}
+  }
+
+  let pageFunction;
+  try {
+    pageFunction = (0, eval)("(" + script + ")");
+  } catch (error) {
+    __formaxRestoreAll();
+    return {
+      ok: false,
+      code: "locator_evaluate_compile_error",
+      error: error instanceof Error ? error.message : String(error),
+      count: resolved.count
+    };
+  }
+
+  if (typeof pageFunction !== "function") {
+    __formaxRestoreAll();
+    return {
+      ok: false,
+      code: "locator_evaluate_compile_error",
+      error: "locator evaluate script must compile to a function",
+      count: resolved.count
+    };
+  }
+
+  try {
+    const target = kind === "evaluateAll" ? elements : selectedElement;
+    const value = await pageFunction(target, args.argument);
+    return {
+      ok: true,
+      value,
+      count: resolved.count
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      code: "locator_evaluate_error",
+      error: error instanceof Error ? error.message : String(error),
+      count: resolved.count
+    };
+  } finally {
+    __formaxRestoreAll();
+  }
 })()`;
 }
 async function dispatchMouseClick(tabId, x, y, params = {}) {
@@ -6198,6 +8024,256 @@ async function showHighlightRect(tabId, rect, options = {}) {
         // Highlight overlays are best-effort and should not block screenshots.
     }
 }
+async function markFinalizedBadge(tabId, phase) {
+    await ensureFinalizedBadgesLoaded();
+    const visible = await tabIsVisible(tabId);
+    await runFinalizedBadgeStateOperation(async () => {
+        if (visible) {
+            finalizedBadgesByTab.delete(tabId);
+        }
+        else {
+            finalizedBadgesByTab.set(tabId, phase);
+        }
+        await saveFinalizedBadges();
+    });
+    schedulePublishFinalizedBadge(tabId);
+}
+async function clearFinalizedBadge(tabId) {
+    await ensureFinalizedBadgesLoaded();
+    let changed = false;
+    await runFinalizedBadgeStateOperation(async () => {
+        changed = finalizedBadgesByTab.delete(tabId);
+        if (changed) {
+            await saveFinalizedBadges();
+        }
+    });
+    if (changed) {
+        schedulePublishFinalizedBadge(tabId);
+    }
+}
+async function clearFocusedWindowFinalizedBadge(windowId) {
+    await ensureFinalizedBadgesLoaded();
+    if (finalizedBadgesByTab.size === 0) {
+        return;
+    }
+    try {
+        const tabs = await chrome.tabs.query({
+            active: true,
+            windowId
+        });
+        const tabId = tabs.find((tab) => typeof tab.id === "number")?.id;
+        if (typeof tabId === "number") {
+            await clearFinalizedBadge(tabId);
+        }
+    }
+    catch {
+        // Focus reconciliation is best-effort.
+    }
+}
+async function forgetFinalizedBadge(tabId) {
+    await ensureFinalizedBadgesLoaded();
+    await runFinalizedBadgeStateOperation(async () => {
+        if (finalizedBadgesByTab.delete(tabId)) {
+            await saveFinalizedBadges();
+        }
+    });
+}
+async function replaceFinalizedBadge(addedTabId, removedTabId) {
+    await ensureFinalizedBadgesLoaded();
+    let moved = null;
+    await runFinalizedBadgeStateOperation(async () => {
+        const badge = finalizedBadgesByTab.get(removedTabId);
+        if (!badge) {
+            return;
+        }
+        finalizedBadgesByTab.delete(removedTabId);
+        finalizedBadgesByTab.set(addedTabId, badge);
+        moved = badge;
+        await saveFinalizedBadges();
+    });
+    if (moved) {
+        schedulePublishFinalizedBadge(addedTabId);
+    }
+}
+async function republishFinalizedBadge(tabId) {
+    await ensureFinalizedBadgesLoaded();
+    schedulePublishFinalizedBadge(tabId);
+}
+async function ensureFinalizedBadgesLoaded() {
+    if (finalizedBadgesLoaded) {
+        return;
+    }
+    if (!finalizedBadgesLoadPromise) {
+        finalizedBadgesLoadPromise = loadFinalizedBadges();
+    }
+    await finalizedBadgesLoadPromise;
+}
+async function loadFinalizedBadges() {
+    const stored = await storageSessionGet(FINALIZED_BADGE_STORAGE_KEY);
+    const source = stored && typeof stored === "object" && !Array.isArray(stored)
+        ? stored
+        : {};
+    const badges = source.badges && typeof source.badges === "object" && !Array.isArray(source.badges)
+        ? source.badges
+        : {};
+    finalizedBadgesByTab.clear();
+    for (const [tabIdText, phase] of Object.entries(badges)) {
+        const tabId = Number(tabIdText);
+        if (Number.isInteger(tabId) && isFinalizedBadgePhase(phase)) {
+            finalizedBadgesByTab.set(tabId, phase);
+            schedulePublishFinalizedBadge(tabId);
+        }
+    }
+    finalizedBadgesLoaded = true;
+}
+async function saveFinalizedBadges() {
+    await storageSessionSet(FINALIZED_BADGE_STORAGE_KEY, {
+        badges: Object.fromEntries(finalizedBadgesByTab.entries())
+    });
+}
+async function runFinalizedBadgeStateOperation(operation) {
+    const queued = finalizedBadgeStateQueue.then(operation, operation);
+    finalizedBadgeStateQueue = queued.then(() => undefined, () => undefined);
+    await queued;
+}
+function schedulePublishFinalizedBadge(tabId) {
+    const queued = finalizedBadgePublicationQueue.then(() => publishFinalizedBadge(tabId), () => publishFinalizedBadge(tabId));
+    finalizedBadgePublicationQueue = queued.then(() => undefined, () => undefined);
+    queued.catch(() => {
+        // Favicon badge publication is best-effort.
+    });
+}
+function scheduleSessionFaviconBadges(sessionId) {
+    for (const lease of sessionManager.getSessionLeases(sessionId)) {
+        schedulePublishFinalizedBadge(lease.tabId);
+    }
+}
+async function restoreSessionFaviconBadges() {
+    try {
+        await sessionManager.initialize();
+        await ensureFinalizedBadgesLoaded();
+        for (const session of sessionManager.listSessions()) {
+            scheduleSessionFaviconBadges(session.sessionId);
+        }
+    }
+    catch {
+        // Restored visual state is best-effort; runtime actions will reconcile later.
+    }
+}
+async function publishFinalizedBadge(tabId) {
+    await ensureFinalizedBadgesLoaded();
+    const badge = readEffectiveFaviconBadge(tabId);
+    const faviconDataUrl = badge == null ? null : await readFaviconDataUrl(tabId);
+    try {
+        if (!(await prepareContentScript(tabId))) {
+            return;
+        }
+        await withChromeMessageTimeout(chrome.tabs.sendMessage(tabId, {
+            type: "TAB_FAVICON_BADGE",
+            badge,
+            faviconDataUrl
+        }), 250);
+    }
+    catch {
+        // Restricted pages may not accept content scripts or runtime messages.
+    }
+}
+function readEffectiveFaviconBadge(tabId) {
+    const lease = sessionManager.getTabLease(tabId);
+    if (lease?.state === "active") {
+        return "active";
+    }
+    return finalizedBadgesByTab.get(tabId) ?? null;
+}
+async function readFaviconDataUrl(tabId) {
+    let tab;
+    try {
+        tab = await chrome.tabs.get(tabId);
+    }
+    catch {
+        return null;
+    }
+    if (typeof tab.url !== "string" || !tab.url.trim()) {
+        return null;
+    }
+    const cached = faviconDataUrlsByTab.get(tabId);
+    if (cached?.pageUrl === tab.url) {
+        return cached.dataUrl;
+    }
+    if (typeof tab.favIconUrl !== "string" ||
+        !tab.favIconUrl.trim() ||
+        isFormaxFaviconBadgeUrl(tab.favIconUrl)) {
+        return null;
+    }
+    const dataUrl = await fetchChromeFaviconDataUrl(tab.url);
+    if (dataUrl) {
+        faviconDataUrlsByTab.set(tabId, {
+            dataUrl,
+            pageUrl: tab.url
+        });
+    }
+    return dataUrl;
+}
+async function fetchChromeFaviconDataUrl(pageUrl) {
+    const faviconUrl = new URL(chrome.runtime.getURL("/_favicon/"));
+    faviconUrl.searchParams.set("pageUrl", pageUrl);
+    faviconUrl.searchParams.set("size", "32");
+    const abort = new AbortController();
+    const timeoutId = self.setTimeout(() => abort.abort(), 2000);
+    try {
+        const response = await fetch(faviconUrl.toString(), {
+            signal: abort.signal
+        });
+        if (!response.ok) {
+            return null;
+        }
+        const contentType = sanitizeFaviconContentType(response.headers.get("content-type"));
+        const buffer = await response.arrayBuffer();
+        if (buffer.byteLength === 0 || buffer.byteLength > 64 * 1024) {
+            return null;
+        }
+        return `data:${contentType};base64,${arrayBufferToBase64(buffer)}`;
+    }
+    catch {
+        return null;
+    }
+    finally {
+        self.clearTimeout(timeoutId);
+    }
+}
+function sanitizeFaviconContentType(value) {
+    if (typeof value === "string" && /^image\/[a-z0-9.+-]+$/i.test(value.trim())) {
+        return value.trim().toLowerCase();
+    }
+    return "image/bmp";
+}
+function isFormaxFaviconBadgeUrl(value) {
+    if (!value.startsWith("data:image/svg+xml")) {
+        return false;
+    }
+    try {
+        return decodeURIComponent(value).includes("data-formax-favicon-badge");
+    }
+    catch {
+        return false;
+    }
+}
+async function tabIsVisible(tabId) {
+    try {
+        const tab = await chrome.tabs.get(tabId);
+        if (tab.active !== true || typeof tab.windowId !== "number") {
+            return false;
+        }
+        const windowInfo = await chrome.windows.get(tab.windowId);
+        return windowInfo.focused === true;
+    }
+    catch {
+        return false;
+    }
+}
+function isFinalizedBadgePhase(value) {
+    return value === "handoff" || value === "deliverable";
+}
 async function setPageVisualStatus(tabId, phase, meta = {}) {
     const sessionId = meta.sessionId ?? sessionIdForTab(tabId);
     const turnId = meta.turnId ?? activeActionContext?.turnId ?? null;
@@ -6209,6 +8285,12 @@ async function setPageVisualStatus(tabId, phase, meta = {}) {
         reason: meta.reason ?? null,
         turnId
     });
+    if (isFinalizedBadgePhase(phase)) {
+        await markFinalizedBadge(tabId, phase);
+    }
+    else if (phase === "stopped") {
+        await clearFinalizedBadge(tabId);
+    }
     try {
         if (!(await prepareContentScript(tabId))) {
             return;
@@ -6282,7 +8364,7 @@ function withChromeMessageTimeout(promise, timeoutMs) {
 async function cdp(tabId, method, params = {}, options = {}) {
     if (method === "Target.getTargets") {
         return {
-            targetInfos: await chrome.debugger.getTargets()
+            targetInfos: await withChromeMessageTimeout(chrome.debugger.getTargets(), options.timeoutMs ?? DEFAULT_CDP_TIMEOUT_MS)
         };
     }
     if (typeof options.targetId === "string" && options.targetId.trim()) {
@@ -6625,6 +8707,7 @@ function listCapabilities() {
         browserCapability("clipboard", "Read and write browser clipboard text with explicit per-request confirmation.", true),
         browserCapability("browser.user.history", "Read user browsing history with explicit per-request confirmation.", true),
         browserCapability("browser.user.bookmarks", "Browser bookmarks are intentionally not exposed by this runtime.", false, "unsupported_sensitive_browser_state"),
+        browserCapability("browser.notifications", "Browser/system notifications are intentionally not exposed by this runtime.", false, "unsupported_sensitive_browser_state"),
         tabCapability("tab.navigation", "Navigate, reload, and read URL/title for tabs.", true),
         tabCapability("tab.cua", "Coordinate mouse, keyboard, and scroll interactions.", true),
         tabCapability("tab.domSnapshot", "Capture DOMSnapshot output through CDP.", true),
@@ -6661,6 +8744,8 @@ function tabCapability(id, description, available, reason) {
 function summarizeDownload(download) {
     return {
         id: download.id,
+        downloadId: download.id,
+        download_id: download.id,
         url: download.url,
         finalUrl: download.finalUrl,
         filename: download.filename,
@@ -6677,6 +8762,8 @@ function summarizeDownload(download) {
 function summarizeDownloadDelta(delta) {
     return {
         id: delta.id,
+        downloadId: delta.id,
+        download_id: delta.id,
         url: delta.url?.current,
         finalUrl: delta.finalUrl?.current,
         filename: delta.filename?.current,
@@ -7264,6 +9351,30 @@ function normalizeKey(key) {
         NumLock: { key: "NumLock", code: "NumLock", keyCode: 144 },
         ScrollLock: { key: "ScrollLock", code: "ScrollLock", keyCode: 145 },
         ContextMenu: { key: "ContextMenu", code: "ContextMenu", keyCode: 93 },
+        Convert: { key: "Convert", code: "Convert", keyCode: 28 },
+        NonConvert: { key: "NonConvert", code: "NonConvert", keyCode: 29 },
+        KanaMode: { key: "KanaMode", code: "KanaMode", keyCode: 21 },
+        HangulMode: { key: "HangulMode", code: "HangulMode", keyCode: 21 },
+        HanjaMode: { key: "HanjaMode", code: "HanjaMode", keyCode: 25 },
+        JunjaMode: { key: "JunjaMode", code: "JunjaMode", keyCode: 23 },
+        FinalMode: { key: "FinalMode", code: "FinalMode", keyCode: 24 },
+        ModeChange: { key: "ModeChange", code: "ModeChange", keyCode: 31 },
+        Process: { key: "Process", code: "Process", keyCode: 229 },
+        Compose: { key: "Compose", code: "Compose", keyCode: 229 },
+        AudioVolumeMute: { key: "AudioVolumeMute", code: "AudioVolumeMute", keyCode: 173 },
+        AudioVolumeDown: { key: "AudioVolumeDown", code: "AudioVolumeDown", keyCode: 174 },
+        AudioVolumeUp: { key: "AudioVolumeUp", code: "AudioVolumeUp", keyCode: 175 },
+        MediaTrackNext: { key: "MediaTrackNext", code: "MediaTrackNext", keyCode: 176 },
+        MediaTrackPrevious: { key: "MediaTrackPrevious", code: "MediaTrackPrevious", keyCode: 177 },
+        MediaStop: { key: "MediaStop", code: "MediaStop", keyCode: 178 },
+        MediaPlayPause: { key: "MediaPlayPause", code: "MediaPlayPause", keyCode: 179 },
+        NumpadEnter: { key: "Enter", code: "NumpadEnter", keyCode: 13 },
+        NumpadAdd: { key: "+", code: "NumpadAdd", keyCode: 107 },
+        NumpadSubtract: { key: "-", code: "NumpadSubtract", keyCode: 109 },
+        NumpadMultiply: { key: "*", code: "NumpadMultiply", keyCode: 106 },
+        NumpadDivide: { key: "/", code: "NumpadDivide", keyCode: 111 },
+        NumpadDecimal: { key: ".", code: "NumpadDecimal", keyCode: 110 },
+        NumpadEqual: { key: "=", code: "NumpadEqual", keyCode: 187 },
         Alt: { key: "Alt", code: "AltLeft", keyCode: 18 },
         Control: { key: "Control", code: "ControlLeft", keyCode: 17 },
         ControlOrMeta: isMacLikePlatform()
@@ -7272,7 +9383,14 @@ function normalizeKey(key) {
         Meta: { key: "Meta", code: "MetaLeft", keyCode: 91 },
         Shift: { key: "Shift", code: "ShiftLeft", keyCode: 16 }
     };
-    for (let index = 1; index <= 12; index += 1) {
+    for (let index = 0; index <= 9; index += 1) {
+        map[`Numpad${index}`] = {
+            key: String(index),
+            code: `Numpad${index}`,
+            keyCode: 96 + index
+        };
+    }
+    for (let index = 1; index <= 24; index += 1) {
         map[`F${index}`] = {
             key: `F${index}`,
             code: `F${index}`,
@@ -7307,7 +9425,25 @@ function canonicalKeyName(key) {
         Ctrl: "Control",
         Return: "Enter",
         Apps: "ContextMenu",
-        Menu: "ContextMenu"
+        Menu: "ContextMenu",
+        VolumeMute: "AudioVolumeMute",
+        VolumeDown: "AudioVolumeDown",
+        VolumeUp: "AudioVolumeUp",
+        MediaNextTrack: "MediaTrackNext",
+        MediaPreviousTrack: "MediaTrackPrevious",
+        MediaPrevTrack: "MediaTrackPrevious",
+        MediaPlay: "MediaPlayPause",
+        MediaPause: "MediaPlayPause",
+        NumpadPlus: "NumpadAdd",
+        NumpadMinus: "NumpadSubtract",
+        NumpadStar: "NumpadMultiply",
+        NumpadSlash: "NumpadDivide",
+        NumpadDot: "NumpadDecimal",
+        Decimal: "NumpadDecimal",
+        Multiply: "NumpadMultiply",
+        Add: "NumpadAdd",
+        Subtract: "NumpadSubtract",
+        Divide: "NumpadDivide"
     };
     return aliases[key] ?? key;
 }
@@ -7582,6 +9718,19 @@ function storageSessionSet(key, value) {
         });
     });
 }
+function storageSessionRemove(key) {
+    return new Promise((resolve, reject) => {
+        chrome.storage.session.remove(key, () => {
+            const error = chrome.runtime.lastError;
+            if (error) {
+                reject(new Error(error.message));
+            }
+            else {
+                resolve();
+            }
+        });
+    });
+}
 function sanitizeBrowserPolicyState(value) {
     const source = value && typeof value === "object" && !Array.isArray(value)
         ? value
@@ -7746,6 +9895,16 @@ function hostApprovalPromptDetails(action, verdict, sessionId, params) {
     };
 }
 function postHostApprovalRequiredEvent(details) {
+    registerPendingApproval({
+        approvalId: details.approvalId,
+        kind: "host",
+        action: details.action,
+        host: details.host,
+        sessionId: details.sessionId,
+        tabId: details.tabId,
+        message: details.message,
+        suggestedDecisions: details.suggestedDecisions
+    });
     safePostEvent({
         name: "hostApprovalRequired",
         sessionId: details.sessionId,
@@ -7777,12 +9936,25 @@ function browserOriginApprovalDetails(action, classification, sessionId, params)
         reasons,
         sessionId: normalizedSessionId,
         tabId: typeof params.tabId === "number" ? params.tabId : null,
+        subject: browserOriginApprovalSubject(action, params),
         requiredParams: {
             originApproved: true
         }
     };
 }
 function postBrowserOriginApprovalRequiredEvent(details) {
+    registerPendingApproval({
+        approvalId: details.approvalId,
+        kind: "origin",
+        action: details.action,
+        host: details.host,
+        sessionId: details.sessionId,
+        tabId: details.tabId,
+        message: details.message,
+        reasons: details.reasons,
+        subject: details.subject,
+        requiredParams: details.requiredParams
+    });
     safePostEvent({
         name: "browserOriginApprovalRequired",
         sessionId: details.sessionId,
@@ -7792,8 +9964,43 @@ function postBrowserOriginApprovalRequiredEvent(details) {
         approvalId: details.approvalId,
         message: details.message,
         reasons: details.reasons,
+        subject: details.subject,
         requiredParams: details.requiredParams
     });
+}
+function browserOriginApprovalSubject(action, params) {
+    if (action === "rawCdp") {
+        const subject = {
+            kind: "rawCdp",
+            method: typeof params.method === "string" ? truncateAndRedactString(params.method, 120) : "unknown"
+        };
+        if (typeof params.targetId === "string" && params.targetId.trim()) {
+            subject.targetId = truncateAndRedactString(params.targetId.trim(), 120);
+        }
+        return subject;
+    }
+    if (action === "download") {
+        const subject = {
+            kind: "download"
+        };
+        for (const key of ["url", "finalUrl", "filename", "filePath", "attribute"]) {
+            const value = params[key];
+            if (typeof value === "string" && value.trim()) {
+                subject[key] = truncateAndRedactString(value.trim(), key === "url" || key === "finalUrl" ? 240 : 160);
+            }
+        }
+        if (typeof params.locator === "object" && params.locator && !Array.isArray(params.locator)) {
+            const locator = params.locator;
+            subject.locator = {
+                kind: typeof locator.kind === "string" ? locator.kind : undefined,
+                selector: typeof locator.selector === "string" ? truncateAndRedactString(locator.selector, 160) : undefined,
+                text: typeof locator.text === "string" ? truncateAndRedactString(locator.text, 160) : undefined,
+                role: typeof locator.role === "string" ? truncateAndRedactString(locator.role, 80) : undefined
+            };
+        }
+        return subject;
+    }
+    return undefined;
 }
 function browserOriginApprovalId(action, host, sessionId) {
     return `origin:${sessionId ?? "global"}:${host ?? "unknown"}:${action}`;
@@ -7827,6 +10034,18 @@ function browserActionConfirmationDetails(action, classification, sessionId, par
     };
 }
 function postBrowserActionConfirmationRequiredEvent(details) {
+    registerPendingApproval({
+        approvalId: details.confirmationId,
+        kind: "confirmation",
+        action: details.action,
+        host: details.host,
+        sessionId: details.sessionId,
+        tabId: details.tabId,
+        message: details.message,
+        reasons: details.reasons,
+        target: details.target,
+        requiredParams: details.requiredParams
+    });
     safePostEvent({
         name: "browserActionConfirmationRequired",
         sessionId: details.sessionId,
@@ -7998,6 +10217,16 @@ function looksLikeRunnableDownload(url, filename) {
 function looksLikeBrowserPermissionPrompt(label, text) {
     const source = `${label} ${text}`.trim();
     return PERMISSION_GRANT_PATTERN.test(source) && BROWSER_PERMISSION_TARGET_PATTERN.test(source);
+}
+function assertReadOnlyEvaluateAllowed(script, params, operation) {
+    if (params.mode !== "read" || !looksLikeMutatingScript(script)) {
+        return;
+    }
+    throw browserActionError("read_only_evaluate_violation", "Read-only evaluate mode rejected a script that appears to mutate page or browser state. Use mode: \"write\" with confirmation for mutating scripts.", {
+        operation,
+        mode: "read",
+        reason: "mutating_script_pattern"
+    });
 }
 function looksLikeMutatingScript(script) {
     return /\b(click|submit|remove|setAttribute|removeAttribute|appendChild|insertBefore|replaceChild|dispatchEvent|deleteDatabase|localStorage\s*\.\s*(setItem|removeItem|clear)|sessionStorage\s*\.\s*(setItem|removeItem|clear)|document\s*\.\s*cookie\s*=|cookie\s*=)\b|\.value\s*=|\.checked\s*=|\.textContent\s*=|\.innerHTML\s*=/i.test(script);

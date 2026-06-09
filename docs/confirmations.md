@@ -33,6 +33,42 @@ When an action fails with `confirmation_required`, inspect recent events for
 and redacted target summary to the user. If approved, retry the exact action
 with the event's `requiredParams`.
 
+You can also use the confirmation engine directly:
+
+```js
+const [approval] = await browser.policy.pending({ kind: "confirmation" });
+const resolved = await browser.policy.resolve({
+  approvalId: approval.approvalId,
+  decision: "approve",
+});
+```
+
+For action confirmations and origin approvals, retry the exact failed action
+with `resolved.requiredParams`. Pending confirmation approvals include redacted
+reason and target summaries when the backend can identify the risky element. For
+origin approvals, pending records include a redacted subject summary when
+available, such as the raw CDP method/target or page asset download URL,
+filename, attribute, and locator summary. For
+host approvals, `browser.policy.resolve()` can apply the approved host
+allow/deny policy and then the original action can be retried.
+
+The Chrome extension popup also shows pending host, confirmation, and origin
+approval requests. For host approvals it exposes the host policy choice instead
+of a single approve button: allow for the active session when available, always
+allow the host, or deny. For confirmation and origin approvals it shows reasons,
+target summaries, and the retry parameters that approval will return. The popup
+does not automatically retry the failed action; the agent or caller must retry
+with returned params or updated host policy.
+
+When an approval belongs to a controllable tab, the extension also tries to show
+an in-page approval banner. The banner resolves the same pending approval as the
+SDK and popup, including the same session allow, always allow, and deny choices
+for host approvals, reason/target/retry details for confirmation approvals, and
+reason/subject/retry details for origin approvals. It is best-effort on
+restricted pages and does not automatically retry the failed action. The banner
+expires at the approval's `expiresAt` deadline and is also cleared when the
+background resolves or expires the approval.
+
 ## Website Host Approval
 
 The first navigation or interaction with an unknown `http`/`https` host fails
@@ -74,6 +110,12 @@ Bookmarks are not exposed by Formax. The extension does not request Chrome's
 `bookmarks` permission and no browser tool returns bookmarks. If a future
 feature adds bookmark access, treat it as sensitive browser telemetry with an
 explicit per-request confirmation policy before exposing it.
+
+Browser/system notifications are not exposed by Formax. The extension does not
+request Chrome's `notifications` permission and no browser tool creates,
+updates, reads, or clears notifications. Page-visible notification permission
+prompts are still permission grants: only click them when the user explicitly
+asked for notifications on that site.
 
 ## File Uploads
 

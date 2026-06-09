@@ -7,6 +7,8 @@ export type BrowserAction =
   | "getDiagnostics"
   | "getPolicy"
   | "updatePolicy"
+  | "getPendingApprovals"
+  | "resolveApproval"
   | "startSession"
   | "nameSession"
   | "openTabs"
@@ -80,7 +82,32 @@ export type BrowserNamedKey =
   | "NumLock"
   | "ScrollLock"
   | "ContextMenu"
-  | `F${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12}`;
+  | "Convert"
+  | "NonConvert"
+  | "KanaMode"
+  | "HangulMode"
+  | "HanjaMode"
+  | "JunjaMode"
+  | "FinalMode"
+  | "ModeChange"
+  | "Process"
+  | "Compose"
+  | "AudioVolumeMute"
+  | "AudioVolumeDown"
+  | "AudioVolumeUp"
+  | "MediaTrackNext"
+  | "MediaTrackPrevious"
+  | "MediaStop"
+  | "MediaPlayPause"
+  | `Numpad${0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9}`
+  | "NumpadEnter"
+  | "NumpadAdd"
+  | "NumpadSubtract"
+  | "NumpadMultiply"
+  | "NumpadDivide"
+  | "NumpadDecimal"
+  | "NumpadEqual"
+  | `F${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24}`;
 export type BrowserModifierKey =
   | "Alt"
   | "Control"
@@ -117,6 +144,7 @@ export type NativeResponse =
       error: {
         code?: string;
         message: string;
+        details?: JsonObject;
       };
     };
 
@@ -374,6 +402,7 @@ export type BrowserToolError = {
   error: {
     code?: string;
     message: string;
+    details?: JsonObject;
   };
 };
 
@@ -539,6 +568,7 @@ export type BrowserOriginApprovalRequiredEvent = BrowserEvent & {
   reasons: string[];
   sessionId: string | null;
   tabId: number | null;
+  subject?: JsonObject;
   requiredParams: {
     originApproved: true;
   };
@@ -681,6 +711,55 @@ export type UpdatePolicyParams = {
 
 export type UpdatePolicyResult = {
   policy: BrowserPolicyState;
+};
+
+export type PendingApprovalKind = "host" | "confirmation" | "origin";
+export type PendingApprovalStatus = "pending" | "approved" | "denied" | "expired";
+
+export type PendingApprovalRecord = {
+  approvalId: string;
+  kind: PendingApprovalKind;
+  status: PendingApprovalStatus;
+  action?: string;
+  host?: string | null;
+  sessionId?: string | null;
+  tabId?: number | null;
+  message: string;
+  createdAt: number;
+  expiresAt: number;
+  reasons?: string[];
+  subject?: JsonObject;
+  target?: {
+    label?: string;
+    text?: string;
+    tagName?: string | null;
+  };
+  requiredParams?: JsonObject;
+  suggestedDecisions?: JsonObject;
+};
+
+export type GetPendingApprovalsParams = {
+  sessionId?: string;
+  kind?: PendingApprovalKind;
+  includeResolved?: boolean;
+  limit?: number;
+};
+
+export type GetPendingApprovalsResult = {
+  approvals: PendingApprovalRecord[];
+};
+
+export type ResolveApprovalParams = {
+  approvalId: string;
+  decision: "approve" | "deny";
+  policyDecision?: HostPolicyDecision;
+  sessionId?: string;
+};
+
+export type ResolveApprovalResult = {
+  approval: PendingApprovalRecord;
+  requiredParams?: JsonObject;
+  policy?: BrowserPolicyState;
 };
 
 export type StartSessionParams = {
@@ -976,13 +1055,14 @@ export type ObserveParams = {
 };
 
 export type LocatorPlan = {
-  kind: "css" | "text" | "role" | "label" | "placeholder" | "testId";
+  kind: "css" | "text" | "role" | "label" | "placeholder" | "testId" | "altText" | "title" | "displayValue";
   selector?: string;
   text?: string;
   role?: string;
   name?: string;
   testId?: string;
   frameSelectors?: string[];
+  within?: LocatorPlan;
   and?: LocatorPlan;
   or?: LocatorPlan;
   has?: LocatorPlan;
@@ -998,11 +1078,17 @@ export type LocatorPlan = {
 export type LocatorQueryKind =
   | "count"
   | "allTextContents"
+  | "allInnerTexts"
   | "textContent"
   | "innerText"
   | "getAttribute"
   | "isVisible"
+  | "isHidden"
   | "isEnabled"
+  | "isDisabled"
+  | "isEditable"
+  | "inputValue"
+  | "isChecked"
   | "boundingBox";
 
 export type LocatorQueryParams = {
@@ -1027,14 +1113,22 @@ export type LocatorQueryResult = {
 export type LocatorActionKind =
   | "click"
   | "dblclick"
+  | "dragTo"
   | "fill"
   | "type"
   | "press"
   | "clear"
   | "focus"
+  | "blur"
+  | "scrollIntoViewIfNeeded"
+  | "selectText"
   | "hover"
+  | "highlight"
   | "setChecked"
-  | "selectOption";
+  | "selectOption"
+  | "evaluate"
+  | "evaluateAll"
+  | "dispatchEvent";
 
 export type LocatorActionParams = {
   sessionId?: string;
@@ -1093,8 +1187,11 @@ export type ResolveFrameResult = {
     title?: string | null;
     src?: string | null;
     url?: string | null;
+    viewportOffset?: BrowserPoint;
     frameId?: string | null;
   }>;
+  targetViewportOffset?: BrowserPoint;
+  viewportOffset?: BrowserPoint;
 };
 
 export type ClickParams = {
@@ -1489,6 +1586,8 @@ export type BrowserDownloadState = "in_progress" | "interrupted" | "complete";
 
 export type BrowserDownloadSummary = {
   id: number;
+  downloadId?: number;
+  download_id?: number;
   url: string;
   finalUrl?: string;
   filename: string;
@@ -1540,6 +1639,8 @@ export type BrowserActionParams =
   | GetDiagnosticsParams
   | GetPolicyParams
   | UpdatePolicyParams
+  | GetPendingApprovalsParams
+  | ResolveApprovalParams
   | StartSessionParams
   | NameSessionParams
   | UserOpenTabsParams
@@ -1595,6 +1696,11 @@ export type BrowserRect = {
   y: number;
   width: number;
   height: number;
+};
+
+export type BrowserPoint = {
+  x: number;
+  y: number;
 };
 
 export type JsonObject = Record<string, unknown>;

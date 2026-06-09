@@ -66,7 +66,14 @@ async function browserRpc(action, params = {}, timeoutMs = 30000) {
             (typeof json.error === "object" && typeof json.error?.code === "string"
                 ? json.error.code
                 : null);
-        throw new Error(errorCode ? `${errorCode}: ${errorMessage}` : errorMessage);
+        const error = new Error(errorCode ? `${errorCode}: ${errorMessage}` : errorMessage);
+        if (errorCode) {
+            error.code = errorCode;
+        }
+        if (typeof json.error === "object" && json.error?.details && typeof json.error.details === "object") {
+            error.details = json.error.details;
+        }
+        throw error;
     }
     return json.result;
 }
@@ -93,6 +100,12 @@ export async function browserGetPolicy(args = {}) {
 }
 export async function browserUpdatePolicy(args = {}) {
     return browserRpc("updatePolicy", args);
+}
+export async function browserGetPendingApprovals(args = {}) {
+    return browserRpc("getPendingApprovals", args);
+}
+export async function browserResolveApproval(args) {
+    return browserRpc("resolveApproval", args);
 }
 export async function browserStartSession(args) {
     return browserRpc("startSession", args);
@@ -256,6 +269,10 @@ export async function callBrowserTool(name, args) {
             return browserGetPolicy(args);
         case "browser_update_policy":
             return browserUpdatePolicy(args);
+        case "browser_get_pending_approvals":
+            return browserGetPendingApprovals(args);
+        case "browser_resolve_approval":
+            return browserResolveApproval(args);
         case "browser_start_session":
             return browserStartSession(args);
         case "browser_name_session":

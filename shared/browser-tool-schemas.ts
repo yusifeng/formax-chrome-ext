@@ -37,7 +37,32 @@ const BROWSER_BASE_KEYS = [
   "NumLock",
   "ScrollLock",
   "ContextMenu",
-  ...Array.from({ length: 12 }, (_value, index) => `F${index + 1}`),
+  "Convert",
+  "NonConvert",
+  "KanaMode",
+  "HangulMode",
+  "HanjaMode",
+  "JunjaMode",
+  "FinalMode",
+  "ModeChange",
+  "Process",
+  "Compose",
+  "AudioVolumeMute",
+  "AudioVolumeDown",
+  "AudioVolumeUp",
+  "MediaTrackNext",
+  "MediaTrackPrevious",
+  "MediaStop",
+  "MediaPlayPause",
+  ...Array.from({ length: 10 }, (_value, index) => `Numpad${index}`),
+  "NumpadEnter",
+  "NumpadAdd",
+  "NumpadSubtract",
+  "NumpadMultiply",
+  "NumpadDivide",
+  "NumpadDecimal",
+  "NumpadEqual",
+  ...Array.from({ length: 24 }, (_value, index) => `F${index + 1}`),
   ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ".split(""),
   ..."abcdefghijklmnopqrstuvwxyz".split(""),
   ..."0123456789".split(""),
@@ -65,7 +90,25 @@ const BROWSER_KEY_ALIASES = [
   "PgDown",
   "Return",
   "Apps",
-  "Menu"
+  "Menu",
+  "VolumeMute",
+  "VolumeDown",
+  "VolumeUp",
+  "MediaNextTrack",
+  "MediaPreviousTrack",
+  "MediaPrevTrack",
+  "MediaPlay",
+  "MediaPause",
+  "NumpadPlus",
+  "NumpadMinus",
+  "NumpadStar",
+  "NumpadSlash",
+  "NumpadDot",
+  "Decimal",
+  "Multiply",
+  "Add",
+  "Subtract",
+  "Divide"
 ] as const;
 const BROWSER_MODIFIER_KEYS = ["Alt", "Control", "ControlOrMeta", "Meta", "Shift"] as const;
 const BROWSER_MODIFIER_ALIASES = ["Ctrl", "Cmd", "Command", "Option"] as const;
@@ -84,6 +127,53 @@ const BROWSER_SUPPORTED_KEYS = [
       BROWSER_PRESS_KEY_BASES.map((key) => `${first}+${second}+${key}`)
     )
   )
+] as const;
+export const BROWSER_LOCATOR_PLAN_KINDS = [
+  "css",
+  "text",
+  "role",
+  "label",
+  "placeholder",
+  "testId",
+  "altText",
+  "title",
+  "displayValue"
+] as const;
+export const BROWSER_LOCATOR_QUERY_KINDS = [
+  "count",
+  "allTextContents",
+  "allInnerTexts",
+  "textContent",
+  "innerText",
+  "getAttribute",
+  "isVisible",
+  "isHidden",
+  "isEnabled",
+  "isDisabled",
+  "isEditable",
+  "inputValue",
+  "isChecked",
+  "boundingBox"
+] as const;
+export const BROWSER_LOCATOR_ACTION_KINDS = [
+  "click",
+  "dblclick",
+  "dragTo",
+  "fill",
+  "type",
+  "press",
+  "clear",
+  "focus",
+  "blur",
+  "scrollIntoViewIfNeeded",
+  "selectText",
+  "hover",
+  "highlight",
+  "setChecked",
+  "selectOption",
+  "evaluate",
+  "evaluateAll",
+  "dispatchEvent"
 ] as const;
 
 export const browserToolSchemas = [
@@ -204,6 +294,44 @@ export const browserToolSchemas = [
         url: { type: "string" },
         reset: { type: "boolean" }
       },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "browser_get_pending_approvals",
+    description: "List pending browser host, confirmation, and origin approval requests captured by the extension confirmation engine.",
+    parameters: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string" },
+        kind: {
+          type: "string",
+          enum: ["host", "confirmation", "origin"]
+        },
+        includeResolved: { type: "boolean" },
+        limit: { type: "number" }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "browser_resolve_approval",
+    description: "Resolve a pending approval request. Host approvals can apply allow/deny policy; confirmation/origin approvals return retry params.",
+    parameters: {
+      type: "object",
+      properties: {
+        approvalId: { type: "string" },
+        decision: {
+          type: "string",
+          enum: ["approve", "deny"]
+        },
+        policyDecision: {
+          type: "string",
+          enum: ["allow", "always_allow", "deny"]
+        },
+        sessionId: { type: "string" }
+      },
+      required: ["approvalId", "decision"],
       additionalProperties: false
     }
   },
@@ -605,13 +733,14 @@ export const browserToolSchemas = [
         locator: {
           type: "object",
           properties: {
-            kind: { type: "string", enum: ["css", "text", "role", "label", "placeholder", "testId"] },
+            kind: { type: "string", enum: BROWSER_LOCATOR_PLAN_KINDS },
             selector: { type: "string" },
             text: { type: "string" },
             role: { type: "string" },
             name: { type: "string" },
             testId: { type: "string" },
             frameSelectors: { type: "array", items: { type: "string" } },
+            within: { type: "object", additionalProperties: true },
             and: { type: "object", additionalProperties: true },
             or: { type: "object", additionalProperties: true },
             has: { type: "object", additionalProperties: true },
@@ -628,18 +757,7 @@ export const browserToolSchemas = [
         },
         kind: {
           type: "string",
-          enum: [
-            "count",
-            "allTextContents",
-            "textContent",
-            "innerText",
-            "getAttribute",
-            "isVisible",
-            "isEnabled",
-            "inputValue",
-            "isChecked",
-            "boundingBox"
-          ]
+          enum: BROWSER_LOCATOR_QUERY_KINDS
         },
         args: {
           type: "object",
@@ -662,13 +780,14 @@ export const browserToolSchemas = [
         locator: {
           type: "object",
           properties: {
-            kind: { type: "string", enum: ["css", "text", "role", "label", "placeholder", "testId"] },
+            kind: { type: "string", enum: BROWSER_LOCATOR_PLAN_KINDS },
             selector: { type: "string" },
             text: { type: "string" },
             role: { type: "string" },
             name: { type: "string" },
             testId: { type: "string" },
             frameSelectors: { type: "array", items: { type: "string" } },
+            within: { type: "object", additionalProperties: true },
             and: { type: "object", additionalProperties: true },
             or: { type: "object", additionalProperties: true },
             has: { type: "object", additionalProperties: true },
@@ -685,7 +804,7 @@ export const browserToolSchemas = [
         },
         kind: {
           type: "string",
-          enum: ["click", "dblclick", "fill", "type", "press", "clear", "focus", "hover", "setChecked", "selectOption"]
+          enum: BROWSER_LOCATOR_ACTION_KINDS
         },
         args: {
           type: "object",
@@ -709,13 +828,14 @@ export const browserToolSchemas = [
         locator: {
           type: "object",
           properties: {
-            kind: { type: "string", enum: ["css", "text", "role", "label", "placeholder", "testId"] },
+            kind: { type: "string", enum: BROWSER_LOCATOR_PLAN_KINDS },
             selector: { type: "string" },
             text: { type: "string" },
             role: { type: "string" },
             name: { type: "string" },
             testId: { type: "string" },
             frameSelectors: { type: "array", items: { type: "string" } },
+            within: { type: "object", additionalProperties: true },
             and: { type: "object", additionalProperties: true },
             or: { type: "object", additionalProperties: true },
             has: { type: "object", additionalProperties: true },
@@ -1055,13 +1175,14 @@ export const browserToolSchemas = [
         locator: {
           type: "object",
           properties: {
-            kind: { type: "string", enum: ["css", "text", "role", "label", "placeholder", "testId"] },
+            kind: { type: "string", enum: BROWSER_LOCATOR_PLAN_KINDS },
             selector: { type: "string" },
             text: { type: "string" },
             role: { type: "string" },
             name: { type: "string" },
             testId: { type: "string" },
             frameSelectors: { type: "array", items: { type: "string" } },
+            within: { type: "object", additionalProperties: true },
             and: { type: "object", additionalProperties: true },
             or: { type: "object", additionalProperties: true },
             has: { type: "object", additionalProperties: true },
@@ -1099,13 +1220,14 @@ export const browserToolSchemas = [
         locator: {
           type: "object",
           properties: {
-            kind: { type: "string", enum: ["css", "text", "role", "label", "placeholder", "testId"] },
+            kind: { type: "string", enum: BROWSER_LOCATOR_PLAN_KINDS },
             selector: { type: "string" },
             text: { type: "string" },
             role: { type: "string" },
             name: { type: "string" },
             testId: { type: "string" },
             frameSelectors: { type: "array", items: { type: "string" } },
+            within: { type: "object", additionalProperties: true },
             and: { type: "object", additionalProperties: true },
             or: { type: "object", additionalProperties: true },
             has: { type: "object", additionalProperties: true },

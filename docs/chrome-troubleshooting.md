@@ -156,6 +156,18 @@ Fix:
 Chrome extension service workers can keep old code until the extension is
 reloaded.
 
+For public website smoke coverage after the local fixture checks pass, run:
+
+```bash
+npm run test:real-sites
+```
+
+This opens a public search page, a public documentation page, a GitHub public
+repository page, and an npm package page. Set
+`FORMAX_REAL_SITE_SIGNED_IN_URL=https://example.com/account` to add an optional
+manual signed-in smoke target. Public websites can change markup or throttle
+requests, so inspect network/page changes before assuming a runtime regression.
+
 ## File Upload Permission Missing
 
 Symptoms:

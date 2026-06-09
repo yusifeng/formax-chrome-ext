@@ -78,6 +78,7 @@ The extension uses the following Chrome permissions:
 - `tabs`: to create, select, query, update, and close tabs for user-requested tasks.
 - `tabGroups`: to organize agent-controlled tabs so users can distinguish them from normal browsing tabs.
 - `downloads`: to observe download status when a user-requested task involves downloading files.
+- `favicon`: to read page favicons for Codex-like visual tab status badges.
 - `storage`: to store local extension state and configuration.
 - `alarms`: to perform lightweight maintenance for extension session state.
 - Host permissions: to allow the user-controlled local agent to operate on websites selected by the user.

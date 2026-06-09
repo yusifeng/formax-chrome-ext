@@ -58,6 +58,18 @@ const EXTENSION_ACTION_PARAM_SPECS = {
         extParam("url", "string"),
         extParam("reset", "boolean")
     ],
+    getPendingApprovals: [
+        extParam("sessionId", "string"),
+        extParam("kind", "string"),
+        extParam("includeResolved", "boolean"),
+        extParam("limit", "number")
+    ],
+    resolveApproval: [
+        extParam("approvalId", "string", true),
+        extParam("decision", "string", true),
+        extParam("policyDecision", "string"),
+        extParam("sessionId", "string")
+    ],
     startSession: [
         extParam("sessionId", "string", true),
         extParam("turnId", "string"),
@@ -495,11 +507,15 @@ const EXTENSION_ACTION_PARAM_ENUMS = {
         kind: [
             "count",
             "allTextContents",
+            "allInnerTexts",
             "textContent",
             "innerText",
             "getAttribute",
             "isVisible",
+            "isHidden",
             "isEnabled",
+            "isDisabled",
+            "isEditable",
             "inputValue",
             "isChecked",
             "boundingBox"
@@ -509,14 +525,22 @@ const EXTENSION_ACTION_PARAM_ENUMS = {
         kind: [
             "click",
             "dblclick",
+            "dragTo",
             "fill",
             "type",
             "press",
             "clear",
             "focus",
+            "blur",
+            "scrollIntoViewIfNeeded",
+            "selectText",
             "hover",
+            "highlight",
             "setChecked",
-            "selectOption"
+            "selectOption",
+            "evaluate",
+            "evaluateAll",
+            "dispatchEvent"
         ]
     },
     locatorWait: {
@@ -555,6 +579,7 @@ const EXTENSION_LOCATOR_PARAM_SPECS = [
     extParam("name", "string"),
     extParam("testId", "string"),
     extParam("frameSelectors", "stringArray"),
+    extParam("within", "locator"),
     extParam("and", "locator"),
     extParam("or", "locator"),
     extParam("has", "locator"),
@@ -639,7 +664,7 @@ function validateExtensionLocator(action, path, value) {
     }
     validateExtensionParamSpecs(action, path, value, EXTENSION_LOCATOR_PARAM_SPECS);
     validateExtensionParamEnums(path, value, {
-        kind: ["css", "text", "role", "label", "placeholder", "testId"]
+        kind: ["css", "text", "role", "label", "placeholder", "testId", "altText", "title", "displayValue"]
     });
 }
 function validateExtensionNumberArray(path, value) {

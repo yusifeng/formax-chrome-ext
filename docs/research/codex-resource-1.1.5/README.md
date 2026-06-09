@@ -13,6 +13,10 @@ for protocol shape, lifecycle behavior, and feature parity decisions.
 - `popup.pretty.js`: esbuild-formatted popup chunk, mostly UI.
 - `manifest.json`: copied manifest for permission/resource comparison.
 - `keyword-index.tsv`: grep-like index of important browser-control symbols.
+- `background-control-map.md`: implementation-oriented map from Codex
+  background sections to Formax files and parity priorities.
+- `background-page-control-guide.md`: code-writing guide for the actual
+  page-control path in Codex background, with line ranges and Formax anchors.
 
 ## High-Value Background Sections
 
@@ -41,6 +45,9 @@ for protocol shape, lifecycle behavior, and feature parity decisions.
   request maps, and status publication.
 - `background.pretty.js:3862`: top-level listener registration: runtime messages,
   debugger events, downloads, and app/native initialization.
+- `background-page-control-guide.md`: start here when implementing a concrete
+  page-control feature; it narrows the background bundle into actionable line
+  ranges and Formax files.
 
 ## High-Value Content Sections
 
@@ -58,6 +65,9 @@ for protocol shape, lifecycle behavior, and feature parity decisions.
 - The user's intuition is mostly right: page-control behavior is concentrated in
   the extension. Native host and SDK layers mainly carry commands, validate them,
   and expose ergonomic object APIs.
+- Use `background-control-map.md` before implementing browser-control changes.
+  It maps the Codex background sections to Formax implementation files and
+  avoids re-deriving architecture from the minified bundle each time.
 - Codex's extension is split between background orchestration and content-script
   visual feedback. The actual browser/page control is background + CDP; the
   content script handles cursor/favicons/status.
@@ -67,6 +77,9 @@ for protocol shape, lifecycle behavior, and feature parity decisions.
   finalization.
 - Next high-value Formax alignment targets should be chosen by comparing these
   sections, not by guessing from public docs alone.
+- The background guide is the practical reference for that comparison. It keeps
+  the Codex architecture close without copying Codex implementation blocks into
+  Formax.
 
 ## Suggested Next Alignment Targets
 

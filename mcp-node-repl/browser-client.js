@@ -25,6 +25,34 @@ export class BrowserStrictModeError extends Error {
         this.count = count;
     }
 }
+export class BrowserActionabilityError extends Error {
+    code = "locator_actionability";
+    selector;
+    action;
+    reason;
+    details;
+    constructor(selector, action, reason, details) {
+        super(`Locator ${selector} was not actionable for ${action}: ${reason}.`);
+        this.name = "BrowserActionabilityError";
+        this.selector = selector;
+        this.action = action;
+        this.reason = reason;
+        this.details = details;
+    }
+}
+export class BrowserDomCuaStaleNodeError extends Error {
+    code = "dom_cua_stale_node";
+    operation;
+    nodeId;
+    details;
+    constructor(operation, nodeId, details) {
+        super(`${operation} could not find node_id "${nodeId}" in the latest visible DOM snapshot. Refresh tab.dom_cua.get_visible_dom() and retry with a current node_id.`);
+        this.name = "BrowserDomCuaStaleNodeError";
+        this.operation = operation;
+        this.nodeId = nodeId;
+        this.details = details;
+    }
+}
 const noDefaultActions = new Set([
     "browser_health",
     "browser_get_events",
@@ -32,6 +60,8 @@ const noDefaultActions = new Set([
     "browser_wait_for_event",
     "browser_get_policy",
     "browser_update_policy",
+    "browser_get_pending_approvals",
+    "browser_resolve_approval",
     "browser_start_session",
     "browser_name_session",
     "browser_user_open_tabs",
@@ -184,6 +214,11 @@ export function createBrowserClient(options = {}) {
         getDiagnostics: (args = {}) => result("browser_get_diagnostics", args),
         getPolicy: (args = {}) => result("browser_get_policy", args),
         updatePolicy: (args = {}) => result("browser_update_policy", args),
+        getPendingApprovals: async (args = {}) => {
+            const pending = await result("browser_get_pending_approvals", args);
+            return pending.approvals ?? [];
+        },
+        resolveApproval: (args) => result("browser_resolve_approval", args),
         startSession: (args = {}) => result("browser_start_session", withPreferredSession(state, args)),
         nameSession: (nameOrArgs, args = {}) => result("browser_name_session", withCurrentSession(state, stringArg("name", nameOrArgs, args))),
         claimTab: (args = {}) => result("browser_claim_tab", withPreferredSession(state, args)),
@@ -296,13 +331,15 @@ async function writeScreenshotOutput(screenshot, outputPath) {
     };
 }
 function elementScreenshotQueryArgs(args) {
+    const options = withTimeoutAlias(args, "element.screenshot.timeout");
     return cleanObject({
-        timeoutMs: optionalNumber(args.timeoutMs, "element.screenshot.timeoutMs")
+        timeoutMs: optionalNumber(options.timeoutMs, "element.screenshot.timeoutMs")
     });
 }
 function locatorCountQueryArgs(args) {
+    const options = withTimeoutAlias(args, "locator.count.timeout");
     return cleanObject({
-        timeoutMs: optionalNumber(args.timeoutMs, "locator.count.timeoutMs")
+        timeoutMs: optionalNumber(options.timeoutMs, "locator.count.timeoutMs")
     });
 }
 function locatorAllLimit(value) {
@@ -318,11 +355,45 @@ function locatorAllLimit(value) {
 function locatorActionOptions(args) {
     return cleanObject({
         force: typeof args.force === "boolean" ? args.force : undefined,
+        trial: typeof args.trial === "boolean" ? args.trial : undefined,
         button: typeof args.button === "string" ? args.button : undefined,
         clickCount: optionalNumber(args.clickCount, "locator.action.clickCount"),
         confirmed: typeof args.confirmed === "boolean" ? args.confirmed : undefined,
         confirmationId: typeof args.confirmationId === "string" ? args.confirmationId : undefined
     });
+}
+function normalizeSelectOptionValue(value, label) {
+    if (value == null) {
+        return {};
+    }
+    if (typeof value === "string") {
+        return { value, label: value };
+    }
+    if (typeof value !== "object" || Array.isArray(value)) {
+        throw new Error(`${label} must be a string, option object, option object array, string array, or null.`);
+    }
+    const source = objectArg(value);
+    const option = cleanObject({
+        value: typeof source.value === "string" ? source.value : undefined,
+        label: typeof source.label === "string" ? source.label : undefined,
+        index: source.index === undefined ? undefined : Math.max(0, Math.floor(Number(source.index)))
+    });
+    if (option.index !== undefined && !Number.isFinite(option.index)) {
+        throw new Error(`${label}.index must be a finite number.`);
+    }
+    if (option.value === undefined && option.label === undefined && option.index === undefined) {
+        throw new Error(`${label} must include value, label, or index.`);
+    }
+    return option;
+}
+function selectOptionActionArgs(value) {
+    if (value == null) {
+        return { options: [] };
+    }
+    const values = Array.isArray(value) ? value : [value];
+    return {
+        options: values.map((item, index) => normalizeSelectOptionValue(item, `locator.selectOption.options[${index}]`))
+    };
 }
 function locatorPlanFilterOptions(args, label) {
     const filters = {};
@@ -503,25 +574,25 @@ class TabHandleImpl {
     }
     async waitForLoadState(stateOrArgs = "load", args = {}) {
         this.assertOpen();
-        const params = stringArg("state", stateOrArgs, args);
+        const params = withTimeoutAlias(stringArg("state", stateOrArgs, args), "waitForLoadState.timeout");
         const result = await this.transport.result("browser_wait_for_load_state", this.targetArgs(stripClientOptions(params)));
         return assertWaitResult(result, "waitForLoadState", params.soft === true);
     }
     async waitForUrl(matchOrArgs, args = {}) {
         this.assertOpen();
-        const params = normalizeUrlMatcher(matchOrArgs, args);
+        const params = withTimeoutAlias(normalizeUrlMatcher(matchOrArgs, args), "waitForUrl.timeout");
         const result = await this.transport.result("browser_wait_for_url", this.targetArgs(stripClientOptions(params)));
         return assertWaitResult(result, "waitForUrl", params.soft === true);
     }
     async waitForSelector(selectorOrArgs, args = {}) {
         this.assertOpen();
-        const params = stringArg("selector", selectorOrArgs, args);
+        const params = withTimeoutAlias(stringArg("selector", selectorOrArgs, args), "waitForSelector.timeout");
         const result = await this.transport.result("browser_wait_for_selector", this.targetArgs(stripClientOptions(params)));
         return assertWaitResult(result, "waitForSelector", params.soft === true);
     }
     async waitForText(textOrArgs, args = {}) {
         this.assertOpen();
-        const params = stringArg("text", textOrArgs, args);
+        const params = withTimeoutAlias(stringArg("text", textOrArgs, args), "waitForText.timeout");
         const result = await this.transport.result("browser_wait_for_text", this.targetArgs(stripClientOptions(params)));
         return assertWaitResult(result, "waitForText", params.soft === true);
     }
@@ -575,6 +646,27 @@ class TabHandleImpl {
         return new LocatorHandleImpl(this.transport, this, requireNonEmptyString(testId, "getByTestId.testId"), {
             ...args,
             plan: { kind: "testId", testId, exact: args.exact === true }
+        });
+    }
+    getByAltText(text, args = {}) {
+        this.assertOpen();
+        return new LocatorHandleImpl(this.transport, this, requireNonEmptyString(text, "getByAltText.text"), {
+            ...args,
+            plan: { kind: "altText", text, exact: args.exact === true }
+        });
+    }
+    getByTitle(text, args = {}) {
+        this.assertOpen();
+        return new LocatorHandleImpl(this.transport, this, requireNonEmptyString(text, "getByTitle.text"), {
+            ...args,
+            plan: { kind: "title", text, exact: args.exact === true }
+        });
+    }
+    getByDisplayValue(text, args = {}) {
+        this.assertOpen();
+        return new LocatorHandleImpl(this.transport, this, requireNonEmptyString(text, "getByDisplayValue.text"), {
+            ...args,
+            plan: { kind: "displayValue", text, exact: args.exact === true }
         });
     }
     frameLocator(selector) {
@@ -715,13 +807,78 @@ class LocatorHandleImpl {
             };
     }
     locator(childSelector, args = {}) {
-        if (this.plan.kind !== "css") {
-            throw new Error("Locator chaining is currently only supported for CSS locators.");
-        }
         const child = requireNonEmptyString(childSelector, "locator.childSelector");
-        return new LocatorHandleImpl(this.transport, this.tab, `${this.selector} ${child}`, {
+        return this.scopedLocator(child, {
+            kind: "css",
+            selector: child
+        }, args);
+    }
+    getByText(text, args = {}) {
+        return this.scopedLocator(requireNonEmptyString(text, "locator.getByText.text"), {
+            kind: "text",
+            text,
+            exact: args.exact === true
+        }, args);
+    }
+    getByRole(role, args = {}) {
+        return this.scopedLocator(requireNonEmptyString(role, "locator.getByRole.role"), {
+            kind: "role",
+            role,
+            name: typeof args.name === "string" ? args.name : undefined,
+            exact: args.exact === true
+        }, args);
+    }
+    getByLabel(text, args = {}) {
+        return this.scopedLocator(requireNonEmptyString(text, "locator.getByLabel.text"), {
+            kind: "label",
+            text,
+            exact: args.exact === true
+        }, args);
+    }
+    getByPlaceholder(text, args = {}) {
+        return this.scopedLocator(requireNonEmptyString(text, "locator.getByPlaceholder.text"), {
+            kind: "placeholder",
+            text,
+            exact: args.exact === true
+        }, args);
+    }
+    getByTestId(testId, args = {}) {
+        return this.scopedLocator(requireNonEmptyString(testId, "locator.getByTestId.testId"), {
+            kind: "testId",
+            testId,
+            exact: args.exact === true
+        }, args);
+    }
+    getByAltText(text, args = {}) {
+        return this.scopedLocator(requireNonEmptyString(text, "locator.getByAltText.text"), {
+            kind: "altText",
+            text,
+            exact: args.exact === true
+        }, args);
+    }
+    getByTitle(text, args = {}) {
+        return this.scopedLocator(requireNonEmptyString(text, "locator.getByTitle.text"), {
+            kind: "title",
+            text,
+            exact: args.exact === true
+        }, args);
+    }
+    getByDisplayValue(text, args = {}) {
+        return this.scopedLocator(requireNonEmptyString(text, "locator.getByDisplayValue.text"), {
+            kind: "displayValue",
+            text,
+            exact: args.exact === true
+        }, args);
+    }
+    scopedLocator(selector, plan, args = {}) {
+        return new LocatorHandleImpl(this.transport, this.tab, selector, {
             ...args,
-            strict: args.strict ?? this.strict
+            strict: args.strict ?? this.strict,
+            plan: {
+                ...plan,
+                within: this.plan,
+                frameSelectors: this.plan.frameSelectors
+            }
         });
     }
     filter(args = {}) {
@@ -780,7 +937,8 @@ class LocatorHandleImpl {
         return Array.from({ length: total }, (_item, index) => this.nth(index));
     }
     async waitFor(args = {}) {
-        const result = await this.transport.result("browser_locator_wait", this.targetArgs(stripClientOptions(args)));
+        const options = withTimeoutAlias(args, "locator.waitFor.timeout");
+        const result = await this.transport.result("browser_locator_wait", this.targetArgs(stripClientOptions(options)));
         return assertWaitResult(result, "locator.waitFor", args.soft === true);
     }
     async count(args = {}) {
@@ -788,6 +946,10 @@ class LocatorHandleImpl {
     }
     async allTextContents(args = {}) {
         const value = (await this.query("allTextContents", args)).value;
+        return Array.isArray(value) ? value.map((item) => String(item)) : [];
+    }
+    async allInnerTexts(args = {}) {
+        const value = (await this.query("allInnerTexts", args)).value;
         return Array.isArray(value) ? value.map((item) => String(item)) : [];
     }
     async textContent(args = {}) {
@@ -811,8 +973,17 @@ class LocatorHandleImpl {
     async isVisible(args = {}) {
         return (await this.query("isVisible", args)).value === true;
     }
+    async isHidden(args = {}) {
+        return (await this.query("isHidden", args)).value === true;
+    }
     async isEnabled(args = {}) {
         return (await this.query("isEnabled", args)).value === true;
+    }
+    async isDisabled(args = {}) {
+        return (await this.query("isDisabled", args)).value === true;
+    }
+    async isEditable(args = {}) {
+        return (await this.query("isEditable", args)).value === true;
     }
     async inputValue(args = {}) {
         const value = (await this.query("inputValue", args)).value;
@@ -823,6 +994,38 @@ class LocatorHandleImpl {
     }
     async boundingBox(args = {}) {
         return (await this.query("boundingBox", args)).value ?? null;
+    }
+    async evaluate(scriptOrFunction, argOrOptions, options = {}) {
+        const evaluateOptions = typeof scriptOrFunction === "function"
+            ? options
+            : objectArg(argOrOptions);
+        const argument = typeof scriptOrFunction === "function" ? argOrOptions : evaluateOptions.arg;
+        const result = await this.action("evaluate", {
+            script: typeof scriptOrFunction === "function"
+                ? serializeLocatorPageFunction(scriptOrFunction)
+                : requireNonEmptyString(scriptOrFunction, "locator.evaluate.script"),
+            ...(argument !== undefined ? { argument } : {})
+        }, evaluateOptions);
+        return (objectArg(result).value ?? null);
+    }
+    async evaluateAll(scriptOrFunction, argOrOptions, options = {}) {
+        const evaluateOptions = typeof scriptOrFunction === "function"
+            ? options
+            : objectArg(argOrOptions);
+        const argument = typeof scriptOrFunction === "function" ? argOrOptions : evaluateOptions.arg;
+        const result = await this.action("evaluateAll", {
+            script: typeof scriptOrFunction === "function"
+                ? serializeLocatorPageFunction(scriptOrFunction)
+                : requireNonEmptyString(scriptOrFunction, "locator.evaluateAll.script"),
+            ...(argument !== undefined ? { argument } : {})
+        }, evaluateOptions);
+        return (objectArg(result).value ?? null);
+    }
+    dispatchEvent(type, eventInit = {}, args = {}) {
+        return this.action("dispatchEvent", {
+            type: requireNonEmptyString(type, "locator.dispatchEvent.type"),
+            eventInit: objectArg(eventInit)
+        }, args);
     }
     async screenshot(args = {}) {
         const box = await this.boundingBox(elementScreenshotQueryArgs(args));
@@ -835,6 +1038,11 @@ class LocatorHandleImpl {
     dblclick(args = {}) {
         return this.action("dblclick", {}, args);
     }
+    dragTo(target, args = {}) {
+        return this.action("dragTo", {
+            targetLocator: locatorPlanFromFilterTarget(target, "locator.dragTo.target")
+        }, args);
+    }
     check(args = {}) {
         return this.setChecked(true, args);
     }
@@ -844,8 +1052,24 @@ class LocatorHandleImpl {
     hover(args = {}) {
         return this.action("hover", {}, args);
     }
+    highlight(args = {}) {
+        return this.action("highlight", {
+            ...(typeof args.color === "string" ? { color: args.color } : {}),
+            ...(typeof args.durationMs === "number" ? { durationMs: args.durationMs } : {}),
+            ...(typeof args.highlightDurationMs === "number" ? { highlightDurationMs: args.highlightDurationMs } : {})
+        }, args);
+    }
     focus(args = {}) {
         return this.action("focus", {}, args);
+    }
+    blur(args = {}) {
+        return this.action("blur", {}, args);
+    }
+    scrollIntoViewIfNeeded(args = {}) {
+        return this.action("scrollIntoViewIfNeeded", {}, args);
+    }
+    selectText(args = {}) {
+        return this.action("selectText", {}, args);
     }
     clear(args = {}) {
         return this.action("clear", {}, args);
@@ -869,8 +1093,7 @@ class LocatorHandleImpl {
         return this.action("setChecked", { checked }, args);
     }
     selectOption(value, args = {}) {
-        const actionArgs = Array.isArray(value) ? { values: value } : { value };
-        return this.action("selectOption", actionArgs, args);
+        return this.action("selectOption", selectOptionActionArgs(value), args);
     }
     setInputFiles(filePath, args = {}) {
         return this.transport.result("browser_upload_file", {
@@ -898,22 +1121,30 @@ class LocatorHandleImpl {
         };
     }
     async query(kind, args = {}) {
+        const options = withTimeoutAlias(args, `locator.${kind}.timeout`);
         return this.transport.result("browser_locator_query", this.targetArgs({
-            ...stripClientOptions(args),
+            ...stripClientOptions(options),
             kind
         }));
     }
     async action(kind, actionArgs, args = {}) {
+        const options = withTimeoutAlias(args, `locator.${kind}.timeout`);
         await this.assertStrictIfNeeded(args);
-        return this.transport.result("browser_locator_action", this.targetArgs({
-            kind,
-            waitMs: args.waitMs,
-            args: {
-                ...actionArgs,
-                ...locatorActionOptions(args),
-                ...objectArg(args.actionArgs)
-            }
-        }));
+        try {
+            return await this.transport.result("browser_locator_action", this.targetArgs({
+                kind,
+                waitMs: options.waitMs,
+                timeoutMs: options.timeoutMs,
+                args: {
+                    ...actionArgs,
+                    ...locatorActionOptions(options),
+                    ...objectArg(options.actionArgs)
+                }
+            }));
+        }
+        catch (error) {
+            throw mapLocatorBackendError(error, this.selector, kind);
+        }
     }
     async assertStrictIfNeeded(args) {
         if (args.strict !== true && this.strict !== true) {
@@ -986,6 +1217,24 @@ class FrameLocatorHandleImpl {
             plan: { kind: "testId", testId, exact: args.exact === true, frameSelectors: this.frameSelectors }
         });
     }
+    getByAltText(text, args = {}) {
+        return new LocatorHandleImpl(this.transport, this.tab, requireNonEmptyString(text, "frameLocator.getByAltText.text"), {
+            ...args,
+            plan: { kind: "altText", text, exact: args.exact === true, frameSelectors: this.frameSelectors }
+        });
+    }
+    getByTitle(text, args = {}) {
+        return new LocatorHandleImpl(this.transport, this.tab, requireNonEmptyString(text, "frameLocator.getByTitle.text"), {
+            ...args,
+            plan: { kind: "title", text, exact: args.exact === true, frameSelectors: this.frameSelectors }
+        });
+    }
+    getByDisplayValue(text, args = {}) {
+        return new LocatorHandleImpl(this.transport, this.tab, requireNonEmptyString(text, "frameLocator.getByDisplayValue.text"), {
+            ...args,
+            plan: { kind: "displayValue", text, exact: args.exact === true, frameSelectors: this.frameSelectors }
+        });
+    }
     frameLocator(selector) {
         return new FrameLocatorHandleImpl(this.transport, this.tab, [
             ...this.frameSelectors,
@@ -993,12 +1242,13 @@ class FrameLocatorHandleImpl {
         ]);
     }
     resolve(args = {}) {
+        const options = withTimeoutAlias(args, "frameLocator.resolve.timeout");
         return this.transport.result("browser_resolve_frame", {
             sessionId: this.tab.sessionId,
             tabId: this.tab.tabId,
             frameSelectors: this.frameSelectors,
-            ...(typeof args.targetId === "string" ? { targetId: args.targetId } : {}),
-            ...(typeof args.timeoutMs === "number" ? { timeoutMs: args.timeoutMs } : {})
+            ...(typeof options.targetId === "string" ? { targetId: options.targetId } : {}),
+            ...(typeof options.timeoutMs === "number" ? { timeoutMs: options.timeoutMs } : {})
         });
     }
     async evaluate(scriptOrFunction, argOrOptions, options = {}) {
@@ -1033,12 +1283,17 @@ class FrameLocatorHandleImpl {
 }
 function createTabPlaywrightFacade(tab) {
     return {
+        keyboard: createTabPlaywrightKeyboardFacade(tab),
+        mouse: createTabPlaywrightMouseFacade(tab),
         locator: (selector, args = {}) => tab.locator(selector, args),
         getByText: (text, args = {}) => tab.getByText(text, args),
         getByRole: (role, args = {}) => tab.getByRole(role, args),
         getByLabel: (text, args = {}) => tab.getByLabel(text, args),
         getByPlaceholder: (text, args = {}) => tab.getByPlaceholder(text, args),
         getByTestId: (testId, args = {}) => tab.getByTestId(testId, args),
+        getByAltText: (text, args = {}) => tab.getByAltText(text, args),
+        getByTitle: (text, args = {}) => tab.getByTitle(text, args),
+        getByDisplayValue: (text, args = {}) => tab.getByDisplayValue(text, args),
         frameLocator: (selector) => tab.frameLocator(selector),
         evaluate: (scriptOrFunction, argOrOptions, options = {}) => {
             if (typeof scriptOrFunction === "function") {
@@ -1085,12 +1340,44 @@ function createTabPlaywrightFacade(tab) {
         expectNavigation: (actionOrArgs = {}, args = {}) => expectNavigationForAction(tab, actionOrArgs, args)
     };
 }
+function createTabPlaywrightKeyboardFacade(tab) {
+    return {
+        press: (key, args = {}) => tab.pressKey(keypressArg(key, args, "tab.playwright.keyboard.press")),
+        type: (text, args = {}) => tab.type({
+            ...args,
+            text: requireTextString(text, "tab.playwright.keyboard.type.text")
+        }),
+        insertText: (text, args = {}) => tab.type({
+            ...args,
+            text: requireTextString(text, "tab.playwright.keyboard.insertText.text")
+        })
+    };
+}
+function createTabPlaywrightMouseFacade(tab) {
+    return {
+        click: (x, y, args = {}) => tab.click(mousePointArgs(x, y, args, "tab.playwright.mouse.click")),
+        dblclick: (x, y, args = {}) => tab.click({
+            ...mousePointArgs(x, y, args, "tab.playwright.mouse.dblclick"),
+            clickCount: 2
+        }),
+        move: (x, y, args = {}) => tab.moveMouse(mousePointArgs(x, y, args, "tab.playwright.mouse.move")),
+        wheel: (deltaX, deltaY, args = {}) => tab.scroll({
+            ...args,
+            deltaX: requireNumber(deltaX, "tab.playwright.mouse.wheel.deltaX"),
+            deltaY: requireNumber(deltaY, "tab.playwright.mouse.wheel.deltaY")
+        }),
+        drag: (path, args = {}) => tab.drag({
+            ...args,
+            path
+        })
+    };
+}
 async function expectNavigationForAction(tab, actionOrArgs = {}, args = {}) {
     if (typeof actionOrArgs !== "function") {
         const state = typeof actionOrArgs.state === "string" ? actionOrArgs.state : "load";
-        return tab.waitForLoadState(state, withoutKeys(actionOrArgs, ["state"]));
+        return tab.waitForLoadState(state, withoutKeys(withTimeoutAlias(actionOrArgs, "tab.playwright.expectNavigation.timeout"), ["state"]));
     }
-    const options = objectArg(args);
+    const options = withTimeoutAlias(objectArg(args), "tab.playwright.expectNavigation.timeout");
     const navigationPromise = waitForExpectedNavigation(tab, options);
     let actionResult;
     try {
@@ -1107,7 +1394,8 @@ async function expectNavigationForAction(tab, actionOrArgs = {}, args = {}) {
     };
 }
 async function waitForExpectedNavigation(tab, options) {
-    const timeoutMs = optionalNumber(options.timeoutMs, "tab.playwright.expectNavigation.timeoutMs") ?? 15000;
+    const normalizedOptions = withTimeoutAlias(options, "tab.playwright.expectNavigation.timeout");
+    const timeoutMs = optionalNumber(normalizedOptions.timeoutMs, "tab.playwright.expectNavigation.timeoutMs") ?? 15000;
     const waitUntil = typeof options.waitUntil === "string"
         ? options.waitUntil
         : typeof options.state === "string"
@@ -1117,14 +1405,14 @@ async function waitForExpectedNavigation(tab, options) {
         typeof options.urlContains === "string" ||
         typeof options.urlRegex === "string") {
         return tab.waitForUrl(withoutKeys({
-            ...options,
+            ...normalizedOptions,
             waitUntil,
             timeoutMs
         }, ["state"]));
     }
     const startedAt = Date.now();
     const commit = await tab.waitForLoadState("commit", {
-        ...withoutKeys(options, ["state", "waitUntil"]),
+        ...withoutKeys(normalizedOptions, ["state", "waitUntil"]),
         timeoutMs
     });
     if (waitUntil === "commit") {
@@ -1134,7 +1422,7 @@ async function waitForExpectedNavigation(tab, options) {
     }
     const remainingMs = Math.max(0, timeoutMs - (Date.now() - startedAt));
     const loadState = await tab.waitForLoadState(waitUntil, {
-        ...withoutKeys(options, ["state", "waitUntil"]),
+        ...withoutKeys(normalizedOptions, ["state", "waitUntil"]),
         timeoutMs: remainingMs
     });
     return {
@@ -1211,16 +1499,70 @@ function createTabClipboardFacade(tab) {
                 tabId: tab.tabId
             });
             const result = objectArg(envelope.result);
-            return Array.isArray(result.items) ? result.items : [];
+            return Array.isArray(result.items) ? enrichClipboardItems(result.items) : [];
         },
         write: async (items, args = {}) => {
             return tab.browser.tool("browser_clipboard_write", {
                 ...args,
                 sessionId: tab.sessionId,
                 tabId: tab.tabId,
-                items
+                items: normalizeClipboardWriteItems(items)
             });
         }
+    };
+}
+function enrichClipboardItems(items) {
+    return items.map((item) => {
+        const source = objectArg(item);
+        const types = Array.isArray(source.types)
+            ? source.types.map((payload) => enrichClipboardPayload(payload))
+            : [];
+        return {
+            ...source,
+            types
+        };
+    });
+}
+function enrichClipboardPayload(payload) {
+    const source = objectArg(payload);
+    const mimeType = typeof source.mimeType === "string" ? source.mimeType : null;
+    const dataBase64 = typeof source.dataBase64 === "string" ? source.dataBase64 : null;
+    return cleanObject({
+        ...source,
+        ...(mimeType && dataBase64 ? { dataUrl: `data:${mimeType};base64,${dataBase64}` } : {})
+    });
+}
+function normalizeClipboardWriteItems(items) {
+    if (!Array.isArray(items)) {
+        throw new Error("tab.clipboard.write(items) requires an item array.");
+    }
+    return items.map((item, itemIndex) => {
+        const source = objectArg(item);
+        const types = Array.isArray(source.types)
+            ? source.types.map((payload, typeIndex) => normalizeClipboardWritePayload(payload, `tab.clipboard.write.items[${itemIndex}].types[${typeIndex}]`))
+            : [];
+        return {
+            ...source,
+            types
+        };
+    });
+}
+function normalizeClipboardWritePayload(payload, label) {
+    const source = objectArg(payload);
+    const dataUrl = typeof source.dataUrl === "string" ? parseClipboardDataUrl(source.dataUrl, label) : null;
+    return cleanObject({
+        ...withoutKeys(source, ["dataUrl"]),
+        ...(dataUrl ? { mimeType: dataUrl.mimeType, dataBase64: dataUrl.dataBase64 } : {})
+    });
+}
+function parseClipboardDataUrl(value, label) {
+    const match = /^data:([^;,]+(?:\/[^;,]+)?)(?:;[^,]*)?;base64,([A-Za-z0-9+/=]+)$/.exec(value.trim());
+    if (!match) {
+        throw new Error(`${label}.dataUrl must be a base64 data URL.`);
+    }
+    return {
+        mimeType: match[1],
+        dataBase64: match[2]
     };
 }
 function serializePageFunction(fn, arg) {
@@ -1233,6 +1575,9 @@ function serializePageFunction(fn, arg) {
         throw new Error("tab.playwright.evaluate function arguments must be JSON-serializable.");
     }
     return `(${source})(${serializedArg})`;
+}
+function serializeLocatorPageFunction(fn) {
+    return fn.toString();
 }
 function cuaClickArgs(args = {}, extra = {}) {
     return cleanObject({
@@ -1296,6 +1641,19 @@ function cuaKeyArg(args = {}, label = "tab.cua.keypress") {
         waitMs: optionalNumber(args.waitMs, `${label}.waitMs`)
     });
 }
+function keypressArg(key, args = {}, label = "keypress") {
+    return cleanObject({
+        ...args,
+        key: normalizeSingleKey(key, `${label}.key`)
+    });
+}
+function mousePointArgs(x, y, args = {}, label = "mouse") {
+    return cleanObject({
+        ...args,
+        x: requireNumber(x, `${label}.x`),
+        y: requireNumber(y, `${label}.y`)
+    });
+}
 function domCuaTargetArgs(args = {}, extra = {}) {
     const target = domCuaTarget(args);
     return cleanObject({
@@ -1350,7 +1708,14 @@ async function domCuaNodeFromLatestSnapshot(tab, args, label, required = false) 
     const snapshot = await visibleDomSnapshotForDomCua(tab);
     const node = snapshot.nodes.find((candidate) => candidate.node_id === nodeId || candidate.ref === nodeId);
     if (!node) {
-        throw new Error(`${label} could not find node_id "${nodeId}" in the latest visible DOM snapshot.`);
+        throw new BrowserDomCuaStaleNodeError(label, nodeId, {
+            sessionId: snapshot.sessionId,
+            tabId: snapshot.tabId,
+            url: snapshot.url,
+            title: snapshot.title,
+            availableNodeIds: snapshot.nodes.map((candidate) => candidate.node_id).filter(Boolean).slice(0, 25),
+            availableRefs: snapshot.nodes.map((candidate) => candidate.ref).filter(Boolean).slice(0, 25)
+        });
     }
     return node;
 }
@@ -1531,7 +1896,25 @@ function normalizeKeyCombo(parts, label) {
         PgDown: "PageDown",
         Return: "Enter",
         Apps: "ContextMenu",
-        Menu: "ContextMenu"
+        Menu: "ContextMenu",
+        VolumeMute: "AudioVolumeMute",
+        VolumeDown: "AudioVolumeDown",
+        VolumeUp: "AudioVolumeUp",
+        MediaNextTrack: "MediaTrackNext",
+        MediaPreviousTrack: "MediaTrackPrevious",
+        MediaPrevTrack: "MediaTrackPrevious",
+        MediaPlay: "MediaPlayPause",
+        MediaPause: "MediaPlayPause",
+        NumpadPlus: "NumpadAdd",
+        NumpadMinus: "NumpadSubtract",
+        NumpadStar: "NumpadMultiply",
+        NumpadSlash: "NumpadDivide",
+        NumpadDot: "NumpadDecimal",
+        Decimal: "NumpadDecimal",
+        Multiply: "NumpadMultiply",
+        Add: "NumpadAdd",
+        Subtract: "NumpadSubtract",
+        Divide: "NumpadDivide"
     };
     const baseKeys = [
         "Enter",
@@ -1554,7 +1937,32 @@ function normalizeKeyCombo(parts, label) {
         "NumLock",
         "ScrollLock",
         "ContextMenu",
-        ...Array.from({ length: 12 }, (_value, index) => `F${index + 1}`),
+        "Convert",
+        "NonConvert",
+        "KanaMode",
+        "HangulMode",
+        "HanjaMode",
+        "JunjaMode",
+        "FinalMode",
+        "ModeChange",
+        "Process",
+        "Compose",
+        "AudioVolumeMute",
+        "AudioVolumeDown",
+        "AudioVolumeUp",
+        "MediaTrackNext",
+        "MediaTrackPrevious",
+        "MediaStop",
+        "MediaPlayPause",
+        ...Array.from({ length: 10 }, (_value, index) => `Numpad${index}`),
+        "NumpadEnter",
+        "NumpadAdd",
+        "NumpadSubtract",
+        "NumpadMultiply",
+        "NumpadDivide",
+        "NumpadDecimal",
+        "NumpadEqual",
+        ...Array.from({ length: 24 }, (_value, index) => `F${index + 1}`),
         ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ".split(""),
         ..."abcdefghijklmnopqrstuvwxyz".split(""),
         ..."0123456789".split(""),
@@ -1844,15 +2252,26 @@ function enrichDownloadMediaResult(result) {
 function enrichDownloadSummary(download) {
     const source = objectArg(download);
     const suggestedFilename = downloadSuggestedFilename(source);
-    const localPath = source.state === "complete" && typeof source.filename === "string" && source.filename
-        ? source.filename
+    const id = typeof source.id === "number"
+        ? source.id
+        : typeof source.downloadId === "number"
+            ? source.downloadId
+            : typeof source.download_id === "number"
+                ? source.download_id
+                : undefined;
+    const normalized = {
+        ...source,
+        ...(id != null ? { id, downloadId: id, download_id: id } : {})
+    };
+    const localPath = normalized.state === "complete" && typeof normalized.filename === "string" && normalized.filename
+        ? normalized.filename
         : null;
     return {
-        ...source,
+        ...normalized,
         suggestedFilename: () => suggestedFilename,
         path: () => localPath,
         toJSON: () => ({
-            ...source,
+            ...normalized,
             suggestedFilename,
             path: localPath
         })
@@ -1888,6 +2307,11 @@ function createPolicyFacade(transport) {
     return {
         get: (args = {}) => transport.result("browser_get_policy", args),
         update: (args = {}) => transport.result("browser_update_policy", args),
+        pending: async (args = {}) => {
+            const result = await transport.result("browser_get_pending_approvals", args);
+            return result.approvals ?? [];
+        },
+        resolve: (args) => transport.result("browser_resolve_approval", args),
         allowHost: (hostOrUrl, args = {}) => transport.result("browser_update_policy", {
             ...args,
             decision: "allow",
@@ -2005,6 +2429,30 @@ function createDocumentationFacade(runtime) {
                 "const tab = await browser.tabs.new('https://www.baidu.com')",
                 "const tabs = await browser.user.openTabs({ currentWindow: true })",
                 "const tab = await browser.user.claimTab(tabs[0])"
+            ]
+        }),
+        browserUse: () => ({
+            mcpSurface: "Expose only the node_repl JavaScript tool surface to the model. Import the Formax browser SDK inside that persistent runtime and use the object API for all browser work.",
+            decisionFlow: [
+                "Use structured connectors, APIs, CLIs, or file parsers before Chrome when they can satisfy the task.",
+                "Use the Chrome extension backend only when the task needs the user's real Chrome profile, cookies, logged-in state, installed extensions, or currently open tabs.",
+                "Reuse or claim one working tab unless the user explicitly asks for multiple tabs.",
+                "Wait for the required page state, then observe or inspect before acting.",
+                "Prefer semantic locators, then scoped locators, then CSS, then observed refs, and use coordinates only as a last resort.",
+                "Verify each meaningful action from URL, title, DOM text, events, or screenshot.",
+                "Finalize handoff/deliverable tabs or stop the session as the final browser action."
+            ],
+            approvals: [
+                "Never bypass host, confirmation, or origin approval with raw CDP or evaluate.",
+                "When an action returns requires_host_approval, confirmation_required, or origin_approval_required, inspect browser.policy.pending(), summarize the pending approval to the user, then call browser.policy.resolve() only after the user decides.",
+                "Browser history and clipboard reads/writes require explicit confirmation for every request and have no always-allow path.",
+                "Site permission prompts require explicit approval for the exact site and permission before clicking Allow."
+            ],
+            frameAndLocatorNotes: [
+                "frameLocator(selector) and nested frameLocator paths are best-effort for same-origin and common OOPIF targets.",
+                "OOPIF target matching uses Target.getTargets and target-scoped Page.getFrameTree when needed.",
+                "Closed shadow roots remain opaque; use page-provided controls or inspected coordinates when no DOM access exists.",
+                "Do not blindly retry locator failures; refresh observe()/DOM state first."
             ]
         }),
         locators: () => ({
@@ -2214,6 +2662,29 @@ function assertWaitResult(result, label, soft) {
     }
     return result;
 }
+function mapLocatorBackendError(error, selector, action) {
+    const record = error && typeof error === "object" ? error : {};
+    const code = typeof record.code === "string" ? record.code : null;
+    const details = record.details && typeof record.details === "object" ? record.details : {};
+    const detailSelector = typeof details.selector === "string" && details.selector.trim()
+        ? details.selector.trim()
+        : selector;
+    if (code === "strict_mode_violation") {
+        const count = typeof details.count === "number" && Number.isFinite(details.count)
+            ? details.count
+            : 0;
+        throw new BrowserStrictModeError(detailSelector, count);
+    }
+    if (code === "locator_actionability") {
+        const reason = typeof details.actionabilityCode === "string" && details.actionabilityCode.trim()
+            ? details.actionabilityCode.trim()
+            : error instanceof Error && error.message.trim()
+                ? error.message.trim()
+                : "not_actionable";
+        throw new BrowserActionabilityError(detailSelector, action, reason, details);
+    }
+    throw error;
+}
 function normalizeUrlMatcher(matchOrArgs, args) {
     if (typeof matchOrArgs === "string") {
         return {
@@ -2230,7 +2701,16 @@ function normalizeUrlMatcher(matchOrArgs, args) {
     return matchOrArgs;
 }
 function stripClientOptions(args) {
-    return withoutKeys(args, ["soft", "strict", "actionArgs"]);
+    return withoutKeys(args, ["soft", "strict", "actionArgs", "timeout"]);
+}
+function withTimeoutAlias(args, label) {
+    if (args.timeoutMs !== undefined || args.timeout === undefined) {
+        return args;
+    }
+    return {
+        ...args,
+        timeoutMs: optionalNumber(args.timeout, label)
+    };
 }
 function stringArg(key, valueOrArgs, args) {
     if (typeof valueOrArgs === "string") {
@@ -2327,6 +2807,12 @@ function requireNonEmptyString(value, label) {
         throw new Error(`${label} must be a non-empty string.`);
     }
     return value.trim();
+}
+function requireTextString(value, label) {
+    if (typeof value !== "string") {
+        throw new Error(`${label} must be a string.`);
+    }
+    return value;
 }
 function requireNumber(value, label) {
     if (typeof value !== "number" || !Number.isFinite(value)) {

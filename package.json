@@ -12,6 +12,8 @@
     "package:dist": "npm run build && npm run build:rust-native-host && node scripts/package-dist.js",
     "release": "node scripts/release.js",
     "docs:browser-api": "node scripts/generate-browser-client-api-docs.js",
+    "docs:protocol": "node scripts/generate-protocol-action-reference.js",
+    "check:protocol-sync": "node scripts/generate-protocol-action-reference.js --check",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.extension.json --noEmit",
     "chat:llm": "node tests/scripts/llm-browser-chat.js",
     "chat:node-repl": "node tests/scripts/llm-node-repl-chat.js",
@@ -23,6 +25,7 @@
     "check:extension-installed": "node scripts/check-extension-installed.js --json",
     "check:native-host": "node scripts/check-native-host-manifest.js --json",
     "test:real": "node tests/scripts/real-browser-e2e.js",
+    "test:real-sites": "node tests/scripts/real-site-smoke.js",
     "test:watch": "vitest"
   },
   "devDependencies": {

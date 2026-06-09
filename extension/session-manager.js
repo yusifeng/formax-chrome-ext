@@ -97,6 +97,17 @@ class SessionManager {
         const sessionId = this.resolveNewSessionId(params.sessionId);
         const existing = this.sessions.get(sessionId);
         if (existing) {
+            await this.resumeHandoffTabs(existing.sessionId, params.turnId);
+            if (typeof params.name === "string" && params.name.trim()) {
+                existing.name = this.normalizeSessionName(params.name);
+            }
+            if (params.active === true && typeof existing.activeTabId === "number") {
+                await chrome.tabs.update(existing.activeTabId, {
+                    active: true
+                });
+            }
+            this.touchSession(existing.sessionId);
+            await this.persist();
             return existing;
         }
         const initialUrl = typeof params.initialUrl === "string" && params.initialUrl.trim()
@@ -314,6 +325,52 @@ class SessionManager {
         this.touchSession(sessionId);
         await this.persist();
         return handedOff;
+    }
+    async resumeHandoffTabs(sessionId, turnId) {
+        const session = this.getExistingSession(sessionId);
+        const normalizedTurnId = this.normalizeTurnId(turnId);
+        const instanceId = this.requireExtensionInstanceId();
+        const resumed = [];
+        const stale = [];
+        let activeHandoffTabId = null;
+        for (const lease of [...this.tabLeases.values()]) {
+            if (lease.sessionId !== sessionId || lease.state !== "handoff") {
+                continue;
+            }
+            try {
+                await chrome.tabs.get(lease.tabId);
+            }
+            catch {
+                this.tabLeases.delete(lease.tabId);
+                stale.push(lease.tabId);
+                continue;
+            }
+            if (lease.isActiveHandoff === true) {
+                activeHandoffTabId = lease.tabId;
+            }
+            lease.state = "active";
+            lease.turnId = normalizedTurnId;
+            lease.instanceId = instanceId;
+            delete lease.isActiveHandoff;
+            if (lease.origin === "agent") {
+                lease.groupId = await this.ensureAgentTabGroup(session, lease.tabId);
+                session.groupId = lease.groupId;
+            }
+            resumed.push(lease.tabId);
+        }
+        if (resumed.length === 0 && stale.length === 0) {
+            return [];
+        }
+        session.status = "active";
+        session.tabIds = this.getSessionTabIds(sessionId);
+        session.activeTabId =
+            activeHandoffTabId ??
+                (session.activeTabId != null && session.tabIds.includes(session.activeTabId)
+                    ? session.activeTabId
+                    : resumed[0] ?? session.tabIds[0] ?? null);
+        session.lastActiveAt = Date.now();
+        await this.persist();
+        return resumed;
     }
     releaseTabs(sessionId, tabIds) {
         const session = this.sessions.get(sessionId);

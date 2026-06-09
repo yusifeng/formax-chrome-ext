@@ -28,6 +28,13 @@ Formax currently exposes the Chrome extension backend only. It has no in-app
 browser backend and no OS-level Computer Use fallback. See
 `docs/backend-boundaries.md`.
 
+The recommended MCP integration intentionally exposes only the JavaScript
+`node_repl` tool surface to the model. Import the Formax browser SDK inside that
+persistent runtime and use the object API. Do not expose separate flat browser
+tools alongside node_repl unless you are testing backward-compatible aliases;
+mixing tool surfaces splits session state, pending approval handling, and tab
+handoff semantics.
+
 To inspect backend availability:
 
 ```js
@@ -50,11 +57,12 @@ Core namespaces:
 
 - `browser.tabs`: create, list, get, switch, close, and finalize controlled tabs.
 - `browser.user`: inspect and claim user-opened tabs, read confirmed history,
-  finalize handoffs, and stop user-facing sessions. Bookmarks are intentionally
-  not exposed.
+  finalize handoffs, and stop user-facing sessions. Bookmarks and
+  browser/system notifications are intentionally not exposed.
 - `browser.events`: read, clear, and wait for buffered browser events.
 - `browser.downloads`: list and wait for Chrome downloads.
-- `browser.policy`: inspect and update allow/block policy.
+- `browser.policy`: inspect/update allow/block policy and resolve pending
+  approval requests.
 - `browser.capabilities`: inspect supported backend capabilities.
 - `browser.dev`: development and diagnostic helpers.
 - `tab`: page navigation, locators, DOM observation, CUA-style actions,
@@ -116,6 +124,7 @@ The SDK exposes runtime docs:
 
 ```js
 await browser.documentation();
+await agent.documentation.get("browserUse");
 await agent.documentation.get("tabs");
 await agent.documentation.get("locators");
 await agent.documentation.get("downloads");
@@ -127,6 +136,8 @@ you need current capability details.
 ## Topic Guides
 
 - `docs/browser-client-api.md`: generated SDK type reference.
+- `skill/SKILL.md`: browser-use operating model for agents using the MCP
+  `node_repl`.
 - `docs/playwright.md`: Playwright-style locator and wait patterns.
 - `docs/confirmations.md`: confirmation and approval requirements.
 - `docs/file-management.md`: uploads, downloads, clipboard, and local files.

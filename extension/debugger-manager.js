@@ -11,12 +11,17 @@ class DebuggerManager {
     attachLocks = new Map();
     attachedTargets = new Set();
     targetAttachLocks = new Map();
+    tabCommandLocks = new Map();
+    targetCommandLocks = new Map();
     constructor(options) {
         this.cdpVersion = options.cdpVersion;
         this.defaultTimeoutMs = options.defaultTimeoutMs ?? 10000;
     }
     listAttachedTabs() {
         return Array.from(this.attachedTabs);
+    }
+    listAttachedTargets() {
+        return Array.from(this.attachedTargets);
     }
     markDetached(source) {
         if (typeof source.tabId === "number") {
@@ -55,15 +60,7 @@ class DebuggerManager {
     }
     async detachTab(tabId) {
         assertIntegerTabId(tabId);
-        try {
-            if (this.attachedTabs.has(tabId)) {
-                await chrome.debugger.detach({ tabId });
-            }
-        }
-        finally {
-            this.attachedTabs.delete(tabId);
-            this.attachLocks.delete(tabId);
-        }
+        return this.enqueueTabCommand(tabId, () => this.detachTabUnlocked(tabId));
     }
     async detachTabs(tabIds) {
         for (const tabId of tabIds) {
@@ -98,42 +95,85 @@ class DebuggerManager {
     }
     async detachTarget(targetId) {
         const normalizedTargetId = requireTargetId(targetId);
-        try {
-            if (this.attachedTargets.has(normalizedTargetId)) {
-                await chrome.debugger.detach({ targetId: normalizedTargetId });
-            }
-        }
-        finally {
-            this.attachedTargets.delete(normalizedTargetId);
-            this.targetAttachLocks.delete(normalizedTargetId);
-        }
+        return this.enqueueTargetCommand(normalizedTargetId, () => this.detachTargetUnlocked(normalizedTargetId));
     }
     async send(tabId, method, commandParams = {}, options = {}) {
         assertIntegerTabId(tabId);
         const commandName = requireCdpMethod(method);
-        await this.attachTab(tabId);
-        try {
-            return await withTimeout(chrome.debugger.sendCommand({ tabId }, commandName, commandParams), commandName, options.timeoutMs ?? this.defaultTimeoutMs);
-        }
-        catch (error) {
-            if (error instanceof CdpCommandTimeoutError) {
-                await this.forceDetachTab(tabId);
+        return this.enqueueTabCommand(tabId, async () => {
+            await this.attachTab(tabId);
+            try {
+                return await withTimeout(chrome.debugger.sendCommand({ tabId }, commandName, commandParams), commandName, options.timeoutMs ?? this.defaultTimeoutMs);
             }
-            throw error;
-        }
+            catch (error) {
+                if (error instanceof CdpCommandTimeoutError) {
+                    await this.forceDetachTab(tabId);
+                }
+                throw error;
+            }
+        });
     }
     async sendToTarget(targetId, method, commandParams = {}, options = {}) {
         const normalizedTargetId = requireTargetId(targetId);
         const commandName = requireCdpMethod(method);
-        await this.attachTarget(normalizedTargetId);
-        try {
-            return await withTimeout(chrome.debugger.sendCommand({ targetId: normalizedTargetId }, commandName, commandParams), commandName, options.timeoutMs ?? this.defaultTimeoutMs);
-        }
-        catch (error) {
-            if (error instanceof CdpCommandTimeoutError) {
-                await this.forceDetachTarget(normalizedTargetId);
+        return this.enqueueTargetCommand(normalizedTargetId, async () => {
+            await this.attachTarget(normalizedTargetId);
+            try {
+                return await withTimeout(chrome.debugger.sendCommand({ targetId: normalizedTargetId }, commandName, commandParams), commandName, options.timeoutMs ?? this.defaultTimeoutMs);
             }
-            throw error;
+            catch (error) {
+                if (error instanceof CdpCommandTimeoutError) {
+                    await this.forceDetachTarget(normalizedTargetId);
+                }
+                throw error;
+            }
+        });
+    }
+    enqueueTabCommand(tabId, work) {
+        return this.enqueueCommand(this.tabCommandLocks, tabId, work);
+    }
+    enqueueTargetCommand(targetId, work) {
+        return this.enqueueCommand(this.targetCommandLocks, targetId, work);
+    }
+    async enqueueCommand(locks, key, work) {
+        const previous = locks.get(key) ?? Promise.resolve();
+        let release;
+        const current = new Promise((resolve) => {
+            release = resolve;
+        });
+        const next = previous.catch(() => undefined).then(() => current);
+        locks.set(key, next);
+        await previous.catch(() => undefined);
+        try {
+            return await work();
+        }
+        finally {
+            release();
+            if (locks.get(key) === next) {
+                locks.delete(key);
+            }
+        }
+    }
+    async detachTabUnlocked(tabId) {
+        try {
+            if (this.attachedTabs.has(tabId)) {
+                await chrome.debugger.detach({ tabId });
+            }
+        }
+        finally {
+            this.attachedTabs.delete(tabId);
+            this.attachLocks.delete(tabId);
+        }
+    }
+    async detachTargetUnlocked(targetId) {
+        try {
+            if (this.attachedTargets.has(targetId)) {
+                await chrome.debugger.detach({ targetId });
+            }
+        }
+        finally {
+            this.attachedTargets.delete(targetId);
+            this.targetAttachLocks.delete(targetId);
         }
     }
     async forceDetachTab(tabId) {
