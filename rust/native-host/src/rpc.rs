@@ -92,7 +92,41 @@ type PendingMap = Arc<Mutex<HashMap<String, oneshot::Sender<CallResult>>>>;
 #[derive(Debug)]
 pub enum CallResult {
     Success(Value),
-    Error(String),
+    Error(Value),
+}
+
+#[derive(Debug)]
+enum RpcError {
+    Message(String),
+    Structured(Value),
+}
+
+impl RpcError {
+    fn audit_message(&self) -> String {
+        match self {
+            RpcError::Message(message) => message.clone(),
+            RpcError::Structured(value) => structured_error_message(value),
+        }
+    }
+
+    fn response_json(&self) -> Value {
+        match self {
+            RpcError::Message(message) => {
+                json!({"ok": false, "error": message, "errorCode": error_code_for_message(message)})
+            }
+            RpcError::Structured(value) => {
+                let code = structured_error_code(value)
+                    .unwrap_or_else(|| error_code_for_message(&structured_error_message(value)));
+                json!({"ok": false, "error": value, "errorCode": code})
+            }
+        }
+    }
+}
+
+impl From<String> for RpcError {
+    fn from(value: String) -> Self {
+        RpcError::Message(value)
+    }
 }
 
 /// Shared application state for the HTTP RPC handler.
@@ -182,7 +216,7 @@ async fn handle_rpc(
         Ok(response) => response,
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"ok": false, "error": e, "errorCode": error_code_for_message(&e)})),
+            Json(e.response_json()),
         ),
     }
 }
@@ -191,7 +225,7 @@ async fn handle_rpc(
 async fn handle_rpc_inner(
     state: RpcState,
     body: axum::body::Bytes,
-) -> Result<(StatusCode, Json<Value>), String> {
+) -> Result<(StatusCode, Json<Value>), RpcError> {
     // --- Parse request (TS: JSON.parse error -> 500 via try/catch) ---
     let req: RpcRequest =
         serde_json::from_slice(&body).map_err(|_| "Missing action".to_string())?;
@@ -201,7 +235,7 @@ async fn handle_rpc_inner(
 
     let mut params = req.params.unwrap_or(json!({}));
     if !params.is_object() {
-        return Err(format!("{action}.params must be an object"));
+        return Err(format!("{action}.params must be an object").into());
     }
     if action == "health" || action == "getDiagnostics" {
         inject_native_diagnostics(&mut params, &state.native_diagnostics)?;
@@ -229,11 +263,12 @@ async fn handle_rpc_inner(
             Ok((StatusCode::OK, Json(json!({"ok": true, "result": value}))))
         }
         Err(error) => {
+            let audit_error = error.audit_message();
             audit_rpc_event(
                 &action,
                 "error",
                 started.elapsed().as_millis(),
-                Some(&error),
+                Some(&audit_error),
             );
             Err(error)
         }
@@ -258,7 +293,7 @@ async fn call_extension(
     action: &str,
     params: &Value,
     timeout_ms: u64,
-) -> Result<Value, String> {
+) -> Result<Value, RpcError> {
     let id = Uuid::new_v4().to_string();
 
     let (tx, rx) = oneshot::channel::<CallResult>();
@@ -276,7 +311,7 @@ async fn call_extension(
 
     if let Err(e) = chrome_stdout.send(request).await {
         pending.lock().await.remove(&id);
-        return Err(format!("Failed to send message to Chrome: {e}"));
+        return Err(format!("Failed to send message to Chrome: {e}").into());
     }
 
     // Wait for response or timeout.
@@ -288,9 +323,9 @@ async fn call_extension(
 
     match result {
         Ok(Ok(CallResult::Success(value))) => Ok(value),
-        Ok(Ok(CallResult::Error(msg))) => Err(msg),
-        Ok(Err(_)) => Err("Channel closed unexpectedly".to_string()),
-        Err(_) => Err(format!("Timed out waiting for extension action: {action}")),
+        Ok(Ok(CallResult::Error(value))) => Err(RpcError::Structured(value)),
+        Ok(Err(_)) => Err("Channel closed unexpectedly".to_string().into()),
+        Err(_) => Err(format!("Timed out waiting for extension action: {action}").into()),
     }
 }
 
@@ -786,6 +821,7 @@ fn validate_action_param_shape(action: &str, params: &Map<String, Value>) -> Res
                     "allInnerTexts",
                     "textContent",
                     "innerText",
+                    "innerHTML",
                     "getAttribute",
                     "isVisible",
                     "isHidden",
@@ -885,6 +921,7 @@ fn validate_action_param_shape(action: &str, params: &Map<String, Value>) -> Res
                     ("modifiers", ParamKind::StringArray, false),
                     ("waitMs", ParamKind::Number, false),
                     ("confirmed", ParamKind::Boolean, false),
+                    ("confirmationId", ParamKind::String, false),
                 ],
             )?;
             validate_string_enum(
@@ -1781,6 +1818,35 @@ fn error_code_for_message(message: &str) -> String {
     "extension_error".to_string()
 }
 
+fn structured_error_message(value: &Value) -> String {
+    if let Some(message) = value.get("message").and_then(Value::as_str) {
+        return message.to_string();
+    }
+
+    if let Some(message) = value.as_str() {
+        return message.to_string();
+    }
+
+    if value.is_null() {
+        return "Extension action failed".to_string();
+    }
+
+    value.to_string()
+}
+
+fn structured_error_code(value: &Value) -> Option<String> {
+    value
+        .get("code")
+        .and_then(Value::as_str)
+        .filter(|code| {
+            !code.is_empty()
+                && code
+                    .chars()
+                    .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+        })
+        .map(ToString::to_string)
+}
+
 // ---------------------------------------------------------------------------
 // Startup helper
 // ---------------------------------------------------------------------------
@@ -2202,7 +2268,13 @@ mod tests {
             let id = frame["id"].as_str().unwrap().to_string();
             let mut lock = pending.lock().await;
             if let Some(tx) = lock.remove(&id) {
-                let _ = tx.send(CallResult::Error("Something went wrong".to_string()));
+                let _ = tx.send(CallResult::Error(json!({
+                    "code": "locator_actionability",
+                    "message": "Something went wrong",
+                    "details": {
+                        "actionabilityCode": "occluded"
+                    }
+                })));
             }
         });
 
@@ -2217,8 +2289,10 @@ mod tests {
 
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(body["ok"], false);
-        assert_eq!(body["error"], "Something went wrong");
-        assert_eq!(body["errorCode"], "extension_error");
+        assert_eq!(body["error"]["code"], "locator_actionability");
+        assert_eq!(body["error"]["message"], "Something went wrong");
+        assert_eq!(body["error"]["details"]["actionabilityCode"], "occluded");
+        assert_eq!(body["errorCode"], "locator_actionability");
     }
 
     // --- Test: Timeout ---
@@ -2372,6 +2446,16 @@ mod tests {
             validate_action_params("click", &json!({"x": 10, "y": 20, "button": "back"}), &[])
                 .is_ok()
         );
+        assert!(validate_action_params(
+            "click",
+            &json!({
+                "selector": "#delete-account-button",
+                "confirmed": true,
+                "confirmationId": "confirm-click-1"
+            }),
+            &[]
+        )
+        .is_ok());
         assert!(validate_action_params(
             "drag",
             &json!({

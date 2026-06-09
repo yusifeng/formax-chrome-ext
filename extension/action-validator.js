@@ -510,6 +510,7 @@ const EXTENSION_ACTION_PARAM_ENUMS = {
             "allInnerTexts",
             "textContent",
             "innerText",
+            "innerHTML",
             "getAttribute",
             "isVisible",
             "isHidden",

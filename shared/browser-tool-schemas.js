@@ -122,6 +122,7 @@ export const BROWSER_LOCATOR_QUERY_KINDS = [
     "allInnerTexts",
     "textContent",
     "innerText",
+    "innerHTML",
     "getAttribute",
     "isVisible",
     "isHidden",

@@ -42,6 +42,9 @@ await tab.locator(".result-card").getByRole("button", { name: "Open" }).click();
 await tab.locator(".result-card").and(tab.getByText("Ready")).or(tab.getByText("Fallback")).count();
 await tab.frameLocator("#outer-frame").frameLocator("#inner-frame").getByRole("button", { name: "Run" }).click();
 await tab.locator("#submit").highlight({ color: "rgba(255, 190, 80, 0.92)" });
+await tab.locator("#search").pressSequentially("codex", { waitMs: 100 });
+const html = await tab.locator(".result-card").innerHTML();
+const owningTab = tab.locator(".result-card").page();
 ```
 
 Locator page-function helpers are available when a higher-level query is not
@@ -63,21 +66,29 @@ When multiple elements match:
 
 ```js
 const items = await tab.locator(".result").all({ limit: 10 });
+const lastItem = tab.locator(".result").last();
 await items[0].click();
 ```
 
 Keep limits tight. `locator.all({ limit })` returns bounded `nth()` locator
 handles; it does not serialize DOM content.
+`locator.first()`, `locator.nth(index)`, and `locator.last()` are synchronous
+locator derivations. Negative `nth()` indexes count from the end, so
+`locator.last()` serializes as `index: -1` and does not issue a `count()` call.
 
 For conditional flows, prefer locator queries such as `isVisible()`,
 `isHidden()`, `isEnabled()`, `isDisabled()`, `isEditable()`, `isChecked()`, and
 `inputValue()` before falling back to `evaluate`.
-Use `allInnerTexts()` or `allTextContents()` for bounded text extraction from a
-locator set.
+Use `innerHTML()`, `allInnerTexts()`, or `allTextContents()` for bounded content
+extraction from a locator set.
 
 For focused form/page interactions, use `locator.blur()`,
 `locator.scrollIntoViewIfNeeded()`, and `locator.selectText()` instead of
 custom page JavaScript when those actions express the intent.
+`locator.pressSequentially(text, options)` is a Playwright-style alias for the
+existing governed `locator.type(text, options)` action. It does not currently
+implement Playwright's per-character `delay` option.
+`locator.page()` returns the owning SDK tab handle.
 Use `locator.dragTo(targetLocator, options)` for locator-to-locator drag/drop
 before falling back to coordinate-based `tab.cua.drag`.
 Use `locator.highlight(options)` for debugging or visual verification; it draws
@@ -129,7 +140,9 @@ Locator actions perform first-pass checks for:
 Editable checks require an enabled text input, textarea, or contenteditable
 element and honor native `readonly` plus self/ancestor `aria-readonly="true"`.
 Pointer hit testing accounts for open shadow-root descendants when the locator
-targets the shadow host.
+targets the shadow host. For elements inside open shadow roots, actionability
+also climbs host ancestors for inert, `aria-disabled`, `aria-readonly`, and
+`pointer-events: none` blockers.
 
 Use `force: true` only after inspecting the page and confirming the target is
 safe to interact with:
@@ -156,18 +169,43 @@ as `BrowserStrictModeError`; actionability failures surface as
 `BrowserActionabilityError` with a reason such as `not_visible`, `disabled`,
 `not_editable`, `occluded`, `outside_viewport`, `not_stable`, or `detached`.
 
+For debugging, locator handles expose both readable and machine-readable
+descriptions:
+
+```js
+const locator = tab.locator(".card").getByRole("button", { name: "Open" });
+console.log(String(locator)); // Locator<locator(".card").getByRole("button", { name: "Open" })>
+console.log(locator.toJSON()); // full locator plan sent to the backend
+```
+
+The string form is a compact diagnostic label, not a new selector contract.
+
 ## Waiting
 
 Use explicit waits around navigation and dynamic UI:
 
 ```js
 await tab.goto("https://example.com");
+await tab.playwright.goto("https://example.com/inside-playwright-namespace");
+console.log(await tab.playwright.url());
+console.log(await tab.playwright.title());
+await tab.playwright.reload({ waitForLoad: true });
 await tab.waitForLoadState("commit"); // waits for the next main-frame navigation commit
 await tab.waitForLoadState("load");
 await tab.waitForUrl({ urlContains: "example.com", waitUntil: "load" });
 await tab.waitForText("Example Domain");
 await tab.waitForSelector("main");
+await tab.playwright.waitForText("Example Domain");
+await tab.playwright.waitForSelector("main");
+await tab.playwright.screenshot({ fullPage: true });
 ```
+
+`tab.playwright.goto/openUrl/url/title/reload/back/forward/goBack/goForward`,
+`tab.playwright.waitForSelector/waitForText`, and
+`tab.playwright.screenshot` are SDK aliases over the governed tab navigation,
+wait, inspection, and screenshot methods. They exist for Playwright-style code
+shape; host approval and navigation policy are still enforced by the same
+backend actions.
 
 Playwright-style SDK helpers accept `timeout` as an alias for the backend
 `timeoutMs` field:
@@ -241,8 +279,42 @@ await tab.evaluate("document.querySelector('form').submit()", {
 ```
 
 Explicit `mode: "read"` calls use a conservative pre-execution guard that
-rejects obvious DOM/storage/cookie mutations. It is not a hardened JavaScript
-sandbox; use `mode: "write"` with confirmation for intentional page changes.
+rejects obvious DOM/storage/cookie mutations. The runtime wrapper also blocks
+common mutation APIs and setters while the evaluation is running, including
+DOM insertion/removal, `classList`, style mutation methods, `innerHTML`,
+`outerHTML`, `textContent`, and common form value setters. This is still a
+best-effort denylist plus temporary patch, not a hardened JavaScript sandbox;
+use `mode: "write"` with confirmation for intentional page changes.
+
+## Clipboard
+
+Clipboard reads and writes require explicit per-request confirmation:
+
+```js
+const text = await tab.clipboard.readText({ confirmed: true });
+await tab.clipboard.writeText(text.trim(), { confirmed: true });
+await tab.clipboard.write("Plain text", { confirmed: true });
+```
+
+`tab.clipboard.write("text", options)` is an SDK convenience alias for
+`tab.clipboard.writeText("text", options)`.
+
+For typed clipboard writes, the SDK accepts the backend `{ types: [...] }`
+shape and a `ClipboardItem`-style MIME map:
+
+```js
+await tab.clipboard.write({
+  "text/plain": "Plain text",
+  "text/html": { text: "<strong>Plain text</strong>" },
+  "image/png": { dataUrl: "data:image/png;base64,iVBORw0KGgo=" },
+  "application/octet-stream": new Uint8Array([1, 2, 3])
+}, { confirmed: true });
+```
+
+The MIME map is normalized locally before the backend request; clipboard
+binary payloads can be `dataUrl`, `Uint8Array`/`Buffer`, `ArrayBuffer`, or byte
+arrays. Clipboard security still requires `confirmed: true` for every read or
+write.
 
 ## Downloads
 

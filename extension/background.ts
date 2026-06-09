@@ -38,6 +38,7 @@ const SECURITY_INTERSTITIAL_PATTERN = /\b(your connection is not private|decepti
 const SECURITY_INTERSTITIAL_ACTION_PATTERN = /\b(advanced|proceed|continue|visit|ignore|accept|unsafe)\b/i;
 const PAYWALL_BYPASS_PATTERN = /\b(bypass paywall|remove paywall|disable paywall|unlock (article|content) without (paying|subscription)|read without (paying|subscription)|continue without subscribing)\b/i;
 const PASSWORD_CHANGE_ACTION_PATTERN = /\b(change|update|reset|save|submit|confirm)\b.{0,40}\b(password|passcode)\b|\b(password|passcode)\b.{0,40}\b(change|update|reset|save|submit|confirm)\b/i;
+const PASSWORD_CHANGE_CONTEXT_PATTERN = /\b(change|update|reset|new|current|old|confirm)\b.{0,40}\b(password|passcode)\b|\b(password|passcode)\b.{0,40}\b(change|update|reset|new|current|old|confirm)\b/i;
 const PASSWORD_FINAL_BUTTON_PATTERN = /\b(change|update|reset|save|submit|confirm|continue)\b/i;
 const SUPPORTED_ACTIONS = [
   "health",
@@ -260,7 +261,7 @@ const sessionManager = new SessionManager();
 const cursorOverlayStateByTab = new Map<number, CursorOverlayState>();
 const claimTokens = new Map<string, ClaimTokenRecord>();
 const tabOpenedAt = new Map<number, number>();
-const networkRequestsByTab = new Map<number, Set<string>>();
+const networkRequestsByTab = new Map<number, Map<string, number>>();
 const cursorArrivalWaiters = new Map<string, CursorArrivalWaiter>();
 const expectedDebuggerDetachTabs = new Set<number>();
 const fileChoosers = new Map<string, FileChooserRecord>();
@@ -1102,6 +1103,14 @@ function errorCodeForMessage(message: string) {
     return "user_handoff_required";
   }
 
+  if (
+    message.includes("Element target not found") ||
+    message.includes("Unable to locate element") ||
+    message.includes("Element ref not found")
+  ) {
+    return "locator_not_found";
+  }
+
   if (message.includes("must be") || message.includes("requires")) {
     return "invalid_params";
   }
@@ -1126,8 +1135,14 @@ function userFacingErrorMessage(code: string, message: string) {
     case "strict_mode_violation":
       return "The locator matched an unexpected number of elements.";
     case "locator_not_found":
+      if (/Element target not found|Unable to locate element|Element ref not found/.test(message) && message.length <= 180) {
+        return message;
+      }
       return "The locator did not match an element.";
     case "locator_actionability":
+      if (/^Locator actionability failed for [a-zA-Z]+: /.test(message) && message.length <= 220) {
+        return message;
+      }
       return "The locator matched an element, but it was not ready for the requested action.";
     case "invalid_params":
       return message.length <= 180 ? message : "The browser action parameters are invalid.";
@@ -2340,7 +2355,16 @@ async function observe(params: ActionParams = {}) {
   const MAX_ELEMENTS = 120;
 
   const normalizeText = (value) => String(value || "").replace(/\\s+/g, " ").trim();
-  const isElement = (value) => value instanceof Element;
+  const isElement = (value) =>
+    value &&
+    value.nodeType === Node.ELEMENT_NODE &&
+    typeof value.tagName === "string" &&
+    typeof value.getAttribute === "function";
+  const isShadowRoot = (value) =>
+    value &&
+    value.nodeType === Node.DOCUMENT_FRAGMENT_NODE &&
+    value.host &&
+    isElement(value.host);
 
   const isVisible = (el) => {
     if (!isElement(el)) return false;
@@ -2354,6 +2378,19 @@ async function observe(params: ActionParams = {}) {
     if (rect.width <= 0 || rect.height <= 0) return false;
     if (rect.bottom < 0 || rect.right < 0) return false;
     if (rect.top > window.innerHeight || rect.left > window.innerWidth) return false;
+
+    return true;
+  };
+  const isRendered = (el) => {
+    if (!isElement(el)) return false;
+
+    const style = getComputedStyle(el);
+    const rect = el.getBoundingClientRect();
+
+    if (style.visibility === "hidden") return false;
+    if (style.display === "none") return false;
+    if (style.opacity === "0") return false;
+    if (rect.width <= 0 || rect.height <= 0) return false;
 
     return true;
   };
@@ -2385,7 +2422,7 @@ async function observe(params: ActionParams = {}) {
       }
     };
     const isHiddenForName = (node) => {
-      if (!(node instanceof Element)) return false;
+      if (!isElement(node)) return false;
       if (node.hidden || node.getAttribute("aria-hidden") === "true") return true;
       const style = getComputedStyle(node);
       return style.display === "none" || style.visibility === "hidden";
@@ -2393,7 +2430,7 @@ async function observe(params: ActionParams = {}) {
     const textForName = (node) => {
       if (!node) return "";
       if (node.nodeType === Node.TEXT_NODE) return node.nodeValue || "";
-      if (!(node instanceof Element) || isHiddenForName(node)) return "";
+      if (!isElement(node) || isHiddenForName(node)) return "";
       const tag = node.tagName.toLowerCase();
       if (tag === "script" || tag === "style") return "";
       return Array.from(node.childNodes).map((child) => textForName(child)).join(" ");
@@ -2556,7 +2593,7 @@ async function observe(params: ActionParams = {}) {
 
   const shadowMetadataFor = (el) => {
     const root = el.getRootNode?.();
-    if (!(root instanceof ShadowRoot)) {
+    if (!isShadowRoot(root)) {
       if (isUnsupportedClosedShadowHost(el)) {
         return {
           shadowRoot: "closed_unsupported",
@@ -2664,7 +2701,7 @@ async function observe(params: ActionParams = {}) {
   };
   const collectCandidates = (root, frameSelectors = [], offset = { x: 0, y: 0 }, depth = 0) => {
     const records = queryAllPiercingOpenShadow(selector, root)
-      .filter((el) => isFileInput(el) || isVisible(el))
+      .filter((el) => isFileInput(el) || isRendered(el))
       .map((el) => ({
         el,
         frameSelectors,
@@ -2700,9 +2737,31 @@ async function observe(params: ActionParams = {}) {
 
     return records;
   };
+  const candidatePriority = (record) => {
+    const el = record.el;
+    const tag = el.tagName.toLowerCase();
+    const shadow = shadowMetadataFor(el);
+    let score = 0;
+
+    if (el.id) score += 40;
+    if (elementState(el).testId) score += 35;
+    if (el.getAttribute("aria-label") || el.getAttribute("aria-labelledby")) score += 30;
+    if (el.getAttribute("role")) score += 25;
+    if (record.frameSelectors.length) score += 30 + record.frameSelectors.length * 5;
+    if (shadow.shadowRoot) score += 30;
+    if (tag.includes("-")) score += 20;
+    if (["button", "input", "textarea", "select", "a"].includes(tag)) score += 10;
+    if (String(el.className || "").includes("virtual-row")) score += 30;
+
+    return score;
+  };
 
   const allCandidates = collectCandidates(document);
-  const candidates = allCandidates.slice(0, MAX_ELEMENTS);
+  const candidates = allCandidates
+    .map((record, order) => ({ ...record, order }))
+    .sort((left, right) => candidatePriority(right) - candidatePriority(left) || left.order - right.order)
+    .slice(0, MAX_ELEMENTS)
+    .sort((left, right) => left.order - right.order);
   const allCandidateCount = allCandidates.length;
   const stableNodeCounts = new Map();
 
@@ -2763,6 +2822,21 @@ async function observe(params: ActionParams = {}) {
     };
 
     pushSegment(document.title, 160);
+
+    const stateSelector = [
+      "[id*='result' i]",
+      "[class*='result' i]",
+      "[id*='status' i]",
+      "[class*='status' i]",
+      "[role='status']",
+      "[aria-live]"
+    ].join(",");
+
+    for (const el of queryAllPiercingOpenShadow(stateSelector)) {
+      if (segments.length >= MAX_TEXT_SEGMENTS) break;
+      if (!isVisible(el) || isSensitive(el)) continue;
+      pushSegment(el.innerText || el.textContent || "", 240);
+    }
 
     const contentSelector = [
       "main",
@@ -3358,6 +3432,7 @@ async function locatorAction(params: ActionParams = {}) {
     } else {
       await dispatchMouseClick(tabId, pointerTarget.x, pointerTarget.y, {
         ...args,
+        targetId: target.targetId,
         clickCount: kind === "dblclick" ? 2 : numberOrDefault(args.clickCount, 1)
       });
       await showCursorClick(tabId, pointerTarget.x, pointerTarget.y);
@@ -3402,7 +3477,10 @@ async function locatorAction(params: ActionParams = {}) {
     await dispatchMouseDrag(tabId, [
       { x: sourcePoint.x, y: sourcePoint.y },
       { x: targetPoint.x, y: targetPoint.y }
-    ], args);
+    ], {
+      ...args,
+      targetId: target.targetId
+    });
     await sleep(waitMs);
 
     return observe({
@@ -3427,7 +3505,9 @@ async function locatorAction(params: ActionParams = {}) {
     await focusLocator(tabId, target.locator, args, target, kind === "fill" ? args.clear !== false : args.clear === true);
     await showCursor(tabId, pointerTarget.x, pointerTarget.y);
 
-    await cdp(tabId, "Input.insertText", { text });
+    await cdp(tabId, "Input.insertText", { text }, {
+      targetId: target.targetId
+    });
     await sleep(waitMs);
 
     return observe({
@@ -3471,6 +3551,8 @@ async function locatorAction(params: ActionParams = {}) {
         x: pointerTarget.x,
         y: pointerTarget.y,
         button: "none"
+      }, {
+        targetId: target.targetId
       });
     }
 
@@ -3788,6 +3870,7 @@ async function resolveFrame(params: ActionParams = {}) {
   let resolvedTargetId = targetId;
   let matchPathOffset = 0;
   let precomputedMatch: { node: ActionParams | null; frame: ActionParams | null; path: ActionParams[] } | null = null;
+  const targetDiagnostics: ActionParams = {};
 
   if (!effectiveResolved || effectiveResolved.ok !== true) {
     const continued = !targetId
@@ -3815,7 +3898,7 @@ async function resolveFrame(params: ActionParams = {}) {
   const finalResolvedStep = effectivePath.length ? effectivePath[effectivePath.length - 1] : null;
 
   if (!resolvedTargetId && (!match.frame || finalResolvedStep?.accessible !== true)) {
-    const targetMatch = await resolveFramePathTarget(tabId, effectiveResolved.path, timeoutMs);
+    const targetMatch = await resolveFramePathTarget(tabId, effectiveResolved.path, timeoutMs, targetDiagnostics);
     if (targetMatch) {
       resolvedTargetId = targetMatch.targetId;
       match = targetMatch.match;
@@ -3829,6 +3912,8 @@ async function resolveFrame(params: ActionParams = {}) {
 
   sessionManager.touchSession(session?.sessionId);
   const path = effectivePath;
+  const resolvedSelectorCount = Math.min(path.length, frameSelectors.length);
+  const unresolvedFrameSelectors = frameSelectors.slice(resolvedSelectorCount);
   const lastPathViewportOffset = path.length ? path[path.length - 1]?.viewportOffset : null;
   const targetViewportOffset = resolvedTargetId
     ? coerceViewportOffset(effectiveResolved.targetViewportOffset ?? lastPathViewportOffset)
@@ -3842,6 +3927,9 @@ async function resolveFrame(params: ActionParams = {}) {
     matched: match.frame != null,
     accessible: effectiveResolved.accessible === true,
     frameId: match.frame?.id ?? null,
+    resolvedSelectorCount,
+    unresolvedFrameSelectors,
+    ...(Array.isArray(targetDiagnostics.targetCandidates) ? { targetCandidates: targetDiagnostics.targetCandidates } : {}),
     frame: match.node ? summarizePageFrameTreeNode(match.node) : null,
     path: path.map((step: ActionParams, index: number) => ({
       selector: typeof step.selector === "string" ? step.selector : frameSelectors[index] ?? "",
@@ -4125,7 +4213,7 @@ async function scroll(params: ActionParams = {}) {
   const deltaX = numberOrDefault(params.deltaX, 0);
   const deltaY = numberOrDefault(params.deltaY, 0);
   const modifiers = normalizePointerModifiers(params.modifiers);
-  const point =
+  const rawPoint =
     typeof params.x === "number" && typeof params.y === "number"
       ? {
           x: params.x,
@@ -4134,7 +4222,9 @@ async function scroll(params: ActionParams = {}) {
       : await viewportCenter(tabId);
 
   await debuggerManager.attachTab(tabId);
+  const point = await normalizeViewportPoint(tabId, rawPoint.x, rawPoint.y);
   await showCursor(tabId, point.x, point.y);
+  const scrollStateBefore = await scrollDomStateAtPoint(tabId, point.x, point.y, point.documentX, point.documentY);
   await cdp(tabId, "Input.dispatchMouseEvent", {
     type: "mouseWheel",
     x: point.x,
@@ -4143,12 +4233,134 @@ async function scroll(params: ActionParams = {}) {
     deltaY,
     modifiers
   });
+  await sleep(50);
+  await scrollDomAtPoint(tabId, point.x, point.y, deltaX, deltaY, scrollStateBefore, point.documentX, point.documentY);
   await sleep(numberOrDefault(params.waitMs, 300));
 
   return observe({
     sessionId: session?.sessionId,
     tabId
   });
+}
+
+async function scrollDomStateAtPoint(tabId: number, x: number, y: number, documentX?: number, documentY?: number) {
+  try {
+    const evaluated = await cdp(tabId, "Runtime.evaluate", {
+      expression: scrollDomAtPointExpression(x, y, 0, 0, true, null, documentX, documentY),
+      returnByValue: true,
+      awaitPromise: true
+    });
+    const value = readRuntimeValue(evaluated);
+    return value && typeof value === "object" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+async function scrollDomAtPoint(tabId: number, x: number, y: number, deltaX: number, deltaY: number, before: any = null, documentX?: number, documentY?: number) {
+  if (deltaX === 0 && deltaY === 0) return;
+
+  try {
+    await cdp(tabId, "Runtime.evaluate", {
+      expression: scrollDomAtPointExpression(x, y, deltaX, deltaY, false, before, documentX, documentY),
+      returnByValue: true,
+      awaitPromise: true
+    });
+  } catch {
+    // CDP wheel already ran; DOM fallback is best-effort for nested scrollers.
+  }
+}
+
+function scrollDomAtPointExpression(x: number, y: number, deltaX: number, deltaY: number, snapshotOnly: boolean, before: any = null, documentX?: number, documentY?: number) {
+  return `(() => {
+    const x = ${JSON.stringify(x)};
+    const y = ${JSON.stringify(y)};
+    const deltaX = ${JSON.stringify(deltaX)};
+    const deltaY = ${JSON.stringify(deltaY)};
+    const snapshotOnly = ${snapshotOnly ? "true" : "false"};
+    const before = ${JSON.stringify(before)};
+    const documentX = ${JSON.stringify(documentX ?? null)};
+    const documentY = ${JSON.stringify(documentY ?? null)};
+    const canScroll = (el) => {
+      if (!el || el === document || el === window) return false;
+      const style = getComputedStyle(el);
+      const overflowY = style.overflowY;
+      const overflowX = style.overflowX;
+      return (
+        ((overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay") && el.scrollHeight > el.clientHeight) ||
+        ((overflowX === "auto" || overflowX === "scroll" || overflowX === "overlay") && el.scrollWidth > el.clientWidth)
+      );
+    };
+    const scrollableAtDocumentPoint = () => {
+      if (typeof documentX !== "number" || typeof documentY !== "number") return null;
+      const scrollables = Array.from(document.querySelectorAll("*")).filter(canScroll);
+      let best = null;
+
+      for (const el of scrollables) {
+        const rect = el.getBoundingClientRect();
+        const left = rect.left + window.scrollX;
+        const top = rect.top + window.scrollY;
+        const right = left + rect.width;
+        const bottom = top + rect.height;
+        if (documentX < left || documentX > right || documentY < top || documentY > bottom) continue;
+        const area = Math.max(1, rect.width * rect.height);
+        if (!best || area <= best.area) {
+          best = { el, area };
+        }
+      }
+
+      return best?.el || null;
+    };
+    let current = document.elementFromPoint(x, y);
+
+    while (current && !canScroll(current)) {
+      const root = current.getRootNode?.();
+      current = current.parentElement || (root?.host instanceof Element ? root.host : null);
+    }
+
+    if (!current) {
+      current = scrollableAtDocumentPoint();
+    }
+
+    if (!current) {
+      return { ok: false };
+    }
+
+    const state = {
+      ok: true,
+      scrollTop: current.scrollTop,
+      scrollLeft: current.scrollLeft,
+      tagName: current.tagName,
+      id: current.id || null
+    };
+    if (snapshotOnly) return state;
+
+    if (
+      before &&
+      before.ok === true &&
+      before.id === state.id &&
+      before.tagName === state.tagName &&
+      (before.scrollTop !== state.scrollTop || before.scrollLeft !== state.scrollLeft)
+    ) {
+      return { ...state, skipped: true };
+    }
+
+    const previousTop = current.scrollTop;
+    const previousLeft = current.scrollLeft;
+    current.scrollTop += deltaY;
+    current.scrollLeft += deltaX;
+
+    if (current.scrollTop !== previousTop || current.scrollLeft !== previousLeft) {
+      current.dispatchEvent(new Event("scroll", { bubbles: true }));
+    }
+
+    return {
+      ...state,
+      scrollTop: current.scrollTop,
+      scrollLeft: current.scrollLeft,
+      fallbackApplied: true
+    };
+  })()`;
 }
 
 async function typeText(params: ActionParams = {}) {
@@ -4324,8 +4536,21 @@ function readOnlyMutationGuardSource(options: { restoreAllDeclaration?: string }
   __formaxPatchMethod(globalThis.Node && globalThis.Node.prototype, "insertBefore", "Node.insertBefore");
   __formaxPatchMethod(globalThis.Node && globalThis.Node.prototype, "replaceChild", "Node.replaceChild");
   __formaxPatchMethod(globalThis.Node && globalThis.Node.prototype, "removeChild", "Node.removeChild");
+  __formaxPatchMethod(globalThis.Element && globalThis.Element.prototype, "insertAdjacentHTML", "Element.insertAdjacentHTML");
+  __formaxPatchMethod(globalThis.Element && globalThis.Element.prototype, "replaceWith", "Element.replaceWith");
+  __formaxPatchMethod(globalThis.Element && globalThis.Element.prototype, "remove", "Element.remove");
+  __formaxPatchMethod(globalThis.Element && globalThis.Element.prototype, "before", "Element.before");
+  __formaxPatchMethod(globalThis.Element && globalThis.Element.prototype, "after", "Element.after");
+  __formaxPatchMethod(globalThis.Element && globalThis.Element.prototype, "append", "Element.append");
+  __formaxPatchMethod(globalThis.Element && globalThis.Element.prototype, "prepend", "Element.prepend");
   __formaxPatchMethod(globalThis.Element && globalThis.Element.prototype, "setAttribute", "Element.setAttribute");
   __formaxPatchMethod(globalThis.Element && globalThis.Element.prototype, "removeAttribute", "Element.removeAttribute");
+  __formaxPatchMethod(globalThis.DOMTokenList && globalThis.DOMTokenList.prototype, "add", "DOMTokenList.add");
+  __formaxPatchMethod(globalThis.DOMTokenList && globalThis.DOMTokenList.prototype, "remove", "DOMTokenList.remove");
+  __formaxPatchMethod(globalThis.DOMTokenList && globalThis.DOMTokenList.prototype, "toggle", "DOMTokenList.toggle");
+  __formaxPatchMethod(globalThis.DOMTokenList && globalThis.DOMTokenList.prototype, "replace", "DOMTokenList.replace");
+  __formaxPatchMethod(globalThis.CSSStyleDeclaration && globalThis.CSSStyleDeclaration.prototype, "setProperty", "CSSStyleDeclaration.setProperty");
+  __formaxPatchMethod(globalThis.CSSStyleDeclaration && globalThis.CSSStyleDeclaration.prototype, "removeProperty", "CSSStyleDeclaration.removeProperty");
   __formaxPatchMethod(globalThis.Document && globalThis.Document.prototype, "write", "Document.write");
   __formaxPatchMethod(globalThis.Document && globalThis.Document.prototype, "writeln", "Document.writeln");
   __formaxPatchMethod(globalThis.Storage && globalThis.Storage.prototype, "setItem", "Storage.setItem");
@@ -4334,7 +4559,11 @@ function readOnlyMutationGuardSource(options: { restoreAllDeclaration?: string }
   __formaxPatchMethod(globalThis.IDBFactory && globalThis.IDBFactory.prototype, "deleteDatabase", "IDBFactory.deleteDatabase");
   __formaxPatchSetter(globalThis.Document && globalThis.Document.prototype, "cookie", "Document.cookie");
   __formaxPatchSetter(globalThis.Element && globalThis.Element.prototype, "innerHTML", "Element.innerHTML");
+  __formaxPatchSetter(globalThis.Element && globalThis.Element.prototype, "outerHTML", "Element.outerHTML");
+  __formaxPatchSetter(globalThis.Element && globalThis.Element.prototype, "className", "Element.className");
+  __formaxPatchSetter(globalThis.Element && globalThis.Element.prototype, "id", "Element.id");
   __formaxPatchSetter(globalThis.Node && globalThis.Node.prototype, "textContent", "Node.textContent");
+  __formaxPatchSetter(globalThis.CSSStyleDeclaration && globalThis.CSSStyleDeclaration.prototype, "cssText", "CSSStyleDeclaration.cssText");
   __formaxPatchSetter(globalThis.HTMLInputElement && globalThis.HTMLInputElement.prototype, "value", "HTMLInputElement.value");
   __formaxPatchSetter(globalThis.HTMLInputElement && globalThis.HTMLInputElement.prototype, "checked", "HTMLInputElement.checked");
   __formaxPatchSetter(globalThis.HTMLTextAreaElement && globalThis.HTMLTextAreaElement.prototype, "value", "HTMLTextAreaElement.value");
@@ -4449,9 +4678,15 @@ async function screenshot(params: ActionParams = {}) {
     fromSurface: true
   };
   const clip = normalizeScreenshotClip(params.clip);
+  let responseClip: ActionParams | null = null;
 
   if (clip) {
-    captureParams.clip = clip;
+    const deviceScaleFactor = await pageDeviceScaleFactor(tabId);
+    responseClip = clip;
+    captureParams.clip = {
+      ...clip,
+      scale: clip.scale / deviceScaleFactor
+    };
   } else if (params.fullPage === true) {
     const metrics = await cdp(tabId, "Page.getLayoutMetrics", {});
     const contentSize = metrics.cssContentSize || metrics.contentSize || {};
@@ -4483,9 +4718,28 @@ async function screenshot(params: ActionParams = {}) {
     tabId,
     format,
     fullPage: params.fullPage === true,
-    clip: captureParams.clip ?? null,
+    clip: responseClip ?? captureParams.clip ?? null,
     dataBase64: result.data
   };
+}
+
+async function pageDeviceScaleFactor(tabId: number) {
+  try {
+    const evaluated = await cdp(tabId, "Runtime.evaluate", {
+      expression: "window.devicePixelRatio || 1",
+      returnByValue: true,
+      awaitPromise: true
+    });
+    const value = readRuntimeValue(evaluated);
+
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+      return value;
+    }
+  } catch {
+    // Use CSS-pixel scale when device metrics are unavailable.
+  }
+
+  return 1;
 }
 
 function normalizeScreenshotClip(value: unknown) {
@@ -4508,7 +4762,9 @@ function normalizeScreenshotClip(value: unknown) {
     y,
     width,
     height,
-    scale: 1
+    scale: typeof source.scale === "number" && Number.isFinite(source.scale) && source.scale > 0
+      ? source.scale
+      : 1
   };
 }
 
@@ -5945,8 +6201,9 @@ async function resolvePointerTarget(
   actionName: string
 ) {
   if (typeof params.x === "number" || typeof params.y === "number") {
-    const x = requireFiniteNumber(params.x, `${actionName}.params.x`);
-    const y = requireFiniteNumber(params.y, `${actionName}.params.y`);
+    const rawX = requireFiniteNumber(params.x, `${actionName}.params.x`);
+    const rawY = requireFiniteNumber(params.y, `${actionName}.params.y`);
+    const { x, y } = await normalizeViewportPoint(tabId, rawX, rawY);
     const context = await pointerTargetContext(tabId, x, y);
 
     return {
@@ -5964,6 +6221,98 @@ async function resolvePointerTarget(
   }
 
   return locateElementTarget(tabId, params, actionName);
+}
+
+async function normalizeViewportPoint(tabId: number, x: number, y: number) {
+  try {
+    const evaluated = await cdp(tabId, "Runtime.evaluate", {
+      expression: `(() => {
+        const x = ${JSON.stringify(x)};
+        const y = ${JSON.stringify(y)};
+        const scrollX = window.scrollX || document.documentElement.scrollLeft || document.body?.scrollLeft || 0;
+        const scrollY = window.scrollY || document.documentElement.scrollTop || document.body?.scrollTop || 0;
+        const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
+        const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+        const fromDocumentX = x - scrollX;
+        const fromDocumentY = y - scrollY;
+        const offscreenDocumentX = scrollX + x;
+        const offscreenDocumentY = scrollY + y;
+        const scrollToPointX = Math.max(0, offscreenDocumentX - viewportWidth / 2);
+        const scrollToPointY = Math.max(0, offscreenDocumentY - viewportHeight / 2);
+        const inputInViewport = x >= 0 && y >= 0 && x <= viewportWidth && y <= viewportHeight;
+        const inputAsDocumentInViewport =
+          fromDocumentX >= 0 &&
+          fromDocumentY >= 0 &&
+          fromDocumentX <= viewportWidth &&
+          fromDocumentY <= viewportHeight;
+        const documentPointTarget = inputAsDocumentInViewport
+          ? document.elementFromPoint(fromDocumentX, fromDocumentY)
+          : null;
+        const isMeaningfulDocumentPointTarget = (target) => {
+          if (!target) return false;
+          const tag = target.tagName?.toLowerCase?.() || "";
+          if (tag === "html" || tag === "body") return false;
+          const style = getComputedStyle(target);
+          const scrollable =
+            ((style.overflowY === "auto" || style.overflowY === "scroll" || style.overflowY === "overlay") && target.scrollHeight > target.clientHeight) ||
+            ((style.overflowX === "auto" || style.overflowX === "scroll" || style.overflowX === "overlay") && target.scrollWidth > target.clientWidth);
+          return Boolean(
+            scrollable ||
+            tag === "canvas" ||
+            tag === "input" ||
+            tag === "textarea" ||
+            tag === "select" ||
+            tag === "button" ||
+            tag === "a" ||
+            target.closest?.("button,a,input,textarea,select,[role='button'],[role='link'],[contenteditable='true']")
+          );
+        };
+
+        if (isMeaningfulDocumentPointTarget(documentPointTarget) && inputAsDocumentInViewport && (!inputInViewport || scrollX !== 0 || scrollY !== 0)) {
+          return { x: fromDocumentX, y: fromDocumentY, documentX: x, documentY: y, source: "document" };
+        }
+
+        if (!inputInViewport && x >= 0 && y >= 0) {
+          window.scrollTo({
+            left: scrollToPointX,
+            top: scrollToPointY,
+            behavior: "instant"
+          });
+          return {
+            x: offscreenDocumentX - (window.scrollX || document.documentElement.scrollLeft || document.body?.scrollLeft || 0),
+            y: offscreenDocumentY - (window.scrollY || document.documentElement.scrollTop || document.body?.scrollTop || 0),
+            documentX: offscreenDocumentX,
+            documentY: offscreenDocumentY,
+            source: "document_scrolled"
+          };
+        }
+
+        return { x, y, documentX: scrollX + x, documentY: scrollY + y, source: "viewport" };
+      })()`,
+      returnByValue: true,
+      awaitPromise: true
+    });
+    const value = readRuntimeValue(evaluated);
+
+    if (
+      value &&
+      typeof value.x === "number" &&
+      typeof value.y === "number" &&
+      Number.isFinite(value.x) &&
+      Number.isFinite(value.y)
+    ) {
+      return {
+        x: value.x,
+        y: value.y,
+        ...(typeof value.documentX === "number" && Number.isFinite(value.documentX) ? { documentX: value.documentX } : {}),
+        ...(typeof value.documentY === "number" && Number.isFinite(value.documentY) ? { documentY: value.documentY } : {})
+      };
+    }
+  } catch {
+    // Fall through to the original point when page inspection is unavailable.
+  }
+
+  return { x, y };
 }
 
 async function pointerTargetContext(tabId: number, x: number, y: number) {
@@ -6123,7 +6472,7 @@ function userHandoffRiskForTarget(target: ActionParams) {
 
   if (
     passwordFieldCount > 0 &&
-    PASSWORD_CHANGE_ACTION_PATTERN.test(source) &&
+    (PASSWORD_CHANGE_ACTION_PATTERN.test(actionText) || PASSWORD_CHANGE_CONTEXT_PATTERN.test(`${pageTitle} ${formText} ${pageText}`)) &&
     PASSWORD_FINAL_BUTTON_PATTERN.test(actionText)
   ) {
     return {
@@ -6209,6 +6558,32 @@ function elementTargetExpression(
   return `(() => {
   const ref = ${JSON.stringify(ref)};
   const selector = ${JSON.stringify(selector)};
+  const locatorRectInTopViewport = (el) => {
+    const rect = el.getBoundingClientRect();
+    let x = rect.left;
+    let y = rect.top;
+    let currentWindow = el.ownerDocument?.defaultView || null;
+
+    while (currentWindow && currentWindow !== window) {
+      const frame = currentWindow.frameElement;
+      if (!frame) break;
+      const frameRect = frame.getBoundingClientRect();
+      x += frameRect.left;
+      y += frameRect.top;
+      currentWindow = currentWindow.parent;
+    }
+
+    return {
+      x,
+      y,
+      left: x,
+      top: y,
+      right: x + rect.width,
+      bottom: y + rect.height,
+      width: rect.width,
+      height: rect.height
+    };
+  };
   const store = window.__agentBrowserController?.elements || {};
   let el = null;
 
@@ -6429,7 +6804,7 @@ function normalizeLocatorPlan(locator: any, depth = 0) {
   const role = kind === "role" ? requireString(locator.role, "locator.role") : undefined;
   const name = kind === "role" && typeof locator.name === "string" ? locator.name : undefined;
   const testId = kind === "testId" ? requireString(locator.testId ?? locator.text, "locator.testId") : undefined;
-  const index = locator.index == null ? 0 : Math.max(0, Math.floor(numberOrDefault(locator.index, 0)));
+  const index = locator.index == null ? 0 : Math.trunc(numberOrDefault(locator.index, 0));
   const frameSelectors = Array.isArray(locator.frameSelectors)
     ? locator.frameSelectors.map((selector: any, selectorIndex: number) =>
         requireString(selector, `locator.frameSelectors[${selectorIndex}]`)
@@ -6474,6 +6849,7 @@ function normalizeLocatorQueryKind(kind: any) {
     "allInnerTexts",
     "textContent",
     "innerText",
+    "innerHTML",
     "getAttribute",
     "isVisible",
     "isHidden",
@@ -6583,7 +6959,7 @@ async function focusLocator(
     return resolved;
   }
 
-  const el = resolved.element;
+  let el = resolved.element;
   const actionability = await checkLocatorActionability(el);
   if (!actionability.ok) return actionability;
   el.focus();
@@ -6639,7 +7015,7 @@ function locatorTargetExpression(
     return resolved;
   }
 
-  const el = resolved.element;
+  let el = resolved.element;
   if (!el) {
     return {
       ok: false,
@@ -6652,7 +7028,14 @@ function locatorTargetExpression(
   }
 
   const ref = ${JSON.stringify(ref)};
-  const actionability = await checkLocatorActionability(el);
+  let actionability = await checkLocatorActionability(el);
+  if (!actionability.ok && actionability.code === "detached") {
+    const retried = resolveLocator();
+    if (retried.ok && retried.element) {
+      el = retried.element;
+      actionability = await checkLocatorActionability(el);
+    }
+  }
   if (!actionability.ok) return actionability;
 
   window.__agentBrowserController = window.__agentBrowserController || {};
@@ -6963,7 +7346,8 @@ function matchResolvedFramePathToFrameTree(path: ActionParams[], frameTree: Acti
 async function resolveFramePathTarget(
   tabId: number,
   path: ActionParams[],
-  timeoutMs: number
+  timeoutMs: number,
+  diagnostics: ActionParams = {}
 ) {
   if (!Array.isArray(path) || path.length === 0) {
     return null;
@@ -6991,6 +7375,9 @@ async function resolveFramePathTarget(
 
       return {
         targetId,
+        type: targetType || null,
+        title: typeof targetInfo.title === "string" ? targetInfo.title : null,
+        url: typeof targetInfo.url === "string" ? sanitizeDebugUrl(targetInfo.url) : null,
         score: scoreResolvedFrameCandidate(lastStep, {
           id: targetId,
           name: targetInfo.title,
@@ -6998,12 +7385,19 @@ async function resolveFramePathTarget(
         })
       };
     })
-    .filter((entry: { targetId: string; score: number } | null): entry is { targetId: string; score: number } =>
-      entry != null && entry.score > 0
+    .filter((entry: { targetId: string; type: string | null; title: string | null; url: string | null; score: number } | null): entry is { targetId: string; type: string | null; title: string | null; url: string | null; score: number } =>
+      entry != null
     )
     .sort((left, right) => right.score - left.score);
+  diagnostics.targetCandidates = candidates.slice(0, 10).map((candidate) => ({
+    targetId: candidate.targetId,
+    type: candidate.type,
+    title: candidate.title,
+    url: candidate.url,
+    score: candidate.score
+  }));
 
-  for (const candidate of candidates) {
+  for (const candidate of candidates.filter((entry) => entry.score > 0)) {
     try {
       const frameTree = await cdp(tabId, "Page.getFrameTree", {}, {
         targetId: candidate.targetId,
@@ -7225,22 +7619,31 @@ function locatorActionabilitySource(actionKind: string, actionArgs: any = {}) {
       rect.width > 0 &&
       rect.height > 0;
   };
+  const locatorActionabilityComposedParent = (node) => {
+    if (!node) return null;
+    if (node.parentElement) return node.parentElement;
+    const root = node.getRootNode?.();
+    return root?.host instanceof Element ? root.host : null;
+  };
+  const locatorActionabilityComposedClosest = (node, predicate) => {
+    let current = node;
+    while (current) {
+      if (predicate(current)) return current;
+      current = locatorActionabilityComposedParent(current);
+    }
+    return null;
+  };
   const locatorActionabilityInert = (node) => {
-    return typeof node.closest === "function" && Boolean(node.closest("[inert]"));
+    return Boolean(locatorActionabilityComposedClosest(node, (current) => current.hasAttribute?.("inert")));
   };
   const locatorActionabilityPointerEvents = (node) => {
-    const style = getComputedStyle(node);
-    if (style.pointerEvents === "none") {
-      return false;
-    }
-
-    let current = node.parentElement;
+    let current = node;
     while (current) {
       const currentStyle = getComputedStyle(current);
       if (currentStyle.pointerEvents === "none") {
         return false;
       }
-      current = current.parentElement;
+      current = locatorActionabilityComposedParent(current);
     }
 
     return true;
@@ -7338,7 +7741,7 @@ function locatorActionabilitySource(actionKind: string, actionArgs: any = {}) {
       return false;
     }
 
-    if (typeof node.closest === "function" && node.closest("[aria-disabled='true']")) {
+    if (locatorActionabilityComposedClosest(node, (current) => current.getAttribute?.("aria-disabled") === "true")) {
       return false;
     }
 
@@ -7359,7 +7762,7 @@ function locatorActionabilitySource(actionKind: string, actionArgs: any = {}) {
       return true;
     }
 
-    return typeof node.closest === "function" && Boolean(node.closest("[aria-readonly='true']"));
+    return Boolean(locatorActionabilityComposedClosest(node, (current) => current.getAttribute?.("aria-readonly") === "true"));
   };
   const locatorActionabilityEditable = (node) => {
     if (!locatorActionabilityEnabled(node) || locatorActionabilityReadonly(node)) {
@@ -8011,7 +8414,7 @@ function locatorResolverSource(locator: any) {
   const locatorFilteredElementsForConfig = (config, root = document) => {
     if (config?.within) {
       const parentMatches = locatorFilteredElementsForConfig(config.within, root);
-      const parentIndex = config.within?.index == null ? null : Math.max(0, Math.floor(Number(config.within.index) || 0));
+      const parentIndex = config.within?.index == null ? null : locatorIndexFor(parentMatches.length, config.within.index);
       const parents = parentIndex == null
         ? parentMatches
         : parentMatches[parentIndex]
@@ -8073,6 +8476,12 @@ function locatorResolverSource(locator: any) {
 
     return elements;
   };
+  const locatorIndexFor = (count, rawIndex) => {
+    const indexValue = Number(rawIndex);
+    if (!Number.isFinite(indexValue)) return 0;
+    const index = Math.trunc(indexValue);
+    return index < 0 ? count + index : index;
+  };
   const locatorFilteredElements = () => {
     let elements = locatorFilteredElementsForConfig(locator, document);
 
@@ -8117,7 +8526,7 @@ function locatorResolverSource(locator: any) {
       };
     }
 
-    const safeIndex = Number.isFinite(index) && index >= 0 ? Math.floor(index) : 0;
+    const safeIndex = locatorIndexFor(elements.length, index);
     const element = elements[safeIndex] || null;
 
     return {
@@ -8147,10 +8556,24 @@ function locatorQueryExpression(locator: any, kind: string, args: any) {
       rect.width > 0 &&
       rect.height > 0;
   };
+  const composedParent = (el) => {
+    if (!el) return null;
+    if (el.parentElement) return el.parentElement;
+    const root = el.getRootNode?.();
+    return root?.host instanceof Element ? root.host : null;
+  };
+  const composedClosest = (el, predicate) => {
+    let current = el;
+    while (current) {
+      if (predicate(current)) return current;
+      current = composedParent(current);
+    }
+    return null;
+  };
   const isEnabled = (el) => {
     if (!el) return false;
     if (el.disabled || el.getAttribute("aria-disabled") === "true") return false;
-    if (typeof el.closest === "function" && el.closest("[aria-disabled='true']")) return false;
+    if (composedClosest(el, (current) => current.getAttribute?.("aria-disabled") === "true")) return false;
     if (typeof el.closest === "function") {
       const fieldset = el.closest("fieldset[disabled]");
       if (fieldset) {
@@ -8165,7 +8588,7 @@ function locatorQueryExpression(locator: any, kind: string, args: any) {
   const isReadonly = (el) => {
     if (!el) return true;
     if (el.readOnly === true || el.getAttribute("aria-readonly") === "true") return true;
-    return typeof el.closest === "function" && Boolean(el.closest("[aria-readonly='true']"));
+    return Boolean(composedClosest(el, (current) => current.getAttribute?.("aria-readonly") === "true"));
   };
   const isEditable = (el) => {
     if (!el || !isEnabled(el) || isReadonly(el)) return false;
@@ -8197,6 +8620,8 @@ function locatorQueryExpression(locator: any, kind: string, args: any) {
     value = first ? first.textContent : null;
   } else if (kind === "innerText") {
     value = first ? normalizeText(first.innerText || first.textContent || "") : "";
+  } else if (kind === "innerHTML") {
+    value = first ? first.innerHTML : null;
   } else if (kind === "getAttribute") {
     const name = typeof args.name === "string" ? args.name : "";
     value = first && name ? first.getAttribute(name) : null;
@@ -8633,6 +9058,11 @@ async function dispatchMouseClick(
   const clickCount = Math.max(1, Math.floor(numberOrDefault(params.clickCount, 1)));
   const buttons = buttonToButtons(button);
   const modifiers = normalizePointerModifiers(params.modifiers);
+  const targetId =
+    typeof params.targetId === "string" && params.targetId.trim()
+      ? params.targetId.trim()
+      : null;
+  const cdpOptions = targetId ? { targetId } : {};
 
   await cdp(tabId, "Input.dispatchMouseEvent", {
     type: "mouseMoved",
@@ -8640,7 +9070,7 @@ async function dispatchMouseClick(
     y,
     button: "none",
     modifiers
-  });
+  }, cdpOptions);
 
   await cdp(tabId, "Input.dispatchMouseEvent", {
     type: "mousePressed",
@@ -8650,7 +9080,7 @@ async function dispatchMouseClick(
     buttons,
     clickCount,
     modifiers
-  });
+  }, cdpOptions);
 
   await cdp(tabId, "Input.dispatchMouseEvent", {
     type: "mouseReleased",
@@ -8660,7 +9090,7 @@ async function dispatchMouseClick(
     buttons: 0,
     clickCount,
     modifiers
-  });
+  }, cdpOptions);
 }
 
 async function dispatchMouseDrag(
@@ -8672,6 +9102,11 @@ async function dispatchMouseDrag(
   const buttons = buttonToButtons(button);
   const modifiers = normalizePointerModifiers(params.modifiers);
   const [start, ...rest] = path;
+  const targetId =
+    typeof params.targetId === "string" && params.targetId.trim()
+      ? params.targetId.trim()
+      : null;
+  const cdpOptions = targetId ? { targetId } : {};
 
   await cdp(tabId, "Input.dispatchMouseEvent", {
     type: "mouseMoved",
@@ -8679,7 +9114,7 @@ async function dispatchMouseDrag(
     y: start.y,
     button: "none",
     modifiers
-  });
+  }, cdpOptions);
 
   await cdp(tabId, "Input.dispatchMouseEvent", {
     type: "mousePressed",
@@ -8689,7 +9124,7 @@ async function dispatchMouseDrag(
     buttons,
     clickCount: 1,
     modifiers
-  });
+  }, cdpOptions);
 
   for (const point of rest) {
     await showCursor(tabId, point.x, point.y, {
@@ -8702,7 +9137,7 @@ async function dispatchMouseDrag(
       button,
       buttons,
       modifiers
-    });
+    }, cdpOptions);
   }
 
   const end = path[path.length - 1];
@@ -8714,7 +9149,7 @@ async function dispatchMouseDrag(
     buttons: 0,
     clickCount: 1,
     modifiers
-  });
+  }, cdpOptions);
 }
 
 async function locateElementByRef(tabId: number, ref: string) {
@@ -9861,6 +10296,13 @@ function waitForNetworkIdle(
   return new Promise((resolve) => {
     let done = false;
     let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    const waitStartedAt = Date.now();
+    const baselineLookbackMs = Math.max(250, boundedIdleMs * 2);
+    const activeDuringWait = new Set(
+      Array.from(networkRequestsByTab.get(tabId)?.entries() ?? [])
+        .filter(([, startedAt]) => waitStartedAt - startedAt <= baselineLookbackMs)
+        .map(([requestId]) => requestId)
+    );
     const timeoutTimer = setTimeout(() => finish("timeout"), boundedTimeoutMs);
 
     const listener = (source: chrome.debugger.Debuggee, method: string, params?: any) => {
@@ -9868,7 +10310,24 @@ function waitForNetworkIdle(
         return;
       }
 
+      const requestId =
+        typeof params?.requestId === "string" && params.requestId.trim()
+          ? params.requestId.trim()
+          : null;
+
+      if (requestId && method === "Network.requestWillBeSent") {
+        activeDuringWait.add(requestId);
+      }
+
       trackNetworkDebuggerEvent(source, method, params);
+
+      if (
+        requestId &&
+        (method === "Network.loadingFinished" || method === "Network.loadingFailed")
+      ) {
+        activeDuringWait.delete(requestId);
+      }
+
       scheduleIdleCheck();
     };
 
@@ -9878,7 +10337,15 @@ function waitForNetworkIdle(
         idleTimer = null;
       }
 
-      if ((networkRequestsByTab.get(tabId)?.size ?? 0) === 0) {
+      pruneStaleNetworkRequests(tabId, boundedTimeoutMs);
+      for (const requestId of Array.from(activeDuringWait)) {
+        const startedAt = networkRequestsByTab.get(tabId)?.get(requestId);
+        if (startedAt == null || Date.now() - startedAt > boundedTimeoutMs) {
+          activeDuringWait.delete(requestId);
+        }
+      }
+
+      if (activeDuringWait.size === 0) {
         idleTimer = setTimeout(() => finish("networkidle"), boundedIdleMs);
       }
     }
@@ -10416,10 +10883,6 @@ async function findDownloads(params: ActionParams = {}) {
     query.id = params.id;
   }
 
-  if (isDownloadState(params.state)) {
-    query.state = params.state;
-  }
-
   const downloads = await chrome.downloads.search(query);
 
   return downloads.filter((download) => downloadMatches(download, params));
@@ -10524,7 +10987,16 @@ function trackNetworkDebuggerEvent(
   method: string,
   params?: any
 ) {
-  if (typeof source.tabId !== "number" || !isNetworkRequestLifecycleEvent(method)) {
+  if (typeof source.tabId !== "number") {
+    return;
+  }
+
+  if (method === "Page.frameNavigated" && !params?.frame?.parentId) {
+    networkRequestsByTab.delete(source.tabId);
+    return;
+  }
+
+  if (!isNetworkRequestLifecycleEvent(method)) {
     return;
   }
 
@@ -10537,10 +11009,10 @@ function trackNetworkDebuggerEvent(
     return;
   }
 
-  const requests = networkRequestsByTab.get(source.tabId) ?? new Set<string>();
+  const requests = networkRequestsByTab.get(source.tabId) ?? new Map<string, number>();
 
   if (method === "Network.requestWillBeSent") {
-    requests.add(requestId);
+    requests.set(requestId, Date.now());
     networkRequestsByTab.set(source.tabId, requests);
     return;
   }
@@ -10551,6 +11023,26 @@ function trackNetworkDebuggerEvent(
     networkRequestsByTab.delete(source.tabId);
   } else {
     networkRequestsByTab.set(source.tabId, requests);
+  }
+}
+
+function pruneStaleNetworkRequests(tabId: number, timeoutMs: number) {
+  const requests = networkRequestsByTab.get(tabId);
+  if (!requests || requests.size === 0) {
+    return;
+  }
+
+  const maxAgeMs = Math.max(1000, timeoutMs);
+  const now = Date.now();
+
+  for (const [requestId, startedAt] of requests.entries()) {
+    if (!Number.isFinite(startedAt) || now - startedAt > maxAgeMs) {
+      requests.delete(requestId);
+    }
+  }
+
+  if (requests.size === 0) {
+    networkRequestsByTab.delete(tabId);
   }
 }
 
@@ -10882,7 +11374,7 @@ function devLogFromEvent(event: ActionParams) {
 function devLogText(value: unknown, maxLength: number) {
   const raw = value == null ? "" : String(value);
   const valueText = truncateAndRedactString(raw, maxLength);
-  const redacted = valueText !== raw;
+  const redacted = valueText !== raw || /\[redacted(?:-[^\]]+)?\]/i.test(valueText);
 
   return {
     value: valueText,
@@ -12080,7 +12572,7 @@ function assertReadOnlyEvaluateAllowed(script: string, params: ActionParams, ope
 }
 
 function looksLikeMutatingScript(script: string) {
-  return /\b(click|submit|remove|setAttribute|removeAttribute|appendChild|insertBefore|replaceChild|dispatchEvent|deleteDatabase|localStorage\s*\.\s*(setItem|removeItem|clear)|sessionStorage\s*\.\s*(setItem|removeItem|clear)|document\s*\.\s*cookie\s*=|cookie\s*=)\b|\.value\s*=|\.checked\s*=|\.textContent\s*=|\.innerHTML\s*=/i.test(script);
+  return /\.(click|submit|remove|setAttribute|removeAttribute|appendChild|insertBefore|replaceChild|insertAdjacentHTML|replaceWith|dispatchEvent)\s*\(|\bdeleteDatabase\s*\(|\blocalStorage\s*\.\s*(setItem|removeItem|clear)\s*\(|\bsessionStorage\s*\.\s*(setItem|removeItem|clear)\s*\(|\bclassList\s*\.\s*(add|remove|toggle|replace)\s*\(|\bstyle\s*\.\s*(setProperty|removeProperty)\s*\(|\bdocument\s*\.\s*cookie\s*=|\bcookie\s*=|\.value\s*=|\.checked\s*=|\.textContent\s*=|\.innerHTML\s*=|\.outerHTML\s*=|\.className\s*=|\.id\s*=|\.cssText\s*=|\.style\s*\.\s*[A-Za-z_$][\w$]*\s*=/i.test(script);
 }
 
 function looksLikeSensitiveBrowserStateAccess(text: string) {

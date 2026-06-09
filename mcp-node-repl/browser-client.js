@@ -73,6 +73,11 @@ const noDefaultActions = new Set([
     "browser_wait_for_download",
     "browser_wait_for_file_chooser"
 ]);
+const noDefaultTabActions = new Set([
+    ...noDefaultActions,
+    "browser_create_tab",
+    "browser_stop_session"
+]);
 const BROWSER_BACKENDS = [
     {
         browserId: "extension",
@@ -352,6 +357,13 @@ function locatorAllLimit(value) {
     }
     return limit;
 }
+function normalizeLocatorIndex(value, label) {
+    const index = Math.trunc(requireNumber(value, label));
+    if (!Number.isFinite(index)) {
+        throw new Error(`${label} must be a finite number.`);
+    }
+    return index;
+}
 function locatorActionOptions(args) {
     return cleanObject({
         force: typeof args.force === "boolean" ? args.force : undefined,
@@ -435,6 +447,100 @@ function locatorPlanFromFilterTarget(value, label) {
         throw new Error(`${label} must include a locator plan with kind.`);
     }
     return cleanObject({ ...plan });
+}
+function locatorPlanDebugString(plan, fallbackSelector = "", depth = 0) {
+    const base = locatorPlanBaseDebugString(plan, fallbackSelector);
+    const within = objectArg(plan.within);
+    const scoped = typeof within.kind === "string" && depth < 8
+        ? `${locatorPlanDebugString(within, "", depth + 1)}.${base}`
+        : base;
+    const frameSelectors = depth === 0 ? rawFrameSelectors(plan.frameSelectors) : [];
+    const framed = frameSelectors.length
+        ? `${frameLocatorDebugString(frameSelectors)}.${scoped}`
+        : scoped;
+    return [framed, ...locatorPlanDebugSuffixes(plan, depth)].join(".");
+}
+function locatorPlanBaseDebugString(plan, fallbackSelector) {
+    const kind = typeof plan.kind === "string" ? plan.kind : "css";
+    if (kind === "text") {
+        return `getByText(${debugStringArg(plan.text ?? fallbackSelector)}${debugLocatorOptions({ exact: plan.exact })})`;
+    }
+    if (kind === "role") {
+        return `getByRole(${debugStringArg(plan.role ?? fallbackSelector)}${debugLocatorOptions({ name: plan.name, exact: plan.exact })})`;
+    }
+    if (kind === "label") {
+        return `getByLabel(${debugStringArg(plan.text ?? fallbackSelector)}${debugLocatorOptions({ exact: plan.exact })})`;
+    }
+    if (kind === "placeholder") {
+        return `getByPlaceholder(${debugStringArg(plan.text ?? fallbackSelector)}${debugLocatorOptions({ exact: plan.exact })})`;
+    }
+    if (kind === "testId") {
+        return `getByTestId(${debugStringArg(plan.testId ?? fallbackSelector)})`;
+    }
+    if (kind === "altText") {
+        return `getByAltText(${debugStringArg(plan.text ?? fallbackSelector)}${debugLocatorOptions({ exact: plan.exact })})`;
+    }
+    if (kind === "title") {
+        return `getByTitle(${debugStringArg(plan.text ?? fallbackSelector)}${debugLocatorOptions({ exact: plan.exact })})`;
+    }
+    if (kind === "displayValue") {
+        return `getByDisplayValue(${debugStringArg(plan.text ?? fallbackSelector)}${debugLocatorOptions({ exact: plan.exact })})`;
+    }
+    return `locator(${debugStringArg(plan.selector ?? fallbackSelector)})`;
+}
+function locatorPlanDebugSuffixes(plan, depth) {
+    const suffixes = [];
+    const filterEntries = [];
+    if (plan.has !== undefined && depth < 8) {
+        filterEntries.push(`has: ${locatorPlanDebugString(objectArg(plan.has), "", depth + 1)}`);
+    }
+    if (plan.hasNot !== undefined && depth < 8) {
+        filterEntries.push(`hasNot: ${locatorPlanDebugString(objectArg(plan.hasNot), "", depth + 1)}`);
+    }
+    if (typeof plan.hasText === "string") {
+        filterEntries.push(`hasText: ${debugStringArg(plan.hasText)}`);
+    }
+    if (typeof plan.hasNotText === "string") {
+        filterEntries.push(`hasNotText: ${debugStringArg(plan.hasNotText)}`);
+    }
+    if (typeof plan.visible === "boolean") {
+        filterEntries.push(`visible: ${String(plan.visible)}`);
+    }
+    if (filterEntries.length) {
+        suffixes.push(`filter({ ${filterEntries.join(", ")} })`);
+    }
+    if (plan.and !== undefined && depth < 8) {
+        suffixes.push(`and(${locatorPlanDebugString(objectArg(plan.and), "", depth + 1)})`);
+    }
+    if (plan.or !== undefined && depth < 8) {
+        suffixes.push(`or(${locatorPlanDebugString(objectArg(plan.or), "", depth + 1)})`);
+    }
+    if (typeof plan.index === "number" && Number.isFinite(plan.index) && plan.index !== 0) {
+        const index = Math.trunc(plan.index);
+        suffixes.push(index === -1 ? "last()" : `nth(${index})`);
+    }
+    return suffixes;
+}
+function frameLocatorDebugString(frameSelectors) {
+    return frameSelectors.map((selector) => `frameLocator(${debugStringArg(selector)})`).join(".");
+}
+function rawFrameSelectors(value) {
+    return Array.isArray(value)
+        ? value.filter((selector) => typeof selector === "string" && Boolean(selector.trim()))
+        : [];
+}
+function debugLocatorOptions(options) {
+    const entries = [];
+    if (typeof options.name === "string") {
+        entries.push(`name: ${debugStringArg(options.name)}`);
+    }
+    if (options.exact === true) {
+        entries.push("exact: true");
+    }
+    return entries.length ? `, { ${entries.join(", ")} }` : "";
+}
+function debugStringArg(value) {
+    return JSON.stringify(typeof value === "string" ? value : String(value ?? ""));
 }
 function locatorFrameSelectors(value, label) {
     if (value === undefined) {
@@ -760,11 +866,11 @@ class TabHandleImpl {
         };
     }
     targetArgs(args = {}) {
-        return {
+        return cleanObject({
             ...args,
             sessionId: this.sessionId,
             tabId: this.tabId
-        };
+        });
     }
     assertOpen() {
         if (this.closed) {
@@ -788,7 +894,7 @@ class LocatorHandleImpl {
             ?? locatorFrameSelectors(plan.frameSelectors, "locator.plan.frameSelectors");
         this.selector = selector;
         this.strict = args.strict === true || plan.strict === true;
-        this.index = Math.max(0, Math.floor(Number(args.index ?? plan.index ?? 0)));
+        this.index = normalizeLocatorIndex(args.index ?? plan.index ?? 0, "locator.index");
         this.plan = plan.kind
             ? cleanObject({
                 ...plan,
@@ -797,14 +903,14 @@ class LocatorHandleImpl {
                 index: this.index,
                 strict: this.strict
             })
-            : {
+            : cleanObject({
                 kind: "css",
                 selector,
                 ...filters,
                 frameSelectors,
                 index: this.index,
                 strict: this.strict
-            };
+            });
     }
     locator(childSelector, args = {}) {
         const child = requireNonEmptyString(childSelector, "locator.childSelector");
@@ -914,21 +1020,21 @@ class LocatorHandleImpl {
         });
     }
     nth(index) {
+        const normalizedIndex = normalizeLocatorIndex(index, "locator.nth.index");
         return new LocatorHandleImpl(this.transport, this.tab, this.selector, {
             strict: this.strict,
-            index,
+            index: normalizedIndex,
             plan: {
                 ...this.plan,
-                index
+                index: normalizedIndex
             }
         });
     }
     first() {
         return this.nth(0);
     }
-    async last() {
-        const count = await this.count();
-        return this.nth(Math.max(0, count - 1));
+    last() {
+        return this.nth(-1);
     }
     async all(args = {}) {
         const limit = locatorAllLimit(args.limit);
@@ -959,6 +1065,10 @@ class LocatorHandleImpl {
     async innerText(args = {}) {
         const value = (await this.query("innerText", args)).value;
         return value == null ? "" : String(value);
+    }
+    async innerHTML(args = {}) {
+        const value = (await this.query("innerHTML", args)).value;
+        return value == null ? null : String(value);
     }
     async getAttribute(name, args = {}) {
         const value = (await this.query("getAttribute", {
@@ -1086,6 +1196,9 @@ class LocatorHandleImpl {
             ...(args.clear !== undefined ? { clear: args.clear } : {})
         }, args);
     }
+    pressSequentially(value, args = {}) {
+        return this.type(value, args);
+    }
     press(key, args = {}) {
         return this.action("press", { key }, args);
     }
@@ -1112,6 +1225,9 @@ class LocatorHandleImpl {
             locator: this.plan
         }));
     }
+    page() {
+        return this.tab;
+    }
     toJSON() {
         return {
             type: "Locator",
@@ -1119,6 +1235,9 @@ class LocatorHandleImpl {
             tabId: this.tab.tabId,
             locator: this.plan
         };
+    }
+    toString() {
+        return `Locator<${locatorPlanDebugString(this.plan, this.selector)}>`;
     }
     async query(kind, args = {}) {
         const options = withTimeoutAlias(args, `locator.${kind}.timeout`);
@@ -1156,12 +1275,12 @@ class LocatorHandleImpl {
         }
     }
     targetArgs(args = {}) {
-        return {
+        return cleanObject({
             ...args,
             sessionId: this.tab.sessionId,
             tabId: this.tab.tabId,
             locator: this.plan
-        };
+        });
     }
 }
 class FrameLocatorHandleImpl {
@@ -1280,6 +1399,9 @@ class FrameLocatorHandleImpl {
             supported: true
         };
     }
+    toString() {
+        return `FrameLocator<${frameLocatorDebugString(this.frameSelectors)}>`;
+    }
 }
 function createTabPlaywrightFacade(tab) {
     return {
@@ -1295,6 +1417,15 @@ function createTabPlaywrightFacade(tab) {
         getByTitle: (text, args = {}) => tab.getByTitle(text, args),
         getByDisplayValue: (text, args = {}) => tab.getByDisplayValue(text, args),
         frameLocator: (selector) => tab.frameLocator(selector),
+        goto: (url, args = {}) => tab.goto(url, args),
+        openUrl: (url, args = {}) => tab.openUrl(url, args),
+        url: (args = {}) => tab.url(args),
+        title: (args = {}) => tab.title(args),
+        reload: (args = {}) => tab.reload(args),
+        back: (args = {}) => tab.back(args),
+        forward: (args = {}) => tab.forward(args),
+        goBack: (args = {}) => tab.goBack(args),
+        goForward: (args = {}) => tab.goForward(args),
         evaluate: (scriptOrFunction, argOrOptions, options = {}) => {
             if (typeof scriptOrFunction === "function") {
                 const script = serializePageFunction(scriptOrFunction, argOrOptions);
@@ -1313,6 +1444,8 @@ function createTabPlaywrightFacade(tab) {
         waitForLoadState: (stateOrArgs = "load", args = {}) => tab.waitForLoadState(stateOrArgs, args),
         waitForURL: (matchOrArgs, args = {}) => tab.waitForUrl(matchOrArgs, args),
         waitForUrl: (matchOrArgs, args = {}) => tab.waitForUrl(matchOrArgs, args),
+        waitForSelector: (selectorOrArgs, args = {}) => tab.waitForSelector(selectorOrArgs, args),
+        waitForText: (textOrArgs, args = {}) => tab.waitForText(textOrArgs, args),
         waitForTimeout: async (timeoutMs) => {
             if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
                 throw new Error("tab.playwright.waitForTimeout(timeoutMs) requires a non-negative finite timeout.");
@@ -1337,6 +1470,7 @@ function createTabPlaywrightFacade(tab) {
             }
             throw new Error(`tab.playwright.waitForEvent("${normalized}") is not implemented by this backend yet.`);
         },
+        screenshot: (args = {}) => tab.screenshot(args),
         expectNavigation: (actionOrArgs = {}, args = {}) => expectNavigationForAction(tab, actionOrArgs, args)
     };
 }
@@ -1502,6 +1636,14 @@ function createTabClipboardFacade(tab) {
             return Array.isArray(result.items) ? enrichClipboardItems(result.items) : [];
         },
         write: async (items, args = {}) => {
+            if (typeof items === "string") {
+                return tab.browser.tool("browser_clipboard_write_text", {
+                    ...args,
+                    sessionId: tab.sessionId,
+                    tabId: tab.tabId,
+                    text: items
+                });
+            }
             return tab.browser.tool("browser_clipboard_write", {
                 ...args,
                 sessionId: tab.sessionId,
@@ -1534,13 +1676,21 @@ function enrichClipboardPayload(payload) {
 }
 function normalizeClipboardWriteItems(items) {
     if (!Array.isArray(items)) {
-        throw new Error("tab.clipboard.write(items) requires an item array.");
+        if (isClipboardMimeRecord(items)) {
+            return [normalizeClipboardWriteMimeRecord(items, "tab.clipboard.write.items[0]")];
+        }
+        throw new Error("tab.clipboard.write(items) requires an item array or MIME payload object.");
     }
     return items.map((item, itemIndex) => {
         const source = objectArg(item);
+        if (isClipboardMimeRecord(source)) {
+            return normalizeClipboardWriteMimeRecord(source, `tab.clipboard.write.items[${itemIndex}]`);
+        }
         const types = Array.isArray(source.types)
             ? source.types.map((payload, typeIndex) => normalizeClipboardWritePayload(payload, `tab.clipboard.write.items[${itemIndex}].types[${typeIndex}]`))
-            : [];
+            : isClipboardMimeRecord(source.types)
+                ? normalizeClipboardWriteMimeRecord(objectArg(source.types), `tab.clipboard.write.items[${itemIndex}].types`).types
+                : [];
         return {
             ...source,
             types
@@ -1550,10 +1700,77 @@ function normalizeClipboardWriteItems(items) {
 function normalizeClipboardWritePayload(payload, label) {
     const source = objectArg(payload);
     const dataUrl = typeof source.dataUrl === "string" ? parseClipboardDataUrl(source.dataUrl, label) : null;
+    const dataBase64 = dataUrl
+        ? null
+        : clipboardBinaryToBase64(source.bytes ?? source.data, label);
     return cleanObject({
-        ...withoutKeys(source, ["dataUrl"]),
-        ...(dataUrl ? { mimeType: dataUrl.mimeType, dataBase64: dataUrl.dataBase64 } : {})
+        ...withoutKeys(source, ["dataUrl", "bytes", "data"]),
+        ...(dataUrl ? { mimeType: dataUrl.mimeType, dataBase64: dataUrl.dataBase64 } : {}),
+        ...(dataBase64 ? { dataBase64 } : {})
     });
+}
+function normalizeClipboardWriteMimeRecord(record, label) {
+    const types = Object.entries(record)
+        .filter(([mimeType]) => isClipboardMimeTypeKey(mimeType))
+        .map(([mimeType, payload]) => normalizeClipboardWriteMimeRecordPayload(mimeType, payload, `${label}.${mimeType}`));
+    if (!types.length) {
+        throw new Error(`${label} must include at least one MIME type payload.`);
+    }
+    return { types };
+}
+function normalizeClipboardWriteMimeRecordPayload(mimeType, payload, label) {
+    if (typeof payload === "string") {
+        return {
+            mimeType,
+            text: payload
+        };
+    }
+    const dataBase64 = clipboardBinaryToBase64(payload, label);
+    if (dataBase64) {
+        return {
+            mimeType,
+            dataBase64
+        };
+    }
+    const source = objectArg(payload);
+    const normalized = normalizeClipboardWritePayload({
+        ...source,
+        mimeType: source.mimeType ?? mimeType
+    }, label);
+    return {
+        ...normalized,
+        mimeType
+    };
+}
+function isClipboardMimeRecord(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return false;
+    }
+    return Object.keys(value).some((key) => isClipboardMimeTypeKey(key));
+}
+function isClipboardMimeTypeKey(value) {
+    return /^[a-z0-9.+-]+\/[a-z0-9.+-]+$/i.test(value);
+}
+function clipboardBinaryToBase64(value, label) {
+    if (value == null) {
+        return null;
+    }
+    if (value instanceof ArrayBuffer) {
+        return Buffer.from(value).toString("base64");
+    }
+    if (ArrayBuffer.isView(value)) {
+        return Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString("base64");
+    }
+    if (Array.isArray(value)) {
+        const bytes = value.map((item, index) => {
+            if (!Number.isInteger(item) || item < 0 || item > 255) {
+                throw new Error(`${label}.bytes[${index}] must be an integer from 0 to 255.`);
+            }
+            return item;
+        });
+        return Buffer.from(bytes).toString("base64");
+    }
+    return null;
 }
 function parseClipboardDataUrl(value, label) {
     const match = /^data:([^;,]+(?:\/[^;,]+)?)(?:;[^,]*)?;base64,([A-Za-z0-9+/=]+)$/.exec(value.trim());
@@ -2558,6 +2775,8 @@ function withDefaults(name, args, state) {
         if (state.sessionId && params.sessionId == null) {
             params.sessionId = state.sessionId;
         }
+    }
+    if (!noDefaultTabActions.has(name)) {
         if (state.tabId != null && params.tabId == null) {
             params.tabId = state.tabId;
         }

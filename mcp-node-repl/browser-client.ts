@@ -240,6 +240,15 @@ export type TabPlaywrightFacade = {
   getByTitle(text: string, args?: JsonObject): LocatorHandle;
   getByDisplayValue(text: string, args?: JsonObject): LocatorHandle;
   frameLocator(selector: string): FrameLocatorHandle;
+  goto(url: string, args?: JsonObject): Promise<unknown>;
+  openUrl(url: string, args?: JsonObject): Promise<unknown>;
+  url(args?: JsonObject): Promise<string | null>;
+  title(args?: JsonObject): Promise<string | null>;
+  reload(args?: JsonObject): Promise<unknown>;
+  back(args?: JsonObject): Promise<unknown>;
+  forward(args?: JsonObject): Promise<unknown>;
+  goBack(args?: JsonObject): Promise<unknown>;
+  goForward(args?: JsonObject): Promise<unknown>;
   evaluate<T = unknown>(
     scriptOrFunction: string | ((arg?: unknown) => unknown),
     argOrOptions?: unknown,
@@ -249,10 +258,13 @@ export type TabPlaywrightFacade = {
   waitForLoadState(stateOrArgs?: string | JsonObject, args?: JsonObject): Promise<unknown>;
   waitForURL(matchOrArgs: string | RegExp | JsonObject, args?: JsonObject): Promise<unknown>;
   waitForUrl(matchOrArgs: string | RegExp | JsonObject, args?: JsonObject): Promise<unknown>;
+  waitForSelector(selectorOrArgs: string | JsonObject, args?: JsonObject): Promise<unknown>;
+  waitForText(textOrArgs: string | JsonObject, args?: JsonObject): Promise<unknown>;
   waitForTimeout(timeoutMs: number): Promise<void>;
   waitForEvent(event: string, args?: JsonObject): Promise<unknown>;
   expectNavigation(action: () => unknown | Promise<unknown>, args?: JsonObject): Promise<unknown>;
   expectNavigation(args?: JsonObject): Promise<unknown>;
+  screenshot(args?: JsonObject): Promise<BrowserScreenshotResult>;
 };
 
 export type TabPlaywrightKeyboardFacade = {
@@ -338,7 +350,7 @@ export type TabClipboardFacade = {
   readText(args?: JsonObject): Promise<string>;
   writeText(text: string, args?: JsonObject): Promise<unknown>;
   read(args?: JsonObject): Promise<unknown[]>;
-  write(items: unknown[], args?: JsonObject): Promise<unknown>;
+  write(items: string | unknown[] | JsonObject, args?: JsonObject): Promise<unknown>;
 };
 
 export type TabHandle = {
@@ -416,7 +428,7 @@ export type LocatorHandle = {
   or(locator: LocatorHandle | JsonObject): LocatorHandle;
   nth(index: number): LocatorHandle;
   first(): LocatorHandle;
-  last(): Promise<LocatorHandle>;
+  last(): LocatorHandle;
   all(args?: JsonObject): Promise<LocatorHandle[]>;
   waitFor(args?: JsonObject): Promise<unknown>;
   count(args?: JsonObject): Promise<number>;
@@ -424,6 +436,7 @@ export type LocatorHandle = {
   allInnerTexts(args?: JsonObject): Promise<string[]>;
   textContent(args?: JsonObject): Promise<string | null>;
   innerText(args?: JsonObject): Promise<string>;
+  innerHTML(args?: JsonObject): Promise<string | null>;
   getAttribute(name: string, args?: JsonObject): Promise<string | null>;
   isVisible(args?: JsonObject): Promise<boolean>;
   isHidden(args?: JsonObject): Promise<boolean>;
@@ -459,11 +472,14 @@ export type LocatorHandle = {
   clear(args?: JsonObject): Promise<unknown>;
   fill(value: string, args?: JsonObject): Promise<unknown>;
   type(value: string, args?: JsonObject): Promise<unknown>;
+  pressSequentially(value: string, args?: JsonObject): Promise<unknown>;
   press(key: string, args?: JsonObject): Promise<unknown>;
   setChecked(checked?: boolean, args?: JsonObject): Promise<unknown>;
   selectOption(value: string | string[] | JsonObject | JsonObject[] | null, args?: JsonObject): Promise<unknown>;
   setInputFiles(filePath: string | string[], args?: JsonObject): Promise<unknown>;
   downloadMedia(args?: JsonObject): Promise<BrowserDownloadMediaResult>;
+  page(): TabHandle;
+  toString(): string;
   toJSON(): JsonObject;
 };
 
@@ -486,6 +502,7 @@ export type FrameLocatorHandle = {
     argOrOptions?: unknown,
     options?: JsonObject
   ): Promise<T>;
+  toString(): string;
   toJSON(): JsonObject;
 };
 
@@ -585,6 +602,12 @@ const noDefaultActions = new Set<BrowserToolName>([
   "browser_list_downloads",
   "browser_wait_for_download",
   "browser_wait_for_file_chooser"
+]);
+
+const noDefaultTabActions = new Set<BrowserToolName>([
+  ...noDefaultActions,
+  "browser_create_tab",
+  "browser_stop_session"
 ]);
 
 const BROWSER_BACKENDS: BrowserBackendDescriptor[] = [
@@ -923,6 +946,16 @@ function locatorAllLimit(value: unknown) {
   return limit;
 }
 
+function normalizeLocatorIndex(value: unknown, label: string) {
+  const index = Math.trunc(requireNumber(value, label));
+
+  if (!Number.isFinite(index)) {
+    throw new Error(`${label} must be a finite number.`);
+  }
+
+  return index;
+}
+
 function locatorActionOptions(args: JsonObject): JsonObject {
   return cleanObject({
     force: typeof args.force === "boolean" ? args.force : undefined,
@@ -1030,6 +1063,108 @@ function locatorPlanFromFilterTarget(value: unknown, label: string): JsonObject 
   }
 
   return cleanObject({ ...plan });
+}
+
+function locatorPlanDebugString(plan: JsonObject, fallbackSelector = "", depth = 0): string {
+  const base = locatorPlanBaseDebugString(plan, fallbackSelector);
+  const within = objectArg(plan.within);
+  const scoped = typeof within.kind === "string" && depth < 8
+    ? `${locatorPlanDebugString(within, "", depth + 1)}.${base}`
+    : base;
+  const frameSelectors = depth === 0 ? rawFrameSelectors(plan.frameSelectors) : [];
+  const framed = frameSelectors.length
+    ? `${frameLocatorDebugString(frameSelectors)}.${scoped}`
+    : scoped;
+  return [framed, ...locatorPlanDebugSuffixes(plan, depth)].join(".");
+}
+
+function locatorPlanBaseDebugString(plan: JsonObject, fallbackSelector: string): string {
+  const kind = typeof plan.kind === "string" ? plan.kind : "css";
+  if (kind === "text") {
+    return `getByText(${debugStringArg(plan.text ?? fallbackSelector)}${debugLocatorOptions({ exact: plan.exact })})`;
+  }
+  if (kind === "role") {
+    return `getByRole(${debugStringArg(plan.role ?? fallbackSelector)}${debugLocatorOptions({ name: plan.name, exact: plan.exact })})`;
+  }
+  if (kind === "label") {
+    return `getByLabel(${debugStringArg(plan.text ?? fallbackSelector)}${debugLocatorOptions({ exact: plan.exact })})`;
+  }
+  if (kind === "placeholder") {
+    return `getByPlaceholder(${debugStringArg(plan.text ?? fallbackSelector)}${debugLocatorOptions({ exact: plan.exact })})`;
+  }
+  if (kind === "testId") {
+    return `getByTestId(${debugStringArg(plan.testId ?? fallbackSelector)})`;
+  }
+  if (kind === "altText") {
+    return `getByAltText(${debugStringArg(plan.text ?? fallbackSelector)}${debugLocatorOptions({ exact: plan.exact })})`;
+  }
+  if (kind === "title") {
+    return `getByTitle(${debugStringArg(plan.text ?? fallbackSelector)}${debugLocatorOptions({ exact: plan.exact })})`;
+  }
+  if (kind === "displayValue") {
+    return `getByDisplayValue(${debugStringArg(plan.text ?? fallbackSelector)}${debugLocatorOptions({ exact: plan.exact })})`;
+  }
+  return `locator(${debugStringArg(plan.selector ?? fallbackSelector)})`;
+}
+
+function locatorPlanDebugSuffixes(plan: JsonObject, depth: number): string[] {
+  const suffixes: string[] = [];
+  const filterEntries: string[] = [];
+
+  if (plan.has !== undefined && depth < 8) {
+    filterEntries.push(`has: ${locatorPlanDebugString(objectArg(plan.has), "", depth + 1)}`);
+  }
+  if (plan.hasNot !== undefined && depth < 8) {
+    filterEntries.push(`hasNot: ${locatorPlanDebugString(objectArg(plan.hasNot), "", depth + 1)}`);
+  }
+  if (typeof plan.hasText === "string") {
+    filterEntries.push(`hasText: ${debugStringArg(plan.hasText)}`);
+  }
+  if (typeof plan.hasNotText === "string") {
+    filterEntries.push(`hasNotText: ${debugStringArg(plan.hasNotText)}`);
+  }
+  if (typeof plan.visible === "boolean") {
+    filterEntries.push(`visible: ${String(plan.visible)}`);
+  }
+  if (filterEntries.length) {
+    suffixes.push(`filter({ ${filterEntries.join(", ")} })`);
+  }
+  if (plan.and !== undefined && depth < 8) {
+    suffixes.push(`and(${locatorPlanDebugString(objectArg(plan.and), "", depth + 1)})`);
+  }
+  if (plan.or !== undefined && depth < 8) {
+    suffixes.push(`or(${locatorPlanDebugString(objectArg(plan.or), "", depth + 1)})`);
+  }
+  if (typeof plan.index === "number" && Number.isFinite(plan.index) && plan.index !== 0) {
+    const index = Math.trunc(plan.index);
+    suffixes.push(index === -1 ? "last()" : `nth(${index})`);
+  }
+  return suffixes;
+}
+
+function frameLocatorDebugString(frameSelectors: string[]) {
+  return frameSelectors.map((selector) => `frameLocator(${debugStringArg(selector)})`).join(".");
+}
+
+function rawFrameSelectors(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((selector): selector is string => typeof selector === "string" && Boolean(selector.trim()))
+    : [];
+}
+
+function debugLocatorOptions(options: JsonObject) {
+  const entries: string[] = [];
+  if (typeof options.name === "string") {
+    entries.push(`name: ${debugStringArg(options.name)}`);
+  }
+  if (options.exact === true) {
+    entries.push("exact: true");
+  }
+  return entries.length ? `, { ${entries.join(", ")} }` : "";
+}
+
+function debugStringArg(value: unknown) {
+  return JSON.stringify(typeof value === "string" ? value : String(value ?? ""));
 }
 
 function locatorFrameSelectors(value: unknown, label: string): string[] | undefined {
@@ -1450,11 +1585,11 @@ class TabHandleImpl implements TabHandle {
   }
 
   targetArgs(args: JsonObject = {}) {
-    return {
+    return cleanObject({
       ...args,
       sessionId: this.sessionId,
       tabId: this.tabId
-    };
+    });
   }
 
   private assertOpen() {
@@ -1481,7 +1616,7 @@ class LocatorHandleImpl implements LocatorHandle {
       ?? locatorFrameSelectors(plan.frameSelectors, "locator.plan.frameSelectors");
     this.selector = selector;
     this.strict = args.strict === true || plan.strict === true;
-    this.index = Math.max(0, Math.floor(Number(args.index ?? plan.index ?? 0)));
+    this.index = normalizeLocatorIndex(args.index ?? plan.index ?? 0, "locator.index");
     this.plan = plan.kind
       ? cleanObject({
           ...plan,
@@ -1490,14 +1625,14 @@ class LocatorHandleImpl implements LocatorHandle {
           index: this.index,
           strict: this.strict
         })
-      : {
+      : cleanObject({
           kind: "css",
           selector,
           ...filters,
           frameSelectors,
           index: this.index,
           strict: this.strict
-        };
+        });
   }
 
   locator(childSelector: string, args: JsonObject = {}) {
@@ -1621,12 +1756,13 @@ class LocatorHandleImpl implements LocatorHandle {
   }
 
   nth(index: number) {
+    const normalizedIndex = normalizeLocatorIndex(index, "locator.nth.index");
     return new LocatorHandleImpl(this.transport, this.tab, this.selector, {
       strict: this.strict,
-      index,
+      index: normalizedIndex,
       plan: {
         ...this.plan,
-        index
+        index: normalizedIndex
       }
     });
   }
@@ -1635,9 +1771,8 @@ class LocatorHandleImpl implements LocatorHandle {
     return this.nth(0);
   }
 
-  async last() {
-    const count = await this.count();
-    return this.nth(Math.max(0, count - 1));
+  last() {
+    return this.nth(-1);
   }
 
   async all(args: JsonObject = {}) {
@@ -1678,6 +1813,11 @@ class LocatorHandleImpl implements LocatorHandle {
   async innerText(args: JsonObject = {}) {
     const value = (await this.query("innerText", args)).value;
     return value == null ? "" : String(value);
+  }
+
+  async innerHTML(args: JsonObject = {}) {
+    const value = (await this.query("innerHTML", args)).value;
+    return value == null ? null : String(value);
   }
 
   async getAttribute(name: string, args: JsonObject = {}) {
@@ -1841,6 +1981,10 @@ class LocatorHandleImpl implements LocatorHandle {
     }, args);
   }
 
+  pressSequentially(value: string, args: JsonObject = {}) {
+    return this.type(value, args);
+  }
+
   press(key: string, args: JsonObject = {}) {
     return this.action("press", { key }, args);
   }
@@ -1872,6 +2016,10 @@ class LocatorHandleImpl implements LocatorHandle {
     }));
   }
 
+  page() {
+    return this.tab;
+  }
+
   toJSON() {
     return {
       type: "Locator",
@@ -1879,6 +2027,10 @@ class LocatorHandleImpl implements LocatorHandle {
       tabId: this.tab.tabId,
       locator: this.plan
     };
+  }
+
+  toString() {
+    return `Locator<${locatorPlanDebugString(this.plan, this.selector)}>`;
   }
 
   private async query(kind: string, args: JsonObject = {}) {
@@ -1926,12 +2078,12 @@ class LocatorHandleImpl implements LocatorHandle {
   }
 
   private targetArgs(args: JsonObject = {}) {
-    return {
+    return cleanObject({
       ...args,
       sessionId: this.tab.sessionId,
       tabId: this.tab.tabId,
       locator: this.plan
-    };
+    });
   }
 }
 
@@ -2076,6 +2228,10 @@ class FrameLocatorHandleImpl implements FrameLocatorHandle {
       supported: true
     };
   }
+
+  toString() {
+    return `FrameLocator<${frameLocatorDebugString(this.frameSelectors)}>`;
+  }
 }
 
 function createTabPlaywrightFacade(tab: TabHandle): TabPlaywrightFacade {
@@ -2092,6 +2248,15 @@ function createTabPlaywrightFacade(tab: TabHandle): TabPlaywrightFacade {
     getByTitle: (text, args = {}) => tab.getByTitle(text, args),
     getByDisplayValue: (text, args = {}) => tab.getByDisplayValue(text, args),
     frameLocator: (selector) => tab.frameLocator(selector),
+    goto: (url, args = {}) => tab.goto(url, args),
+    openUrl: (url, args = {}) => tab.openUrl(url, args),
+    url: (args = {}) => tab.url(args),
+    title: (args = {}) => tab.title(args),
+    reload: (args = {}) => tab.reload(args),
+    back: (args = {}) => tab.back(args),
+    forward: (args = {}) => tab.forward(args),
+    goBack: (args = {}) => tab.goBack(args),
+    goForward: (args = {}) => tab.goForward(args),
     evaluate: <T = unknown>(
       scriptOrFunction: string | ((arg?: unknown) => unknown),
       argOrOptions?: unknown,
@@ -2119,6 +2284,8 @@ function createTabPlaywrightFacade(tab: TabHandle): TabPlaywrightFacade {
       tab.waitForLoadState(stateOrArgs, args),
     waitForURL: (matchOrArgs, args = {}) => tab.waitForUrl(matchOrArgs, args),
     waitForUrl: (matchOrArgs, args = {}) => tab.waitForUrl(matchOrArgs, args),
+    waitForSelector: (selectorOrArgs, args = {}) => tab.waitForSelector(selectorOrArgs, args),
+    waitForText: (textOrArgs, args = {}) => tab.waitForText(textOrArgs, args),
     waitForTimeout: async (timeoutMs) => {
       if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
         throw new Error("tab.playwright.waitForTimeout(timeoutMs) requires a non-negative finite timeout.");
@@ -2146,6 +2313,7 @@ function createTabPlaywrightFacade(tab: TabHandle): TabPlaywrightFacade {
 
       throw new Error(`tab.playwright.waitForEvent("${normalized}") is not implemented by this backend yet.`);
     },
+    screenshot: (args = {}) => tab.screenshot(args),
     expectNavigation: (actionOrArgs = {}, args = {}) =>
       expectNavigationForAction(tab, actionOrArgs, args)
   };
@@ -2337,6 +2505,15 @@ function createTabClipboardFacade(tab: TabHandle): TabClipboardFacade {
       return Array.isArray(result.items) ? enrichClipboardItems(result.items) : [];
     },
     write: async (items, args = {}) => {
+      if (typeof items === "string") {
+        return tab.browser.tool("browser_clipboard_write_text", {
+          ...args,
+          sessionId: tab.sessionId,
+          tabId: tab.tabId,
+          text: items
+        });
+      }
+
       return tab.browser.tool("browser_clipboard_write", {
         ...args,
         sessionId: tab.sessionId,
@@ -2371,19 +2548,28 @@ function enrichClipboardPayload(payload: unknown): JsonObject {
   });
 }
 
-function normalizeClipboardWriteItems(items: unknown[]): JsonObject[] {
+function normalizeClipboardWriteItems(items: unknown[] | JsonObject): JsonObject[] {
   if (!Array.isArray(items)) {
-    throw new Error("tab.clipboard.write(items) requires an item array.");
+    if (isClipboardMimeRecord(items)) {
+      return [normalizeClipboardWriteMimeRecord(items, "tab.clipboard.write.items[0]")];
+    }
+    throw new Error("tab.clipboard.write(items) requires an item array or MIME payload object.");
   }
 
   return items.map((item, itemIndex) => {
     const source = objectArg(item);
+    if (isClipboardMimeRecord(source)) {
+      return normalizeClipboardWriteMimeRecord(source, `tab.clipboard.write.items[${itemIndex}]`);
+    }
+
     const types = Array.isArray(source.types)
       ? source.types.map((payload, typeIndex) => normalizeClipboardWritePayload(
           payload,
           `tab.clipboard.write.items[${itemIndex}].types[${typeIndex}]`
         ))
-      : [];
+      : isClipboardMimeRecord(source.types)
+        ? normalizeClipboardWriteMimeRecord(objectArg(source.types), `tab.clipboard.write.items[${itemIndex}].types`).types
+        : [];
 
     return {
       ...source,
@@ -2395,11 +2581,93 @@ function normalizeClipboardWriteItems(items: unknown[]): JsonObject[] {
 function normalizeClipboardWritePayload(payload: unknown, label: string): JsonObject {
   const source = objectArg(payload);
   const dataUrl = typeof source.dataUrl === "string" ? parseClipboardDataUrl(source.dataUrl, label) : null;
+  const dataBase64 = dataUrl
+    ? null
+    : clipboardBinaryToBase64(source.bytes ?? source.data, label);
 
   return cleanObject({
-    ...withoutKeys(source, ["dataUrl"]),
-    ...(dataUrl ? { mimeType: dataUrl.mimeType, dataBase64: dataUrl.dataBase64 } : {})
+    ...withoutKeys(source, ["dataUrl", "bytes", "data"]),
+    ...(dataUrl ? { mimeType: dataUrl.mimeType, dataBase64: dataUrl.dataBase64 } : {}),
+    ...(dataBase64 ? { dataBase64 } : {})
   });
+}
+
+function normalizeClipboardWriteMimeRecord(record: JsonObject, label: string): JsonObject {
+  const types = Object.entries(record)
+    .filter(([mimeType]) => isClipboardMimeTypeKey(mimeType))
+    .map(([mimeType, payload]) => normalizeClipboardWriteMimeRecordPayload(mimeType, payload, `${label}.${mimeType}`));
+
+  if (!types.length) {
+    throw new Error(`${label} must include at least one MIME type payload.`);
+  }
+
+  return { types };
+}
+
+function normalizeClipboardWriteMimeRecordPayload(mimeType: string, payload: unknown, label: string): JsonObject {
+  if (typeof payload === "string") {
+    return {
+      mimeType,
+      text: payload
+    };
+  }
+
+  const dataBase64 = clipboardBinaryToBase64(payload, label);
+  if (dataBase64) {
+    return {
+      mimeType,
+      dataBase64
+    };
+  }
+
+  const source = objectArg(payload);
+  const normalized = normalizeClipboardWritePayload({
+    ...source,
+    mimeType: source.mimeType ?? mimeType
+  }, label);
+
+  return {
+    ...normalized,
+    mimeType
+  };
+}
+
+function isClipboardMimeRecord(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+
+  return Object.keys(value).some((key) => isClipboardMimeTypeKey(key));
+}
+
+function isClipboardMimeTypeKey(value: string) {
+  return /^[a-z0-9.+-]+\/[a-z0-9.+-]+$/i.test(value);
+}
+
+function clipboardBinaryToBase64(value: unknown, label: string) {
+  if (value == null) {
+    return null;
+  }
+
+  if (value instanceof ArrayBuffer) {
+    return Buffer.from(value).toString("base64");
+  }
+
+  if (ArrayBuffer.isView(value)) {
+    return Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString("base64");
+  }
+
+  if (Array.isArray(value)) {
+    const bytes = value.map((item, index) => {
+      if (!Number.isInteger(item) || item < 0 || item > 255) {
+        throw new Error(`${label}.bytes[${index}] must be an integer from 0 to 255.`);
+      }
+      return item;
+    });
+    return Buffer.from(bytes).toString("base64");
+  }
+
+  return null;
 }
 
 function parseClipboardDataUrl(value: string, label: string) {
@@ -3564,7 +3832,9 @@ function withDefaults(
     if (state.sessionId && params.sessionId == null) {
       params.sessionId = state.sessionId;
     }
+  }
 
+  if (!noDefaultTabActions.has(name)) {
     if (state.tabId != null && params.tabId == null) {
       params.tabId = state.tabId;
     }

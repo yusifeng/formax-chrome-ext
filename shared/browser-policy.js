@@ -69,7 +69,7 @@ const destructivePattern = /\b(delete|remove|destroy|cancel|close\s+account|deac
 const sideEffectPattern = /\b(send|submit|post|publish|comment|reply|create|book|schedule|invite|save|update|confirm|pay|purchase|subscribe|unsubscribe)\b/i;
 const permissionGrantPattern = /\b(allow|enable|grant|authorize|request|share|use|start|turn\s+on|access)\b/i;
 const browserPermissionTargetPattern = /\b(camera|webcam|microphone|\bmic\b|location|geolocation|notification|notify|screen|display|clipboard|account\s+access|login\s+access|extension\s+install|install\s+extension)\b/i;
-const mutatingEvaluatePattern = /\b(click|submit|remove|setAttribute|removeAttribute|appendChild|insertBefore|replaceChild|dispatchEvent|deleteDatabase|localStorage\s*\.\s*(setItem|removeItem|clear)|sessionStorage\s*\.\s*(setItem|removeItem|clear)|document\s*\.\s*cookie\s*=|cookie\s*=)\b|\.value\s*=|\.checked\s*=|\.textContent\s*=|\.innerHTML\s*=/i;
+const mutatingEvaluatePattern = /\.(click|submit|remove|setAttribute|removeAttribute|appendChild|insertBefore|replaceChild|dispatchEvent)\s*\(|\bdeleteDatabase\s*\(|\blocalStorage\s*\.\s*(setItem|removeItem|clear)\s*\(|\bsessionStorage\s*\.\s*(setItem|removeItem|clear)\s*\(|\bdocument\s*\.\s*cookie\s*=|\bcookie\s*=|\.value\s*=|\.checked\s*=|\.textContent\s*=|\.innerHTML\s*=/i;
 const sensitiveBrowserStatePattern = /\b(document\s*\.\s*cookie|cookieStore|localStorage|sessionStorage|indexedDB|chrome\s*\.\s*storage|Storage\.|Network\.get(All)?Cookies|password|passwd|pwd|credential|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|session[_-]?(id|token)?|csrf)\b/i;
 const secretPatterns = [
     [/\b(token|access_token|refresh_token|secret)\s*=\s*([^\s&]+)/gi, "$1=[redacted]"],

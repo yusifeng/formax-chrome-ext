@@ -188,18 +188,8 @@ async fn handle_chrome_message(
                 let result = message.get("result").cloned().unwrap_or(Value::Null);
                 let _ = sender.send(crate::rpc::CallResult::Success(result));
             } else {
-                let error_value = message.get("error").unwrap_or(&Value::Null);
-                let error_msg = match (
-                    error_value.get("code").and_then(|v| v.as_str()),
-                    error_value.get("message").and_then(|v| v.as_str()),
-                ) {
-                    (Some(code), Some(message)) if !message.starts_with(&format!("{code}:")) => {
-                        format!("{code}: {message}")
-                    }
-                    (_, Some(message)) => message.to_string(),
-                    _ => format!("{error_value}"),
-                };
-                let _ = sender.send(crate::rpc::CallResult::Error(error_msg));
+                let error_value = message.get("error").cloned().unwrap_or(Value::Null);
+                let _ = sender.send(crate::rpc::CallResult::Error(error_value));
             }
         }
         Some(other) => {
@@ -288,8 +278,8 @@ mod tests {
 
         let result = rx.await.unwrap();
         match result {
-            CallResult::Error(msg) => {
-                assert_eq!(msg, "failed");
+            CallResult::Error(value) => {
+                assert_eq!(value["message"], "failed");
             }
             _ => panic!("expected error"),
         }
@@ -311,7 +301,10 @@ mod tests {
                 "ok": false,
                 "error": {
                     "code": "requires_host_approval",
-                    "message": "Browser access to example.com requires approval"
+                    "message": "Browser access to example.com requires approval",
+                    "details": {
+                        "host": "example.com"
+                    }
                 }
             }),
         )
@@ -319,11 +312,13 @@ mod tests {
 
         let result = rx.await.unwrap();
         match result {
-            CallResult::Error(msg) => {
+            CallResult::Error(value) => {
+                assert_eq!(value["code"], "requires_host_approval");
                 assert_eq!(
-                    msg,
-                    "requires_host_approval: Browser access to example.com requires approval"
+                    value["message"],
+                    "Browser access to example.com requires approval"
                 );
+                assert_eq!(value["details"]["host"], "example.com");
             }
             _ => panic!("expected error"),
         }

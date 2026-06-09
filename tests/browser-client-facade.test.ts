@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { Buffer } from "node:buffer";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -67,6 +68,16 @@ function createMockBrowser() {
           viewport: { width: 1, height: 1, devicePixelRatio: 1 },
           text: "",
           elements: []
+        }, args.sessionId as string, args.tabId as number);
+      }
+
+      if (name === "browser_get_tab") {
+        return envelope(name, {
+          tab: {
+            id: args.tabId,
+            url: "https://example.test/current",
+            title: "Current Example"
+          }
         }, args.sessionId as string, args.tabId as number);
       }
 
@@ -440,8 +451,10 @@ function createMockBrowser() {
             ? "Alice"
             : args.kind === "allInnerTexts"
               ? ["One", "Two"]
-            : args.kind === "isChecked"
-              ? true
+              : args.kind === "innerHTML"
+                ? "<strong>Alice</strong>"
+              : args.kind === "isChecked"
+                ? true
               : args.kind === "isHidden"
                 ? false
                 : args.kind === "isDisabled"
@@ -467,6 +480,17 @@ function createMockBrowser() {
           selector: args.selector,
           matched: args.selector !== "#missing",
           timedOut: args.selector === "#missing",
+          elapsedMs: 1
+        }, args.sessionId as string, args.tabId as number);
+      }
+
+      if (name === "browser_wait_for_text") {
+        return envelope(name, {
+          sessionId: args.sessionId,
+          tabId: args.tabId,
+          text: args.text,
+          matched: args.text !== "Missing",
+          timedOut: args.text === "Missing",
           elapsedMs: 1
         }, args.sessionId as string, args.tabId as number);
       }
@@ -497,6 +521,17 @@ function createMockBrowser() {
           matched: true,
           accessible: true,
           frameId: "frame-123",
+          resolvedSelectorCount: Array.isArray(args.frameSelectors) ? args.frameSelectors.length : 0,
+          unresolvedFrameSelectors: [],
+          targetCandidates: [
+            {
+              targetId: "target-123",
+              type: "iframe",
+              title: "fixture-frame",
+              url: "https://example.test/frame",
+              score: 3
+            }
+          ],
           frame: {
             id: "frame-123",
             parentId: "root-frame",
@@ -579,6 +614,28 @@ describe("browser-client object facade", () => {
       active: true,
       timeoutMs: 123
     });
+  });
+
+  it("does not send stale tab ids to session-level tab creation or stop calls", async () => {
+    const { browser, calls } = createMockBrowser();
+
+    const first = await browser.tabs.new();
+    expect(first.tabId).toBe(101);
+    await browser.tabs.new();
+    await browser.stop({ closeTabs: true });
+
+    const createCalls = calls.filter((call) => call.name === "browser_create_tab");
+    expect(createCalls).toHaveLength(2);
+    expect(createCalls[0].args).not.toHaveProperty("tabId");
+    expect(createCalls[1].args).toMatchObject({ sessionId: "session-a" });
+    expect(createCalls[1].args).not.toHaveProperty("tabId");
+
+    const stopCall = calls.find((call) => call.name === "browser_stop_session");
+    expect(stopCall?.args).toMatchObject({
+      sessionId: "session-a",
+      closeTabs: true
+    });
+    expect(stopCall?.args).not.toHaveProperty("tabId");
   });
 
   it("uses an initial session id for the first created tab", async () => {
@@ -749,8 +806,9 @@ describe("browser-client object facade", () => {
     const tab = await browser.tabs.new("https://example.test");
 
     await tab.locator("#name-input").fill("Alice", { waitMs: 50, strict: true });
+    await tab.locator("#name-input").pressSequentially("Bob", { waitMs: 20 });
 
-    const action = calls.at(-1);
+    const action = calls.at(-2);
     expect(action).toEqual({
       name: "browser_locator_action",
       args: {
@@ -762,6 +820,20 @@ describe("browser-client object facade", () => {
         args: { value: "Alice" }
       }
     });
+    expect(calls.at(-1)).toMatchObject({
+      name: "browser_locator_action",
+      args: {
+        sessionId: "session-a",
+        tabId: 101,
+        locator: { kind: "css", selector: "#name-input" },
+        kind: "type",
+        waitMs: 20,
+        args: {
+          value: "Bob"
+        }
+      }
+    });
+    expect(tab.locator("#name-input").page()).toBe(tab);
   });
 
   it("maps locator evaluate helpers and dispatchEvent to locator actions", async () => {
@@ -1016,24 +1088,32 @@ describe("browser-client object facade", () => {
 
     await expect(locator.inputValue()).resolves.toBe("Alice");
     await expect(locator.allInnerTexts()).resolves.toEqual(["One", "Two"]);
+    await expect(locator.innerHTML()).resolves.toBe("<strong>Alice</strong>");
     await expect(locator.isChecked()).resolves.toBe(true);
     await expect(locator.isHidden()).resolves.toBe(false);
     await expect(locator.isDisabled()).resolves.toBe(false);
     await expect(locator.isEditable()).resolves.toBe(true);
 
     const locatorQueryCalls = calls.filter((call) => call.name === "browser_locator_query");
-    expect(locatorQueryCalls.at(-6)).toMatchObject({
+    expect(locatorQueryCalls.at(-7)).toMatchObject({
       name: "browser_locator_query",
       args: {
         locator: { kind: "css", selector: "#agree" },
         kind: "inputValue"
       }
     });
-    expect(locatorQueryCalls.at(-5)).toMatchObject({
+    expect(locatorQueryCalls.at(-6)).toMatchObject({
       name: "browser_locator_query",
       args: {
         locator: { kind: "css", selector: "#agree" },
         kind: "allInnerTexts"
+      }
+    });
+    expect(locatorQueryCalls.at(-5)).toMatchObject({
+      name: "browser_locator_query",
+      args: {
+        locator: { kind: "css", selector: "#agree" },
+        kind: "innerHTML"
       }
     });
     expect(locatorQueryCalls.at(-4)).toMatchObject({
@@ -1261,6 +1341,36 @@ describe("browser-client object facade", () => {
     });
   });
 
+  it("exposes readable debug strings for locator handles", async () => {
+    const { browser } = createMockBrowser();
+    const tab = await browser.tabs.new("https://example.test");
+
+    const locator = tab.locator(".card")
+      .getByRole("button", { name: "Open" })
+      .filter({ hasText: "Ready" })
+      .nth(2);
+    const frameLocator = tab.frameLocator("#outer-frame").frameLocator("#inner-frame");
+
+    expect(String(locator)).toBe(
+      'Locator<locator(".card").getByRole("button", { name: "Open" }).filter({ hasText: "Ready" }).nth(2)>'
+    );
+    expect(locator.toString()).toBe(String(locator));
+    expect(String(frameLocator)).toBe('FrameLocator<frameLocator("#outer-frame").frameLocator("#inner-frame")>');
+    expect(String(frameLocator.getByText("Save"))).toBe(
+      'Locator<frameLocator("#outer-frame").frameLocator("#inner-frame").getByText("Save")>'
+    );
+    expect(locator.toJSON()).toMatchObject({
+      type: "Locator",
+      sessionId: "session-a",
+      tabId: 101,
+      locator: {
+        kind: "role",
+        role: "button",
+        name: "Open"
+      }
+    });
+  });
+
   it("maps locator check aliases to setChecked actions", async () => {
     const { browser, calls } = createMockBrowser();
     const tab = await browser.tabs.new("https://example.test");
@@ -1364,6 +1474,24 @@ describe("browser-client object facade", () => {
       timeoutMs: 678
     });
     expect(waitUrlCall?.args).not.toHaveProperty("timeout");
+  });
+
+  it("omits undefined optional fields before local tool validation", async () => {
+    const { browser, calls } = createMockBrowser();
+    const tab = await browser.tabs.new();
+
+    await tab.locator("#ready").click({ waitMs: 25 });
+
+    const locatorActionCall = calls.find((call) =>
+      call.name === "browser_locator_action" &&
+      (call.args as any).locator?.selector === "#ready"
+    );
+    expect(locatorActionCall?.args).toMatchObject({
+      kind: "click",
+      waitMs: 25
+    });
+    expect(locatorActionCall?.args).not.toHaveProperty("timeoutMs");
+    expect(locatorActionCall?.args).not.toHaveProperty("timeout");
   });
 
   it("throws structured strict locator errors", async () => {
@@ -1498,12 +1626,27 @@ describe("browser-client object facade", () => {
         textLength: 5
       }
     });
+    await expect(tab.clipboard.write("direct text", { confirmed: true })).resolves.toMatchObject({
+      result: {
+        written: true,
+        textLength: 11
+      }
+    });
 
-    expect(calls.at(-2)).toEqual({
+    expect(calls.at(-3)).toEqual({
       name: "browser_clipboard_read_text",
       args: {
         sessionId: "session-a",
         tabId: 101,
+        confirmed: true
+      }
+    });
+    expect(calls.at(-2)).toEqual({
+      name: "browser_clipboard_write_text",
+      args: {
+        sessionId: "session-a",
+        tabId: 101,
+        text: "hello",
         confirmed: true
       }
     });
@@ -1512,7 +1655,7 @@ describe("browser-client object facade", () => {
       args: {
         sessionId: "session-a",
         tabId: 101,
-        text: "hello",
+        text: "direct text",
         confirmed: true
       }
     });
@@ -1569,6 +1712,103 @@ describe("browser-client object facade", () => {
               {
                 mimeType: "image/png",
                 dataBase64: "iVBORw0KGgo="
+              }
+            ]
+          }
+        ],
+        confirmed: true
+      }
+    });
+  });
+
+  it("accepts ClipboardItem-style MIME maps for typed clipboard writes", async () => {
+    const { browser, calls } = createMockBrowser();
+    const tab = await browser.tabs.new("https://example.test");
+
+    await tab.clipboard.write([
+      {
+        "text/plain": "Plain text",
+        "text/html": { text: "<strong>Plain text</strong>" },
+        "image/png": { dataUrl: "data:image/png;base64,iVBORw0KGgo=" }
+      }
+    ], { confirmed: true });
+    await tab.clipboard.write({
+      "text/plain": "Single item"
+    }, { confirmed: true });
+    await tab.clipboard.write({
+      "application/octet-stream": new Uint8Array([1, 2, 3]),
+      "image/png": { bytes: Buffer.from([4, 5, 6]) },
+      "application/pdf": { data: Uint8Array.from([7, 8]).buffer },
+      "application/x-bytes": { bytes: [9, 10, 11] }
+    }, { confirmed: true });
+
+    expect(calls.at(-3)).toEqual({
+      name: "browser_clipboard_write",
+      args: {
+        sessionId: "session-a",
+        tabId: 101,
+        items: [
+          {
+            types: [
+              {
+                mimeType: "text/plain",
+                text: "Plain text"
+              },
+              {
+                mimeType: "text/html",
+                text: "<strong>Plain text</strong>"
+              },
+              {
+                mimeType: "image/png",
+                dataBase64: "iVBORw0KGgo="
+              }
+            ]
+          }
+        ],
+        confirmed: true
+      }
+    });
+    expect(calls.at(-2)).toEqual({
+      name: "browser_clipboard_write",
+      args: {
+        sessionId: "session-a",
+        tabId: 101,
+        items: [
+          {
+            types: [
+              {
+                mimeType: "text/plain",
+                text: "Single item"
+              }
+            ]
+          }
+        ],
+        confirmed: true
+      }
+    });
+    expect(calls.at(-1)).toEqual({
+      name: "browser_clipboard_write",
+      args: {
+        sessionId: "session-a",
+        tabId: 101,
+        items: [
+          {
+            types: [
+              {
+                mimeType: "application/octet-stream",
+                dataBase64: "AQID"
+              },
+              {
+                mimeType: "image/png",
+                dataBase64: "BAUG"
+              },
+              {
+                mimeType: "application/pdf",
+                dataBase64: "Bwg="
+              },
+              {
+                mimeType: "application/x-bytes",
+                dataBase64: "CQoL"
               }
             ]
           }
@@ -1872,29 +2112,27 @@ describe("browser-client object facade", () => {
     });
   });
 
-  it("maps last locator to count-derived index", async () => {
+  it("maps last locator to a synchronous negative index", async () => {
     const { browser, calls } = createMockBrowser();
     const tab = await browser.tabs.new();
-    const last = await tab.locator(".many").last();
+    const last = tab.locator(".many").last();
+
+    expect(last.toJSON()).toMatchObject({
+      locator: {
+        selector: ".many",
+        index: -1
+      }
+    });
+    expect(String(last)).toBe('Locator<locator(".many").last()>');
 
     await last.click();
 
-    expect(calls.at(-2)).toMatchObject({
-      name: "browser_locator_query",
-      args: {
-        kind: "count",
-        locator: {
-          selector: ".many",
-          index: 0
-        }
-      }
-    });
     expect(calls.at(-1)).toMatchObject({
       name: "browser_locator_action",
       args: {
         locator: {
           selector: ".many",
-          index: 2
+          index: -1
         }
       }
     });
@@ -1995,6 +2233,17 @@ describe("browser-client object facade", () => {
       selector: "iframe",
       frameSelectors: ["iframe"],
       supported: true
+    });
+    await expect(tab.frameLocator("#fixture-frame").resolve()).resolves.toMatchObject({
+      frameId: "frame-123",
+      resolvedSelectorCount: 1,
+      unresolvedFrameSelectors: [],
+      targetCandidates: [
+        expect.objectContaining({
+          targetId: "target-123",
+          score: 3
+        })
+      ]
     });
     await tab.frameLocator("#outer-frame")
       .frameLocator("#inner-frame")
@@ -2325,32 +2574,49 @@ describe("browser-client object facade", () => {
     await tab.playwright.mouse.move(12, 22);
     await tab.playwright.mouse.wheel(0, 300);
     await tab.playwright.mouse.drag([{ x: 1, y: 2 }, { x: 10, y: 20 }]);
+    await tab.playwright.goto("https://example.test/playwright", { waitForLoad: true });
+    await expect(tab.playwright.url()).resolves.toBe("https://example.test/current");
+    await expect(tab.playwright.title()).resolves.toBe("Current Example");
+    await tab.playwright.reload({ ignoreCache: true });
+    await tab.playwright.back({ waitForLoad: true });
+    await tab.playwright.forward({ waitForLoad: true });
     await tab.playwright.waitForLoadState({ state: "networkidle", timeoutMs: 55, idleMs: 200 });
     await tab.playwright.waitForURL("submitted", { waitUntil: "load", timeoutMs: 66 });
+    await tab.playwright.waitForSelector("#ready", { timeoutMs: 77 });
+    await tab.playwright.waitForText("Ready", { timeoutMs: 88 });
+    const screenshot = await tab.playwright.screenshot({ format: "png", fullPage: true });
     const snapshot = await tab.playwright.domSnapshot();
 
+    expect(screenshot.dataUrl).toBe("data:image/png;base64,aGVsbG8=");
     expect(snapshot).toContain("documents");
-    expect(calls.at(-11)).toMatchObject({
+    const locatorActionCall = calls.find((call) =>
+      call.name === "browser_locator_action" &&
+        (call.args.locator as any)?.kind === "role"
+    );
+    expect(locatorActionCall).toMatchObject({
       name: "browser_locator_action",
       args: {
         locator: { kind: "role", role: "button", name: "Submit" },
         kind: "click"
       }
     });
-    expect(calls.at(-10)).toMatchObject({
+    const pressCall = calls.find((call) => call.name === "browser_press_key");
+    expect(pressCall).toMatchObject({
       name: "browser_press_key",
       args: {
         key: "ControlOrMeta+A"
       }
     });
-    expect(calls.at(-9)).toMatchObject({
+    const typeCall = calls.find((call) => call.name === "browser_type_text");
+    expect(typeCall).toMatchObject({
       name: "browser_type_text",
       args: {
         text: "hello",
         waitMs: 15
       }
     });
-    expect(calls.at(-8)).toMatchObject({
+    const clickCall = calls.find((call) => call.name === "browser_click" && call.args.button === "right");
+    expect(clickCall).toMatchObject({
       name: "browser_click",
       args: {
         x: 10,
@@ -2358,7 +2624,8 @@ describe("browser-client object facade", () => {
         button: "right"
       }
     });
-    expect(calls.at(-7)).toMatchObject({
+    const dblclickCall = calls.find((call) => call.name === "browser_click" && call.args.clickCount === 2);
+    expect(dblclickCall).toMatchObject({
       name: "browser_click",
       args: {
         x: 11,
@@ -2366,27 +2633,55 @@ describe("browser-client object facade", () => {
         clickCount: 2
       }
     });
-    expect(calls.at(-6)).toMatchObject({
+    const moveCall = calls.find((call) => call.name === "browser_move_mouse");
+    expect(moveCall).toMatchObject({
       name: "browser_move_mouse",
       args: {
         x: 12,
         y: 22
       }
     });
-    expect(calls.at(-5)).toMatchObject({
+    const scrollCall = calls.find((call) => call.name === "browser_scroll");
+    expect(scrollCall).toMatchObject({
       name: "browser_scroll",
       args: {
         deltaX: 0,
         deltaY: 300
       }
     });
-    expect(calls.at(-4)).toMatchObject({
+    const dragCall = calls.find((call) => call.name === "browser_drag");
+    expect(dragCall).toMatchObject({
       name: "browser_drag",
       args: {
         path: [{ x: 1, y: 2 }, { x: 10, y: 20 }]
       }
     });
-    expect(calls.at(-3)).toMatchObject({
+    expect(calls.find((call) => call.name === "browser_open_url" && call.args.url === "https://example.test/playwright")).toMatchObject({
+      name: "browser_open_url",
+      args: {
+        waitForLoad: true
+      }
+    });
+    expect(calls.filter((call) => call.name === "browser_get_tab")).toHaveLength(2);
+    expect(calls.find((call) => call.name === "browser_reload")).toMatchObject({
+      name: "browser_reload",
+      args: {
+        ignoreCache: true
+      }
+    });
+    expect(calls.find((call) => call.name === "browser_go_back")).toMatchObject({
+      name: "browser_go_back",
+      args: {
+        waitForLoad: true
+      }
+    });
+    expect(calls.find((call) => call.name === "browser_go_forward")).toMatchObject({
+      name: "browser_go_forward",
+      args: {
+        waitForLoad: true
+      }
+    });
+    expect(calls.find((call) => call.name === "browser_wait_for_load_state")).toMatchObject({
       name: "browser_wait_for_load_state",
       args: {
         state: "networkidle",
@@ -2394,12 +2689,33 @@ describe("browser-client object facade", () => {
         idleMs: 200
       }
     });
-    expect(calls.at(-2)).toMatchObject({
+    expect(calls.find((call) => call.name === "browser_wait_for_url")).toMatchObject({
       name: "browser_wait_for_url",
       args: {
         urlContains: "submitted",
         waitUntil: "load",
         timeoutMs: 66
+      }
+    });
+    expect(calls.find((call) => call.name === "browser_wait_for_selector")).toMatchObject({
+      name: "browser_wait_for_selector",
+      args: {
+        selector: "#ready",
+        timeoutMs: 77
+      }
+    });
+    expect(calls.find((call) => call.name === "browser_wait_for_text")).toMatchObject({
+      name: "browser_wait_for_text",
+      args: {
+        text: "Ready",
+        timeoutMs: 88
+      }
+    });
+    expect(calls.find((call) => call.name === "browser_screenshot")).toMatchObject({
+      name: "browser_screenshot",
+      args: {
+        format: "png",
+        fullPage: true
       }
     });
     expect(calls.at(-1)).toMatchObject({

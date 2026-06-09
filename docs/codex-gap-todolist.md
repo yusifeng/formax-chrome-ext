@@ -88,6 +88,10 @@ Reference sources used:
   - [x] Separate read-only evaluate from mutating evaluate in the protocol.
   - [x] Reject obvious mutating scripts before execution when callers
         explicitly request `mode: "read"`.
+  - [x] Wrap explicit read-mode evaluate calls with a best-effort runtime
+        mutation guard for common DOM, storage, cookie, style, classList, and
+        form-value mutations, while documenting that this is not a hardened
+        JavaScript sandbox.
   - [x] Log raw CDP/evaluate calls with origin, method, action id, session id,
         and reason.
   - [x] Special-case `Target.getTargets` through Chrome's debugger API while
@@ -262,8 +266,8 @@ Reference sources used:
   - [x] `and(locator)`.
   - [x] `or(locator)`.
   - [x] `first()`.
-  - [x] `last()`.
-  - [x] `nth(index)`.
+  - [x] Synchronous `last()` backed by `index: -1`.
+  - [x] `nth(index)`, including negative indexes from the end of the matched set.
   - [x] `all()` with bounded limits.
 
 - [x] Improve locator queries:
@@ -482,6 +486,12 @@ Reference sources used:
   - [x] Text and binary payload support.
   - [x] SDK `dataUrl` convenience for typed clipboard binary payload reads and
         writes.
+  - [x] SDK `ClipboardItem`-style MIME map inputs for typed writes, normalized to
+        the governed backend payload shape.
+  - [x] SDK binary MIME map inputs for typed writes (`Uint8Array`/`Buffer`,
+        `ArrayBuffer`, and byte arrays), normalized to `dataBase64`.
+  - [x] SDK direct string `tab.clipboard.write("text")` alias routed through
+        the confirmed text clipboard write path.
   - [x] Permission/confirmation policy for sensitive clipboard use.
   - [x] Tests for text read/write and binary item shape.
 
@@ -607,12 +617,18 @@ Reference sources used:
   - [x] Contenteditable editor.
   - [x] Iframe.
   - [x] Nested iframe.
+  - [x] Cross-origin iframe resolve diagnostics and target-continuation
+        coverage when Chrome exposes an OOPIF target.
   - [x] Open shadow DOM.
   - [x] Canvas or visual-only target.
   - [x] Drag/drop target.
   - [x] File chooser via visible button.
   - [x] Multiple file upload.
   - [x] Download success and failure.
+  - [x] Locator strict/not-found/actionability failure codes in real browser
+        fixture paths.
+  - [x] Locator `trial: true` real-browser preflight returns target geometry
+        without changing page state.
   - [x] Browser alert/confirm/prompt.
   - [x] Permission prompt if feasible.
   - [x] Same-document navigation.
@@ -745,6 +761,8 @@ These are explicitly not equivalent to Codex yet:
 - [x] Browser history access exists with per-request confirmation, with policy
       redaction rules for sensitive entries.
 - [ ] Clipboard text and typed-item APIs exist with per-request confirmation,
+      `dataUrl` helpers, and SDK `ClipboardItem`-style MIME map write inputs,
+      plus SDK binary byte inputs normalized to `dataBase64`,
       but browser permission-prompt UI and broad native format parity are still
       incomplete.
 - [ ] Same-origin `frameLocator`, nested frame locator support, CDP frame tree
@@ -753,21 +771,32 @@ These are explicitly not equivalent to Codex yet:
       `frameLocator(...).evaluate()` exist; locator query/wait can use
       frame-scoped execution contexts when a CDP frame id is resolvable, and
       locator actions now use frame-scoped execution plus viewport-offset
-      translation when resolvable; debugger commands are serialized per
-      attached tab/target. `resolveFrame` now best-effort uses
+      translation when resolvable. Locator pointer and text-input actions now
+      dispatch through the matched `targetId` for OOPIF targets; debugger
+      commands are serialized per attached tab/target. `resolveFrame` now best-effort uses
       `Target.getTargets` to locate matching OOPIF iframe/page targets when the
       selected iframe is inaccessible or the top-level frame tree cannot
       resolve a frame path, and it can continue resolving remaining nested
       frame selectors inside the matched OOPIF target. Full OOPIF target edge
-      cases are still incomplete.
+      cases are still incomplete. `resolveFrame` now returns
+      `resolvedSelectorCount` and `unresolvedFrameSelectors` diagnostics so
+      partial frame/OOPIF resolution failures are easier to inspect, plus
+      `targetCandidates` diagnostics for the scored DevTools targets considered
+      during OOPIF matching. Real-browser coverage now includes a local
+      cross-origin iframe fixture that verifies inaccessible-frame resolution
+      and OOPIF target diagnostics are surfaced, plus nested target-continuation
+      resolution and locator click execution when Chrome exposes a separate
+      OOPIF target.
 - [x] Open shadow DOM-aware locator/snapshot support exists; closed shadow
       roots remain opaque and are clearly reported as unsupported when
       observable as custom-element hosts.
 - [ ] Playwright-style locator surface now includes common semantic locators,
       chaining/filtering, locator-scoped `getBy*` helpers, `getByAltText`,
       `getByTitle`, queries, actions, `getByDisplayValue`, `evaluate`,
-      `evaluateAll`, `dispatchEvent`, and `highlight`, but it is still not the
-      full Playwright locator API.
+      `evaluateAll`, `dispatchEvent`, `highlight`, and readable
+      `String(locator)`/`String(frameLocator)` debug labels backed by
+      machine-readable `toJSON()` locator plans, but it is still not the full
+      Playwright locator API.
 - [ ] Playwright-style actionability checks and structured strict/timeout
       errors exist for locator actions, including backend `strict_mode_violation`
       and `locator_actionability` codes mapped by the SDK, plus `trial: true`
@@ -778,8 +807,12 @@ These are explicitly not equivalent to Codex yet:
       fieldset first-legend exceptions. Editable checks account for native
       `readonly`, ancestor `aria-readonly`, and contenteditable state. Locator
       `isEnabled`, `isDisabled`, and `isEditable` query semantics are aligned
-      with those checks. Pointer hit testing now treats open shadow-root
-      descendants as belonging to their shadow host for host-targeted locators.
+      with those checks, including open shadow-root host ancestors for
+      `aria-disabled`/`aria-readonly`. Pointer hit testing now treats open
+      shadow-root descendants as belonging to their shadow host for
+      host-targeted locators, and actionability checks climb composed ancestors
+      for inert and `pointer-events: none`. Real-browser coverage verifies
+      `trial: true` returns target geometry without mutating page state.
 - [x] Read-only evaluate mode exists with conservative pre-execution and
       temporary runtime mutation guards. The protocol, docs, and skill now state
       this is not a fully hardened JavaScript capability sandbox; hardened
@@ -800,14 +833,24 @@ These are explicitly not equivalent to Codex yet:
 - [ ] Codex-compatible namespace split exists, but `tab.playwright`,
       `tab.cua`, `tab.dom_cua`, and `tab.clipboard` are still partial facades,
       not full Codex behavior. `tab.playwright` now includes common
-      `keyboard` and `mouse` aliases over the governed CUA backend in addition
-      to locator, wait, evaluate, download, and file chooser helpers.
+      page navigation aliases (`goto`, `url`, `title`, `reload`, `back`, and
+      `forward`), page-level wait and screenshot aliases
+      (`waitForSelector`, `waitForText`, and `screenshot`), plus `keyboard`
+      and `mouse` aliases over the governed CUA backend in addition to
+      locator, wait, evaluate, download, and file chooser helpers.
+- [x] Locator surface now includes the common Playwright-style read/input
+      helpers that can be faithfully backed by existing primitives, including
+      `innerHTML()`, `pressSequentially()`, and `page()`. Touch-specific
+      `tap()` remains intentionally unclaimed until the backend has real touch
+      input semantics instead of a click alias.
 - [ ] MCP server exposes only `js`, which is intentional. Skill, API docs, MCP
       configuration docs, and runtime `agent.documentation.get("browserUse")`
       now document the Formax browser-use operating model, but this still does
       not fully match Codex's complete browser-use guidance.
-- [ ] Tests are strong for happy-path fixtures but not yet strong for complex
-      real browser failures.
+- [ ] Tests now cover local real-browser fixture failures for locator
+      strict-mode, missing targets, hidden targets, and occlusion/actionability,
+      but public-site and complex cross-frame/OOPIF failures are still not fully
+      covered.
 
 ## Suggested Milestones
 

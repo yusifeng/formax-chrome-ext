@@ -1069,16 +1069,21 @@ describe("browser tool schemas", () => {
     expect(background).toContain("const locatorActionabilityOwnsPointerTop = (node, top) =>");
     expect(background).toContain("const host = root?.host instanceof Element ? root.host : null");
     expect(background).toContain("locatorActionabilityOwnsPointerTop(node, top)");
+    expect(background).toContain("const locatorActionabilityComposedParent = (node) =>");
+    expect(background).toContain("const locatorActionabilityComposedClosest = (node, predicate) =>");
     expect(background).toContain("const locatorActionabilityInert = (node) =>");
     expect(background).toContain("const locatorActionabilityPointerEvents = (node) =>");
-    expect(background).toContain("node.closest(\"[aria-disabled='true']\")");
+    expect(background).toContain("locatorActionabilityComposedParent(current)");
+    expect(background).toContain('current.getAttribute?.("aria-disabled") === "true"');
     expect(background).toContain('node.closest("fieldset[disabled]")');
     expect(background).toContain('child.tagName?.toLowerCase() === "legend"');
     expect(background).toContain("const locatorActionabilityReadonly = (node) =>");
-    expect(background).toContain("node.closest(\"[aria-readonly='true']\")");
+    expect(background).toContain('current.getAttribute?.("aria-readonly") === "true"');
     expect(background).toContain("!locatorActionabilityEnabled(node) || locatorActionabilityReadonly(node)");
     expect(background).toContain("const isEnabled = (el) => {");
     expect(background).toContain("if (el.disabled || el.getAttribute(\"aria-disabled\") === \"true\") return false;");
+    expect(background).toContain("const composedParent = (el) =>");
+    expect(background).toContain("const composedClosest = (el, predicate) =>");
     expect(background).toContain("const fieldset = el.closest(\"fieldset[disabled]\");");
     expect(background).toContain("const isReadonly = (el) =>");
     expect(background).toContain("!el || !isEnabled(el) || isReadonly(el)");
@@ -1106,9 +1111,124 @@ describe("browser tool schemas", () => {
     expect(protocol).toContain("includes the chosen hit point");
     expect(protocol).toContain("inside an inert subtree");
     expect(protocol).toContain("`pointer-events: none`");
+    expect(protocol).toContain("open shadow-root descendants inherit host/ancestor actionability blockers");
     expect(protocol).toContain("disabled fieldsets respect");
     expect(protocol).toContain('`aria-disabled="true"` ancestors');
     expect(protocol).toContain("`isEnabled`, `isDisabled`, and `isEditable` use the same disabled semantics");
+  });
+
+  it("keeps locator debug labels documented in the SDK surface", () => {
+    const client = readFileSync("mcp-node-repl/browser-client.ts", "utf8");
+    const protocol = readFileSync("shared/protocol.md", "utf8");
+    const playwright = readFileSync("docs/playwright.md", "utf8");
+    const todo = readFileSync("docs/codex-gap-todolist.md", "utf8");
+
+    expect(client).toContain("function locatorPlanDebugString");
+    expect(client).toContain("function frameLocatorDebugString");
+    expect(client).toContain("last() {");
+    expect(client).toContain("return this.nth(-1);");
+    expect(client).toContain('suffixes.push(index === -1 ? "last()"');
+    expect(client).toContain("return `Locator<${locatorPlanDebugString(this.plan, this.selector)}>`;");
+    expect(client).toContain("return `FrameLocator<${frameLocatorDebugString(this.frameSelectors)}>`;");
+    expect(protocol).toContain("`String(locator)` and `String(frameLocator)`");
+    expect(protocol).toContain("Negative indexes");
+    expect(protocol).toContain("synchronous `locator.last()`");
+    expect(playwright).toContain("The string form is a compact diagnostic label");
+    expect(playwright).toContain("locator.last()` serializes as `index: -1`");
+    expect(todo).toContain("`String(locator)`/`String(frameLocator)` debug labels");
+    expect(todo).toContain("Synchronous `last()` backed by `index: -1`");
+  });
+
+  it("keeps locator surface parity helpers documented", () => {
+    const client = readFileSync("mcp-node-repl/browser-client.ts", "utf8");
+    const api = readFileSync("docs/browser-client-api.md", "utf8");
+    const background = readFileSync("extension/background.ts", "utf8");
+    const protocol = readFileSync("shared/protocol.md", "utf8");
+    const playwright = readFileSync("docs/playwright.md", "utf8");
+    const todo = readFileSync("docs/codex-gap-todolist.md", "utf8");
+
+    expect(client).toContain("innerHTML(args?: JsonObject): Promise<string | null>;");
+    expect(client).toContain("const value = (await this.query(\"innerHTML\", args)).value;");
+    expect(client).toContain("pressSequentially(value: string, args?: JsonObject): Promise<unknown>;");
+    expect(client).toContain("return this.type(value, args);");
+    expect(client).toContain("page(): TabHandle;");
+    expect(client).toContain("return this.tab;");
+    expect(api).toContain("innerHTML(args?: JsonObject): Promise<string | null>;");
+    expect(api).toContain("pressSequentially(value: string, args?: JsonObject): Promise<unknown>;");
+    expect(api).toContain("page(): TabHandle;");
+    expect(background).toContain("\"innerHTML\"");
+    expect(background).toContain("value = first ? first.innerHTML : null;");
+    expect(protocol).toContain("`innerHTML`");
+    expect(playwright).toContain("locator.pressSequentially(text, options)");
+    expect(playwright).toContain("`locator.page()` returns the owning SDK tab handle.");
+    expect(todo).toContain("`innerHTML()`, `pressSequentially()`, and `page()`");
+  });
+
+  it("keeps typed clipboard MIME map convenience documented in the SDK surface", () => {
+    const client = readFileSync("mcp-node-repl/browser-client.ts", "utf8");
+    const protocol = readFileSync("shared/protocol.md", "utf8");
+    const playwright = readFileSync("docs/playwright.md", "utf8");
+    const todo = readFileSync("docs/codex-gap-todolist.md", "utf8");
+
+    expect(client).toContain("write(items: string | unknown[] | JsonObject, args?: JsonObject): Promise<unknown>;");
+    expect(client).toContain('if (typeof items === "string")');
+    expect(client).toContain('return tab.browser.tool("browser_clipboard_write_text"');
+    expect(client).toContain("function normalizeClipboardWriteMimeRecord");
+    expect(client).toContain("function clipboardBinaryToBase64");
+    expect(client).toContain("function isClipboardMimeTypeKey");
+    expect(client).toContain("ArrayBuffer.isView(value)");
+    expect(client).toContain("tab.clipboard.write(items) requires an item array or MIME payload object.");
+    expect(protocol).toContain("When the SDK receives a direct string");
+    expect(protocol).toContain("it routes the request to");
+    expect(protocol).toContain("`ClipboardItem`-style MIME map inputs");
+    expect(protocol).toContain("`Uint8Array`/`Buffer`, `ArrayBuffer`, or byte arrays");
+    expect(playwright).toContain('tab.clipboard.write("text", options)');
+    expect(playwright).toContain("a `ClipboardItem`-style MIME map");
+    expect(playwright).toContain("binary payloads can be `dataUrl`, `Uint8Array`/`Buffer`");
+    expect(todo).toContain("SDK direct string `tab.clipboard.write(\"text\")` alias");
+    expect(todo).toContain("SDK `ClipboardItem`-style MIME map inputs");
+    expect(todo).toContain("SDK binary MIME map inputs");
+  });
+
+  it("keeps real-browser failure smoke coverage wired into test:real", () => {
+    const realE2e = readFileSync("tests/scripts/real-browser-e2e.js", "utf8");
+    const todo = readFileSync("docs/codex-gap-todolist.md", "utf8");
+
+    expect(realE2e).toContain("real-browser locator failures surface stable structured codes");
+    expect(realE2e).toContain("strict-duplicate-button");
+    expect(realE2e).toContain("hidden-actionability-button");
+    expect(realE2e).toContain("occluded-actionability-button");
+    expect(realE2e).toContain("locator trial did not return trial payload");
+    expect(realE2e).toContain("locator trial unexpectedly changed page state");
+    expect(realE2e).toContain('trial: true');
+    expect(realE2e).toContain('strictFailure.code === "strict_mode_violation"');
+    expect(realE2e).toContain('missingFailure.code === "locator_not_found"');
+    expect(realE2e).toContain('hiddenFailure.details?.actionabilityCode === "not_visible"');
+    expect(realE2e).toContain('occludedFailure.details?.actionabilityCode === "occluded"');
+    expect(todo).toContain("Locator strict/not-found/actionability failure codes in real browser");
+    expect(todo).toContain("Locator `trial: true` real-browser preflight");
+  });
+
+  it("keeps cross-origin frame diagnostics wired into test:real", () => {
+    const tools = readFileSync("agent/browserTools.ts", "utf8");
+    const realE2e = readFileSync("tests/scripts/real-browser-e2e.js", "utf8");
+    const todo = readFileSync("docs/codex-gap-todolist.md", "utf8");
+
+    expect(tools).toContain("export async function browserResolveFrame");
+    expect(tools).toContain('case "browser_resolve_frame"');
+    expect(realE2e).toContain("cross-origin frame resolve exposes partial OOPIF diagnostics");
+    expect(realE2e).toContain("crossOriginServer");
+    expect(realE2e).toContain("CROSS_ORIGIN_HOST");
+    expect(realE2e).toContain("cross-origin-frame");
+    expect(realE2e).toContain("cross-origin-nested-frame");
+    expect(realE2e).toContain("browserResolveFrame");
+    expect(realE2e).toContain("resolved.targetCandidates");
+    expect(realE2e).toContain("Cross origin action clicked");
+    expect(realE2e).toContain("verify cross-origin locator action");
+    expect(realE2e).toContain('nested.targetId === resolved.targetId');
+    expect(todo).toContain("Cross-origin iframe resolve diagnostics and target-continuation");
+    expect(todo).toContain("nested target-continuation");
+    expect(todo).toContain("locator click execution");
   });
 
   it("keeps download actions covered by extension host blocklist enforcement", () => {
@@ -1198,21 +1318,32 @@ describe("browser tool schemas", () => {
     expect(background).toContain("function matchResolvedFramePathToFrameTreeRoot");
     expect(background).toContain("normalizeDebuggerTargetId");
     expect(background).toContain("targetViewportOffset");
+    expect(background).toContain("resolvedSelectorCount");
+    expect(background).toContain("unresolvedFrameSelectors");
+    expect(background).toContain("diagnostics.targetCandidates");
+    expect(background).toContain("candidates.slice(0, 10)");
     expect(background).toContain("finalResolvedStep?.accessible !== true");
     expect(background).toContain("async function locatorExecutionTarget");
     expect(background).toContain('const useFrameScopedContext = kind !== "boundingBox"');
     expect(background).toContain("contextId: target.executionContextId");
+    expect(background).toContain("targetId: target.targetId");
+    expect(background).toContain("const cdpOptions = targetId ? { targetId } : {};");
     expect(background).toContain("applyViewportOffsetToLocatorTarget");
     expect(background).toContain("resolveLocatorRef(tabId, target.locator");
     expect(background).toContain("stripLocatorFrameSelectors(locator)");
     expect(types).toContain("frameId?: string");
     expect(types).toContain("executionContextId?: number | null");
     expect(types).toContain("targetViewportOffset?: BrowserPoint");
+    expect(types).toContain("resolvedSelectorCount?: number");
+    expect(types).toContain("unresolvedFrameSelectors?: string[]");
+    expect(types).toContain("targetCandidates?: Array<{");
     expect(types).toContain("export type ResolveFrameParams");
     expect(protocol).toContain("Codex resource 1.1.5");
     expect(protocol).toContain("Target.getTargets");
     expect(protocol).toContain("auto-detected-oopif-target-id-or-null");
     expect(protocol).toContain("continue resolving the remaining selectors");
+    expect(protocol).toContain("`targetCandidates`");
+    expect(protocol).toContain("OOPIF target actions dispatch");
     expect(protocol).toContain("Page.createIsolatedWorld");
     expect(protocol).toContain("### resolveFrame");
   });
@@ -1375,6 +1506,7 @@ describe("browser tool schemas", () => {
   it("keeps evaluate and raw CDP calls audited without payload bodies", () => {
     const background = readFileSync("extension/background.ts", "utf8");
     const protocol = readFileSync("shared/protocol.md", "utf8");
+    const playwright = readFileSync("docs/playwright.md", "utf8");
 
     expect(background).toContain("function assertReadOnlyEvaluateAllowed");
     expect(background).toContain("function readOnlyEvaluateExpression");
@@ -1384,14 +1516,27 @@ describe("browser tool schemas", () => {
     expect(background).toContain("EventTarget.dispatchEvent");
     expect(background).toContain("Storage.setItem");
     expect(background).toContain("Document.cookie");
+    expect(background).toContain("Element.insertAdjacentHTML");
+    expect(background).toContain("DOMTokenList.add");
+    expect(background).toContain("CSSStyleDeclaration.setProperty");
+    expect(background).toContain("Element.outerHTML");
+    expect(background).toContain("Element.className");
+    expect(background).toContain("CSSStyleDeclaration.cssText");
+    expect(background).toContain("classList\\s*\\.\\s*(add|remove|toggle|replace)");
+    expect(background).toContain("\\.style\\s*\\.\\s*[A-Za-z_$][\\w$]*\\s*=");
     expect(background).toContain('read_only_evaluate_violation');
     expect(background).toContain('reason: "mutating_script_pattern"');
     expect(background).toContain('assertReadOnlyEvaluateAllowed(script, params, "evaluate")');
     expect(background).toContain('assertReadOnlyEvaluateAllowed(script, args, `locator.${kind}`)');
     expect(protocol).toContain("read_only_evaluate_violation");
     expect(protocol).toContain("temporary runtime mutation guard");
-    expect(protocol).toContain("not a full JavaScript capability sandbox");
+    expect(protocol).toContain("best-effort denylist plus temporary runtime patch");
+    expect(protocol).toContain("full JavaScript capability sandbox");
+    expect(protocol).toContain("browser-enforced immutable execution");
+    expect(protocol).toContain("classList");
+    expect(protocol).toContain("style mutation methods");
     expect(protocol).toContain('Locator `evaluate` and `evaluateAll` calls that pass `args.mode: "read"`');
+    expect(playwright).toContain("best-effort denylist plus temporary patch");
     expect(background).toContain("async function postBrowserActionAudit");
     expect(background).toContain('auditKind: "action"');
     expect(background).toContain("category: actionAuditCategory(args.action)");
@@ -1758,6 +1903,33 @@ describe("browser tool schemas", () => {
       readOnly: true,
       sideEffecting: false
     });
+  });
+
+  it("keeps Playwright namespace page aliases documented", () => {
+    const client = readFileSync("mcp-node-repl/browser-client.ts", "utf8");
+    const api = readFileSync("docs/browser-client-api.md", "utf8");
+    const playwright = readFileSync("docs/playwright.md", "utf8");
+    const todo = readFileSync("docs/codex-gap-todolist.md", "utf8");
+
+    expect(client).toContain("goto(url: string, args?: JsonObject): Promise<unknown>;");
+    expect(client).toContain("goto: (url, args = {}) => tab.goto(url, args)");
+    expect(client).toContain("url: (args = {}) => tab.url(args)");
+    expect(client).toContain("title: (args = {}) => tab.title(args)");
+    expect(client).toContain("reload: (args = {}) => tab.reload(args)");
+    expect(client).toContain("back: (args = {}) => tab.back(args)");
+    expect(client).toContain("forward: (args = {}) => tab.forward(args)");
+    expect(client).toContain("waitForSelector(selectorOrArgs: string | JsonObject, args?: JsonObject): Promise<unknown>;");
+    expect(client).toContain("waitForSelector: (selectorOrArgs, args = {}) => tab.waitForSelector(selectorOrArgs, args)");
+    expect(client).toContain("waitForText: (textOrArgs, args = {}) => tab.waitForText(textOrArgs, args)");
+    expect(client).toContain("screenshot(args?: JsonObject): Promise<BrowserScreenshotResult>;");
+    expect(client).toContain("screenshot: (args = {}) => tab.screenshot(args)");
+    expect(api).toContain("goto(url: string, args?: JsonObject): Promise<unknown>;");
+    expect(api).toContain("waitForSelector(selectorOrArgs: string | JsonObject, args?: JsonObject): Promise<unknown>;");
+    expect(api).toContain("screenshot(args?: JsonObject): Promise<BrowserScreenshotResult>;");
+    expect(playwright).toContain("tab.playwright.waitForSelector/waitForText");
+    expect(playwright).toContain("tab.playwright.screenshot");
+    expect(todo).toContain("page navigation aliases (`goto`, `url`, `title`, `reload`, `back`, and");
+    expect(todo).toContain("page-level wait and screenshot aliases");
   });
 
   it("keeps runtime errors concise with structured internal details", () => {

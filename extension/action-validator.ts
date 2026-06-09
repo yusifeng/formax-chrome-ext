@@ -541,6 +541,7 @@ const EXTENSION_ACTION_PARAM_ENUMS: Record<string, Record<string, string[]>> = {
       "allInnerTexts",
       "textContent",
       "innerText",
+      "innerHTML",
       "getAttribute",
       "isVisible",
       "isHidden",

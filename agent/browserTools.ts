@@ -76,6 +76,8 @@ import type {
   PressKeyParams,
   ReloadParams,
   ReloadExtensionResult,
+  ResolveFrameParams,
+  ResolveFrameResult,
   ResolveApprovalParams,
   ResolveApprovalResult,
   ScrollParams,
@@ -90,6 +92,9 @@ import type {
   UpdatePolicyParams,
   UpdatePolicyResult,
   UploadFileParams,
+  WaitForFileChooserParams,
+  WaitForFileChooserResult,
+  SetFileChooserFilesParams,
   WaitForDownloadParams,
   WaitForDownloadResult,
   WaitForEventParams,
@@ -159,9 +164,11 @@ async function browserRpc<T = unknown>(
   const paramsValidation = validateBrowserActionParams(action, params);
 
   if (paramsValidation.ok === false) {
-    throw new Error(
+    const error = new Error(
       `${paramsValidation.code}: Invalid browser params for ${action}: ${paramsValidation.message}`
-    );
+    ) as Error & { code?: string };
+    error.code = paramsValidation.code;
+    throw error;
   }
 
   const headers: Record<string, string> = {
@@ -200,6 +207,9 @@ async function browserRpc<T = unknown>(
       json.errorCode ||
       (typeof json.error === "object" && typeof json.error?.code === "string"
         ? json.error.code
+        : null) ||
+      (typeof errorMessage === "string"
+        ? errorMessage.match(/^([a-z][a-z0-9_]+):\s+/)?.[1] ?? null
         : null);
     const error = new Error(errorCode ? `${errorCode}: ${errorMessage}` : errorMessage);
     if (errorCode) {
@@ -364,6 +374,10 @@ export async function browserLocatorWait(args: LocatorWaitParams) {
   return browserRpc<LocatorWaitResult>("locatorWait", args as unknown as JsonObject);
 }
 
+export async function browserResolveFrame(args: ResolveFrameParams) {
+  return browserRpc<ResolveFrameResult>("resolveFrame", args as unknown as JsonObject);
+}
+
 export async function browserClick(args: ClickParams) {
   return browserRpc<BrowserObservation>("click", args as JsonObject);
 }
@@ -401,6 +415,17 @@ export async function browserHandleDialog(args: HandleDialogParams) {
 
 export async function browserScreenshot(args: ScreenshotParams) {
   return browserRpc<ScreenshotResult>("screenshot", args as JsonObject);
+}
+
+export async function browserWaitForFileChooser(args: WaitForFileChooserParams = {}) {
+  return browserRpc<WaitForFileChooserResult>(
+    "waitForFileChooser",
+    args as JsonObject
+  );
+}
+
+export async function browserSetFileChooserFiles(args: SetFileChooserFilesParams) {
+  return browserRpc<BrowserObservation>("setFileChooserFiles", args as unknown as JsonObject);
 }
 
 export async function browserUploadFile(args: UploadFileParams) {
@@ -543,6 +568,8 @@ export async function callBrowserTool(name: string, args: JsonObject) {
       return browserLocatorAction(args as unknown as LocatorActionParams);
     case "browser_locator_wait":
       return browserLocatorWait(args as unknown as LocatorWaitParams);
+    case "browser_resolve_frame":
+      return browserResolveFrame(args as unknown as ResolveFrameParams);
     case "browser_click":
       return browserClick(args as ClickParams);
     case "browser_drag":
@@ -561,6 +588,10 @@ export async function callBrowserTool(name: string, args: JsonObject) {
       return browserHandleDialog(args as unknown as HandleDialogParams);
     case "browser_screenshot":
       return browserScreenshot(args as ScreenshotParams);
+    case "browser_wait_for_file_chooser":
+      return browserWaitForFileChooser(args as WaitForFileChooserParams);
+    case "browser_set_file_chooser_files":
+      return browserSetFileChooserFiles(args as unknown as SetFileChooserFilesParams);
     case "browser_upload_file":
       return browserUploadFile(args as unknown as UploadFileParams);
     case "browser_cdp":

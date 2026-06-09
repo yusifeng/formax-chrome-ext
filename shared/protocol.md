@@ -1313,7 +1313,26 @@ Params:
 Writes typed clipboard items to the system clipboard. Each payload must provide
 either `text` or `dataBase64`. The Node SDK also accepts `dataUrl` for binary
 payloads and converts it to `mimeType` plus `dataBase64` before sending the
-backend request. `confirmed: true` is required on every request.
+backend request. For SDK-only convenience, MIME map payloads can also be
+`Uint8Array`/`Buffer`, `ArrayBuffer`, or byte arrays; these are encoded as
+`dataBase64` before the backend request. The SDK also accepts
+`ClipboardItem`-style MIME map inputs and normalizes them to the governed
+backend shape before sending:
+
+```js
+await tab.clipboard.write("Plain text", { confirmed: true });
+
+await tab.clipboard.write({
+  "text/plain": "Plain text",
+  "text/html": { text: "<strong>Plain text</strong>" },
+  "image/png": { dataUrl: "data:image/png;base64,iVBORw0KGgo=" },
+  "application/octet-stream": new Uint8Array([1, 2, 3])
+}, { confirmed: true });
+```
+
+When the SDK receives a direct string, it routes the request to
+`clipboardWriteText`; typed item payloads continue to use `clipboardWrite`.
+`confirmed: true` is required on every request.
 
 Result payload:
 
@@ -1783,19 +1802,23 @@ for example
 `["iframe#outer", "iframe#inner"]`. Locator read paths such as `locatorQuery`
 and `locatorWait` attempt to resolve frame selectors to a CDP `frameId` and run
 inside that frame's isolated execution context. Locator actions also use the
-frame-scoped execution context when a frame id is resolvable, then translate the
-frame-local element coordinates back to top-level viewport coordinates for CDP
-mouse events. `boundingBox` stays on the top-level same-origin DOM traversal
-path so screenshots keep top-viewport clip coordinates. Use `resolveFrame` and
-frame-scoped `evaluate({ frameId, targetId })` for explicit CDP frame context
-targeting. OOPIF target edge cases are still best-effort rather than full
-Playwright parity. Locator resolution recursively pierces open shadow roots for
-each selector/query root. Closed shadow roots are opaque and cannot be targeted.
-`index` selects a zero-based match for
-first-element queries; `strict: true` requires exactly one match. Supported
-query kinds are `count`, `allTextContents`, `allInnerTexts`, `textContent`,
-`innerText`, `getAttribute`, `isVisible`, `isHidden`, `isEnabled`,
-`isDisabled`, `isEditable`, `inputValue`, `isChecked`, and `boundingBox`.
+frame-scoped execution context when a frame id is resolvable. Same-origin
+iframe actions translate frame-local element coordinates back to top-level
+viewport coordinates for CDP mouse events; OOPIF target actions dispatch
+target-local input through the matched `targetId`. `boundingBox` stays on the
+top-level same-origin DOM traversal path so screenshots keep top-viewport clip
+coordinates. Use `resolveFrame` and frame-scoped
+`evaluate({ frameId, targetId })` for explicit CDP frame context targeting.
+OOPIF target edge cases are still best-effort rather than full Playwright
+parity. Locator resolution recursively pierces open shadow roots for each
+selector/query root. Closed shadow roots are opaque and cannot be targeted.
+`index` selects a zero-based match for first-element queries. Negative indexes
+select from the end of the matched set, so `index: -1` is the last match and
+backs the SDK's synchronous `locator.last()` helper. `strict: true` requires
+exactly one match. Supported query kinds are `count`, `allTextContents`,
+`allInnerTexts`, `textContent`, `innerText`, `innerHTML`, `getAttribute`, `isVisible`,
+`isHidden`, `isEnabled`, `isDisabled`, `isEditable`, `inputValue`,
+`isChecked`, and `boundingBox`.
 `isEnabled`, `isDisabled`, and `isEditable` use the same disabled semantics as
 locator actionability, including ancestor `aria-disabled="true"` and the
 disabled fieldset first-legend exception.
@@ -1847,6 +1870,17 @@ Result payload:
   "matched": true,
   "accessible": true,
   "frameId": "CDP_FRAME_ID",
+  "resolvedSelectorCount": 1,
+  "unresolvedFrameSelectors": [],
+  "targetCandidates": [
+    {
+      "targetId": "candidate-target-id",
+      "type": "iframe",
+      "title": "Fixture frame",
+      "url": "https://example.test/frame",
+      "score": 3
+    }
+  ],
   "frame": {
     "id": "CDP_FRAME_ID",
     "parentId": "ROOT_FRAME_ID",
@@ -1871,6 +1905,14 @@ Result payload:
   "viewportOffset": { "x": 10, "y": 20 }
 }
 ```
+
+`resolvedSelectorCount` and `unresolvedFrameSelectors` are diagnostic fields for
+partial frame/OOPIF resolution. They identify how much of the requested selector
+path was resolved before the frame tree or target matching failed, without
+inventing a CDP `frameId`. When target matching is attempted, `targetCandidates`
+contains the top scored DevTools targets seen through `Target.getTargets`; this
+is diagnostic only and does not grant access or imply that the candidate was
+attached.
 
 Locator plans may also include filters:
 
@@ -1985,6 +2027,8 @@ the backend dispatches keyboard or pointer input:
 - editable checks honor native `readonly`, self/ancestor
   `aria-readonly="true"`, enabled state, text input types, textarea, and
   contenteditable state
+- open shadow-root descendants inherit host/ancestor actionability blockers for
+  inert, `aria-disabled`, `aria-readonly`, and `pointer-events: none`
 - pointer actions fail explicitly when the element or an ancestor has
   `pointer-events: none`
 - click/dblclick/hover/drag verify the element receives pointer events at a
@@ -2012,6 +2056,8 @@ When a pointer action succeeds away from the center, the resolved locator target
 includes the chosen hit point so the dispatched input uses the same usable
 coordinate that passed actionability.
 The SDK maps these to dedicated locator errors where possible.
+The SDK also exposes `String(locator)` and `String(frameLocator)` as compact
+debug labels while `toJSON()` remains the machine-readable locator plan.
 
 Semantic locator examples:
 
@@ -2241,10 +2287,13 @@ extension rejects the call with `read_only_evaluate_violation` before sending
 `Runtime.evaluate`. The runtime wrapper also temporarily blocks common
 mutation APIs and setters such as `HTMLElement.click`, form submit,
 `EventTarget.dispatchEvent`, DOM insertion/removal, attribute writes, storage
-writes, `document.cookie`, `innerHTML`, `textContent`, and common form value
-setters while the read evaluation is running. This guard is stronger than a
-text-only check, but it is still not a full JavaScript capability sandbox; use
-`mode: "write"` plus the normal confirmation policy for intentional mutations.
+writes, `document.cookie`, `insertAdjacentHTML`, `classList` mutation methods,
+style mutation methods, `innerHTML`, `outerHTML`, `textContent`, `className`,
+`id`, `cssText`, and common form value setters while the read evaluation is
+running. This guard is a best-effort denylist plus temporary runtime patch, not
+a full JavaScript capability sandbox or a browser-enforced immutable execution
+context; use `mode: "write"` plus the normal confirmation policy for
+intentional mutations.
 Locator `evaluate` and `evaluateAll` calls that pass `args.mode: "read"` use the
 same pre-execution and runtime mutation guards around the page function.
 

@@ -1081,6 +1081,7 @@ export type LocatorQueryKind =
   | "allInnerTexts"
   | "textContent"
   | "innerText"
+  | "innerHTML"
   | "getAttribute"
   | "isVisible"
   | "isHidden"
@@ -1177,6 +1178,15 @@ export type ResolveFrameResult = {
   matched: boolean;
   accessible: boolean;
   frameId: string | null;
+  resolvedSelectorCount?: number;
+  unresolvedFrameSelectors?: string[];
+  targetCandidates?: Array<{
+    targetId: string;
+    type?: string | null;
+    title?: string | null;
+    url?: string | null;
+    score: number;
+  }>;
   frame: BrowserFrameTreeNode | null;
   path: Array<{
     selector: string;

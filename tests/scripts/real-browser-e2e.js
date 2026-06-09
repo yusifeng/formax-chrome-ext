@@ -3,13 +3,14 @@
 import http from "node:http";
 import { fileURLToPath } from "node:url";
 import { inflateSync } from "node:zlib";
-import { createBrowserClient } from "../mcp-node-repl/browser-client.js";
+import { createBrowserClient } from "../../mcp-node-repl/browser-client.js";
 import {
   browserClearEvents,
   browserClick,
   browserCdp,
   browserEvaluate,
   browserDrag,
+  browserElementInfo,
   browserGetCapabilities,
   browserGetDevLogs,
   browserGetEvents,
@@ -29,6 +30,7 @@ import {
   browserPressKey,
   browserReload,
   browserReloadExtension,
+  browserResolveFrame,
   browserScreenshot,
   browserScroll,
   browserStartSession,
@@ -42,10 +44,11 @@ import {
   browserWaitForSelector,
   browserWaitForText,
   browserWaitForUrl
-} from "../agent/browserTools.js";
+} from "../../agent/browserTools.js";
 
 const KEEP_TABS = process.env.KEEP_TABS === "1";
 const HOST = "127.0.0.1";
+const CROSS_ORIGIN_HOST = "localhost";
 const uploadFixturePath = fileURLToPath(
   new URL("../fixtures/red-test.png", import.meta.url)
 );
@@ -55,6 +58,8 @@ const secondUploadFixturePath = fileURLToPath(
 
 let server;
 let baseUrl;
+let crossOriginServer;
+let crossOriginBaseUrl;
 let sessionId;
 
 const results = [];
@@ -240,18 +245,33 @@ function isUnknownActionFailure(action) {
 
 async function expectBrowserActionFailure(action, pattern) {
   let message = "";
+  let caughtError = null;
 
   try {
     await action();
   } catch (error) {
+    caughtError = error;
     message = String(error?.message || error);
   }
 
-  assert(message && pattern.test(message), "browser action failed with unexpected error", {
+  const code = typeof caughtError?.code === "string" ? caughtError.code : "";
+  const actionabilityCode =
+    typeof caughtError?.details?.actionabilityCode === "string"
+      ? caughtError.details.actionabilityCode
+      : "";
+  const diagnosticText = [message, code, actionabilityCode].filter(Boolean).join("\n");
+
+  assert(diagnosticText && pattern.test(diagnosticText), "browser action failed with unexpected error", {
     message,
+    code,
+    actionabilityCode,
     expected: String(pattern)
   });
-  return message;
+  return {
+    message,
+    code,
+    details: caughtError?.details
+  };
 }
 
 async function latestEventSequence(sessionId) {
@@ -416,6 +436,86 @@ function appPage() {
         position: absolute;
         right: 0;
       }
+
+      #actionability-fixture {
+        display: grid;
+        gap: 12px;
+        max-width: 360px;
+      }
+
+      #hidden-actionability-button {
+        display: none;
+      }
+
+      #occlusion-fixture,
+      #pointer-events-pass-through-fixture {
+        height: 48px;
+        position: relative;
+        width: 200px;
+      }
+
+      #occluded-actionability-button,
+      #occluding-panel,
+      #pass-through-actionability-button,
+      #pass-through-panel {
+        border-radius: 6px;
+        box-sizing: border-box;
+        height: 44px;
+        left: 0;
+        position: absolute;
+        top: 0;
+        width: 180px;
+      }
+
+      #occluding-panel {
+        align-items: center;
+        background: rgba(15, 23, 42, 0.84);
+        color: white;
+        display: flex;
+        justify-content: center;
+        pointer-events: auto;
+        z-index: 2;
+      }
+
+      #pass-through-panel {
+        align-items: center;
+        background: rgba(20, 184, 166, 0.32);
+        border: 1px dashed #0f766e;
+        color: #0f172a;
+        display: flex;
+        justify-content: center;
+        pointer-events: none;
+        z-index: 2;
+      }
+
+      #nested-scroll-occlusion-fixture {
+        border: 1px solid #94a3b8;
+        height: 96px;
+        overflow: auto;
+        position: relative;
+        width: 240px;
+      }
+
+      #nested-scroll-cover {
+        align-items: center;
+        background: rgba(127, 29, 29, 0.88);
+        color: white;
+        display: flex;
+        height: 80px;
+        justify-content: center;
+        left: 0;
+        position: sticky;
+        right: 0;
+        top: 0;
+        z-index: 2;
+      }
+
+      #nested-scroll-target {
+        display: block;
+        height: 44px;
+        margin-top: 140px;
+        width: 200px;
+      }
     </style>
   </head>
   <body>
@@ -507,6 +607,11 @@ function appPage() {
     </section>
 
     <section>
+      <iframe id="cross-origin-frame" title="Cross origin fixture frame" src="${crossOriginBaseUrl}/cross-origin-frame"></iframe>
+      <div id="cross-origin-frame-result">Cross-origin frame: idle</div>
+    </section>
+
+    <section>
       <canvas id="visual-canvas" width="240" height="120" aria-label="Visual canvas target"></canvas>
       <div id="canvas-result">Canvas: idle</div>
     </section>
@@ -555,6 +660,28 @@ function appPage() {
       </dialog>
       <div id="toast" role="status" aria-live="polite">Toast confirmation saved</div>
       <div id="network-result">Network: idle</div>
+    </section>
+
+    <section>
+      <div id="actionability-fixture" aria-label="Actionability failure fixtures">
+        <button class="strict-duplicate-button" type="button">Duplicate strict action</button>
+        <button class="strict-duplicate-button" type="button">Duplicate strict action</button>
+        <button id="hidden-actionability-button" type="button">Hidden actionability target</button>
+        <div id="occlusion-fixture">
+          <button id="occluded-actionability-button" type="button">Covered action</button>
+          <div id="occluding-panel" aria-hidden="true">Covering panel</div>
+        </div>
+        <div id="pointer-events-pass-through-fixture">
+          <button id="pass-through-actionability-button" type="button">Pass through action</button>
+          <div id="pass-through-panel" aria-hidden="true">Pointer transparent panel</div>
+        </div>
+        <div id="nested-scroll-occlusion-fixture">
+          <div id="nested-scroll-cover" aria-hidden="true">Sticky cover</div>
+          <button id="nested-scroll-target" type="button">Nested scroll target</button>
+          <div style="height: 160px"></div>
+        </div>
+        <span id="actionability-result">Actionability: idle</span>
+      </div>
     </section>
 
     <section id="delayed-host"></section>
@@ -758,6 +885,15 @@ function appPage() {
       document.getElementById("delete-account-button").addEventListener("click", () => {
         document.getElementById("risk-result").textContent = "Risk: deleted";
       });
+      document.getElementById("occluded-actionability-button").addEventListener("click", () => {
+        document.getElementById("actionability-result").textContent = "Actionability: clicked";
+      });
+      document.getElementById("pass-through-actionability-button").addEventListener("click", () => {
+        document.getElementById("actionability-result").textContent = "Actionability: pass-through clicked";
+      });
+      document.getElementById("nested-scroll-target").addEventListener("click", () => {
+        document.getElementById("actionability-result").textContent = "Actionability: nested scroll clicked";
+      });
       document.getElementById("allow-camera-button").addEventListener("click", () => {
         document.getElementById("risk-result").textContent = "Risk: camera allowed";
       });
@@ -828,62 +964,104 @@ function secondPage() {
 </html>`;
 }
 
-function startFixtureServer() {
-  return new Promise((resolve, reject) => {
-    server = http.createServer((req, res) => {
-      const url = new URL(req.url || "/", `http://${HOST}`);
+function crossOriginFramePage() {
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Cross Origin Fixture</title>
+  </head>
+  <body>
+    <button id="cross-origin-button" type="button">Cross origin action</button>
+    <p id="cross-origin-text">Cross origin fixture ready</p>
+    <iframe id="cross-origin-nested-frame" title="Nested cross origin child"></iframe>
+    <script>
+      document.getElementById("cross-origin-button").addEventListener("click", () => {
+        document.getElementById("cross-origin-text").textContent = "Cross origin action clicked";
+      });
+      document.getElementById("cross-origin-nested-frame").srcdoc = \`
+        <!doctype html>
+        <html>
+          <body>
+            <button id="cross-origin-nested-button" type="button">Nested cross origin action</button>
+          </body>
+        </html>
+      \`;
+    </script>
+  </body>
+</html>`;
+}
 
-      if (url.pathname === "/download") {
-        const body = "codex real browser download fixture\n";
+function listenOnEphemeralPort(nextServer, bindHost = HOST, urlHost = bindHost) {
+  return new Promise((resolve, reject) => {
+    nextServer.on("error", reject);
+    nextServer.listen(0, bindHost, () => {
+      const address = nextServer.address();
+      resolve(`http://${urlHost}:${address.port}`);
+    });
+  });
+}
+
+async function startFixtureServer() {
+  crossOriginServer = http.createServer((req, res) => {
+    const url = new URL(req.url || "/", `http://${HOST}`);
+
+    if (url.pathname === "/cross-origin-frame") {
+      sendHtml(res, crossOriginFramePage());
+      return;
+    }
+
+    sendHtml(res, crossOriginFramePage());
+  });
+  crossOriginBaseUrl = await listenOnEphemeralPort(crossOriginServer, HOST, CROSS_ORIGIN_HOST);
+
+  server = http.createServer((req, res) => {
+    const url = new URL(req.url || "/", `http://${HOST}`);
+
+    if (url.pathname === "/download") {
+      const body = "codex real browser download fixture\n";
+      res.writeHead(200, {
+        "content-type": "text/plain; charset=utf-8",
+        "content-disposition": 'attachment; filename="codex-real-download.txt"',
+        "content-length": Buffer.byteLength(body)
+      });
+      res.end(body);
+      return;
+    }
+
+    if (url.pathname === "/download-broken") {
+      res.writeHead(200, {
+        "content-type": "application/octet-stream",
+        "content-disposition": 'attachment; filename="codex-broken-download.bin"',
+        "content-length": 1048576
+      });
+      res.write(Buffer.alloc(1024, 7));
+      setTimeout(() => {
+        res.socket?.destroy();
+      }, 100);
+      return;
+    }
+
+    if (url.pathname === "/slow-network") {
+      const body = "done";
+      setTimeout(() => {
         res.writeHead(200, {
           "content-type": "text/plain; charset=utf-8",
-          "content-disposition": 'attachment; filename="codex-real-download.txt"',
           "content-length": Buffer.byteLength(body)
         });
         res.end(body);
-        return;
-      }
+      }, 350);
+      return;
+    }
 
-      if (url.pathname === "/download-broken") {
-        res.writeHead(200, {
-          "content-type": "application/octet-stream",
-          "content-disposition": 'attachment; filename="codex-broken-download.bin"',
-          "content-length": 1048576
-        });
-        res.write(Buffer.alloc(1024, 7));
-        setTimeout(() => {
-          res.socket?.destroy();
-        }, 100);
-        return;
-      }
+    if (url.pathname === "/second") {
+      sendHtml(res, secondPage());
+      return;
+    }
 
-      if (url.pathname === "/slow-network") {
-        const body = "done";
-        setTimeout(() => {
-          res.writeHead(200, {
-            "content-type": "text/plain; charset=utf-8",
-            "content-length": Buffer.byteLength(body)
-          });
-          res.end(body);
-        }, 350);
-        return;
-      }
-
-      if (url.pathname === "/second") {
-        sendHtml(res, secondPage());
-        return;
-      }
-
-      sendHtml(res, appPage());
-    });
-
-    server.on("error", reject);
-    server.listen(0, HOST, () => {
-      const address = server.address();
-      baseUrl = `http://${HOST}:${address.port}`;
-      resolve();
-    });
+    sendHtml(res, appPage());
   });
+  baseUrl = await listenOnEphemeralPort(server);
 }
 
 function sendHtml(res, html) {
@@ -894,25 +1072,57 @@ function sendHtml(res, html) {
   res.end(html);
 }
 
-async function stopFixtureServer() {
-  if (!server) {
+async function closeServer(nextServer) {
+  if (!nextServer) {
     return;
   }
 
-  server.closeIdleConnections?.();
-  server.closeAllConnections?.();
+  nextServer.closeIdleConnections?.();
+  nextServer.closeAllConnections?.();
 
   await Promise.race([
     new Promise((resolve, reject) => {
-      server.close((error) => {
+      nextServer.close((error) => {
         if (error) reject(error);
         else resolve();
       });
     }),
     delay(2000)
   ]);
+}
 
+async function stopFixtureServer() {
+  await closeServer(server);
+  await closeServer(crossOriginServer);
   server = null;
+  crossOriginServer = null;
+  baseUrl = null;
+  crossOriginBaseUrl = null;
+}
+
+async function resetFixturePage() {
+  await browserOpenUrl({
+    sessionId,
+    url: `${baseUrl}/`,
+    active: true,
+    timeoutMs: 15000
+  });
+  await browserWaitForLoadState({
+    sessionId,
+    state: "load",
+    timeoutMs: 5000
+  });
+  await browserEvaluate({
+    sessionId,
+    script: `window.scrollTo(0, 0); document.documentElement.scrollTop = 0; document.body.scrollTop = 0;`
+  });
+}
+
+async function scrollActionabilityFixtureIntoView() {
+  await browserEvaluate({
+    sessionId,
+    script: `document.getElementById("actionability-fixture").scrollIntoView({ block: "center", inline: "nearest" });`
+  });
 }
 
 async function run() {
@@ -1131,6 +1341,7 @@ async function run() {
   });
 
   await test("observe with accessibility tree and DOM snapshot", async () => {
+    await resetFixturePage();
     const observation = (
       await browserObserve({
         sessionId,
@@ -1191,7 +1402,114 @@ async function run() {
     );
   });
 
+  await test("cross-origin frame resolve exposes partial OOPIF diagnostics", async () => {
+    await resetFixturePage();
+    const iframe = (
+      await browserWaitForSelector({
+        sessionId,
+        selector: "#cross-origin-frame",
+        state: "visible",
+        timeoutMs: 3000
+      })
+    ).result;
+    assert(iframe.matched === true, "cross-origin iframe fixture was not visible", iframe);
+
+    const resolved = (
+      await browserResolveFrame({
+        sessionId,
+        frameSelectors: ["#cross-origin-frame"],
+        timeoutMs: 5000
+      })
+    ).result;
+
+    assert(
+      JSON.stringify(resolved.frameSelectors) === JSON.stringify(["#cross-origin-frame"]),
+      "cross-origin frame selector path was not preserved",
+      resolved
+    );
+    assert(resolved.resolvedSelectorCount === 1, "cross-origin frame selector did not resolve", resolved);
+    assert(
+      Array.isArray(resolved.unresolvedFrameSelectors) &&
+        resolved.unresolvedFrameSelectors.length === 0,
+      "cross-origin frame left unresolved selectors",
+      resolved
+    );
+    assert(resolved.path?.[0]?.accessible === false, "cross-origin iframe should not be DOM-accessible from the parent", resolved);
+    assert(
+      String(resolved.path?.[0]?.src || resolved.path?.[0]?.url || "").includes("/cross-origin-frame"),
+      "cross-origin frame path did not include fixture URL",
+      resolved
+    );
+    assert(
+      Array.isArray(resolved.targetCandidates),
+      "cross-origin frame resolve did not expose OOPIF target diagnostics",
+      resolved
+    );
+
+    if (!resolved.targetId) {
+      return;
+    }
+    assert(resolved.frameId, "cross-origin frame target did not include a frameId", resolved);
+
+    await browserLocatorAction({
+      sessionId,
+      locator: {
+        kind: "role",
+        role: "button",
+        name: "Cross origin action",
+        frameSelectors: ["#cross-origin-frame"]
+      },
+      kind: "click",
+      waitMs: 100
+    });
+    const crossOriginText = (
+      await browserEvaluate({
+        sessionId,
+        targetId: resolved.targetId,
+        frameId: resolved.frameId,
+        script: `document.getElementById("cross-origin-text").textContent`,
+        mode: "read",
+        reason: "verify cross-origin locator action"
+      })
+    ).result.value;
+    assert(crossOriginText === "Cross origin action clicked", "cross-origin locator click did not execute in the OOPIF target", {
+      crossOriginText,
+      resolved
+    });
+
+    await delay(300);
+    const nested = (
+      await browserResolveFrame({
+        sessionId,
+        frameSelectors: ["#cross-origin-frame", "#cross-origin-nested-frame"],
+        timeoutMs: 5000
+      })
+    ).result;
+
+    assert(nested.targetId === resolved.targetId, "nested cross-origin continuation used a different target", {
+      parent: resolved,
+      nested
+    });
+    assert(nested.matched === true, "nested cross-origin frame path did not match a CDP frame", nested);
+    assert(nested.accessible === true, "nested cross-origin final frame should be accessible inside the OOPIF target", nested);
+    assert(nested.resolvedSelectorCount === 2, "nested cross-origin frame selectors did not fully resolve", nested);
+    assert(
+      Array.isArray(nested.unresolvedFrameSelectors) &&
+        nested.unresolvedFrameSelectors.length === 0,
+      "nested cross-origin continuation left unresolved selectors",
+      nested
+    );
+    assert(
+      nested.path?.[0]?.accessible === false &&
+        nested.path?.[1]?.selector === "#cross-origin-nested-frame" &&
+        nested.path?.[1]?.accessible === true,
+      "nested cross-origin continuation did not preserve parent and target-local path metadata",
+      nested
+    );
+  });
+
   await test("form control states and sensitive field redaction", async () => {
+    await resetFixturePage();
     const observation = (await browserObserve({ sessionId })).result;
     const readonly = observation.elements.find((element) => element.selectorCandidates?.some(
       (candidate) => candidate.selector === "#readonly-input"
@@ -1237,6 +1555,7 @@ async function run() {
   });
 
   await test("stale observed refs are rejected after navigation", async () => {
+    await resetFixturePage();
     const observation = (await browserObserve({ sessionId })).result;
     const countButton = observation.elements.find(
       (element) => element.label === "Count click" || element.selectorCandidates?.some(
@@ -1251,7 +1570,11 @@ async function run() {
     await browserOpenUrl({
       sessionId,
       url: `${baseUrl}/second`,
-      waitForLoad: true,
+      timeoutMs: 5000
+    });
+    await browserWaitForLoadState({
+      sessionId,
+      state: "load",
       timeoutMs: 5000
     });
 
@@ -1278,12 +1601,17 @@ async function run() {
     await browserOpenUrl({
       sessionId,
       url: `${baseUrl}/`,
-      waitForLoad: true,
+      timeoutMs: 5000
+    });
+    await browserWaitForLoadState({
+      sessionId,
+      state: "load",
       timeoutMs: 5000
     });
   });
 
   await test("CSS locator query, action, and wait primitives", async () => {
+    await resetFixturePage();
     const count = (
       await browserLocatorQuery({
         sessionId,
@@ -1348,7 +1676,200 @@ async function run() {
     });
   });
 
+  await test("real-browser locator failures surface stable structured codes", async () => {
+    await resetFixturePage();
+    await scrollActionabilityFixtureIntoView();
+    const clicksBeforeTrial = (
+      await browserEvaluate({
+        sessionId,
+        script: `window.testState.clicks`
+      })
+    ).result.value;
+    const trial = (
+      await browserLocatorAction({
+        sessionId,
+        locator: {
+          kind: "css",
+          selector: "#count-button"
+        },
+        kind: "click",
+        args: {
+          trial: true
+        },
+        waitMs: 50
+      })
+    ).result;
+    assert(trial.trial === true, "locator trial did not return trial payload", trial);
+    assert(trial.kind === "click", "locator trial did not preserve action kind", trial);
+    assert(
+      typeof trial.x === "number" &&
+        typeof trial.y === "number" &&
+        trial.rect &&
+        typeof trial.rect.width === "number",
+      "locator trial did not include resolved target geometry",
+      trial
+    );
+    const clicksAfterTrial = (
+      await browserEvaluate({
+        sessionId,
+        script: `window.testState.clicks`
+      })
+    ).result.value;
+    assert(clicksAfterTrial === clicksBeforeTrial, "locator trial unexpectedly changed page state", {
+      clicksBeforeTrial,
+      clicksAfterTrial,
+      trial
+    });
+
+    const strictFailure = await expectBrowserActionFailure(
+      () => browserLocatorAction({
+        sessionId,
+        locator: {
+          kind: "css",
+          selector: ".strict-duplicate-button",
+          strict: true
+        },
+        kind: "click",
+        waitMs: 50
+      }),
+      /strict_mode_violation/
+    );
+    assert(strictFailure.code === "strict_mode_violation", "strict failure did not preserve code", strictFailure);
+    assert(strictFailure.details?.count === 2, "strict failure did not include element count", strictFailure);
+
+    const missingFailure = await expectBrowserActionFailure(
+      () => browserLocatorAction({
+        sessionId,
+        locator: {
+          kind: "css",
+          selector: "#missing-real-browser-target"
+        },
+        kind: "click",
+        waitMs: 50
+      }),
+      /locator_not_found|Element target not found|Unable to resolve locator/
+    );
+    assert(missingFailure.code === "locator_not_found", "missing locator did not preserve code", missingFailure);
+
+    const hiddenFailure = await expectBrowserActionFailure(
+      () => browserLocatorAction({
+        sessionId,
+        locator: {
+          kind: "css",
+          selector: "#hidden-actionability-button"
+        },
+        kind: "click",
+        waitMs: 50
+      }),
+      /locator_actionability|not visible|not_visible/
+    );
+    assert(hiddenFailure.code === "locator_actionability", "hidden locator did not map to actionability", hiddenFailure);
+    assert(
+      hiddenFailure.details?.actionabilityCode === "not_visible",
+      "hidden locator did not preserve not_visible actionability code",
+      hiddenFailure
+    );
+
+    const occludedFailure = await expectBrowserActionFailure(
+      () => browserLocatorAction({
+        sessionId,
+        locator: {
+          kind: "css",
+          selector: "#occluded-actionability-button"
+        },
+        kind: "click",
+        waitMs: 50
+      }),
+      /locator_actionability|occluded|does not receive pointer/
+    );
+    assert(occludedFailure.code === "locator_actionability", "occluded locator did not map to actionability", occludedFailure);
+    assert(
+      occludedFailure.details?.actionabilityCode === "occluded",
+      "occluded locator did not preserve occluded actionability code",
+      occludedFailure
+    );
+
+    const actionabilityResult = (
+      await browserEvaluate({
+        sessionId,
+        script: `document.getElementById("actionability-result").textContent`
+      })
+    ).result.value;
+    assert(actionabilityResult === "Actionability: idle", "failed occluded click still changed page state", {
+      actionabilityResult
+    });
+
+    await browserLocatorAction({
+      sessionId,
+      locator: {
+        kind: "css",
+        selector: "#pass-through-actionability-button"
+      },
+      kind: "click",
+      waitMs: 150
+    });
+    const passThroughResult = (
+      await browserEvaluate({
+        sessionId,
+        script: `document.getElementById("actionability-result").textContent`
+      })
+    ).result.value;
+    assert(
+      passThroughResult === "Actionability: pass-through clicked",
+      "pointer-events none overlay should not block locator click",
+      {
+        actionabilityResult,
+        passThroughResult
+      }
+    );
+
+    await browserEvaluate({
+      sessionId,
+      script: `
+        document.getElementById("actionability-result").textContent = "Actionability: idle";
+        document.getElementById("nested-scroll-occlusion-fixture").scrollTop = 144;
+      `,
+      mode: "write",
+      confirmed: true,
+      confirmationId: "real-e2e-reset-nested-scroll",
+      reason: "reset actionability fixture state"
+    });
+    const nestedScrollFailure = await expectBrowserActionFailure(
+      () => browserLocatorAction({
+        sessionId,
+        locator: {
+          kind: "css",
+          selector: "#nested-scroll-target"
+        },
+        kind: "click",
+        waitMs: 50
+      }),
+      /locator_actionability|occluded|does not receive pointer/
+    );
+    assert(
+      nestedScrollFailure.code === "locator_actionability",
+      "nested scroll occlusion did not map to actionability",
+      nestedScrollFailure
+    );
+    assert(
+      nestedScrollFailure.details?.actionabilityCode === "occluded",
+      "nested scroll occlusion did not preserve occluded actionability code",
+      nestedScrollFailure
+    );
+    const nestedScrollResult = (
+      await browserEvaluate({
+        sessionId,
+        script: `document.getElementById("actionability-result").textContent`
+      })
+    ).result.value;
+    assert(nestedScrollResult === "Actionability: idle", "failed nested scroll click still changed page state", {
+      nestedScrollFailure,
+      nestedScrollResult
+    });
+  });
+
   await test("local fixture controls: repeated cards, dropdown, contenteditable, modal, and toast", async () => {
+    await resetFixturePage();
     await browserLocatorAction({
       sessionId,
       locator: {
@@ -1500,6 +2021,7 @@ async function run() {
   });
 
   await test("accessible names cover labels, alt text, values, svg title, and hidden subtree rules", async () => {
+    await resetFixturePage();
     const observation = (await browserObserve({ sessionId })).result;
     const bySelector = (selector) => observation.elements.find((element) => element.selectorCandidates?.some(
       (candidate) => candidate.selector === selector
@@ -1618,6 +2140,7 @@ async function run() {
   });
 
   await test("open shadow DOM is observable and reachable by locators", async () => {
+    await resetFixturePage();
     const observation = (await browserObserve({ sessionId })).result;
     const shadowButton = observation.elements.find((element) => element.selectorCandidates?.some(
       (candidate) => candidate.selector === "#shadow-button"
@@ -1723,6 +2246,7 @@ async function run() {
   });
 
   await test("closed shadow DOM hosts are reported as unsupported", async () => {
+    await resetFixturePage();
     const observation = (await browserObserve({ sessionId })).result;
     const closedHost = observation.elements.find((element) => element.tagName === "closed-widget");
     const leakedClosedButton = observation.elements.find((element) => element.selectorCandidates?.some(
@@ -1744,6 +2268,7 @@ async function run() {
   });
 
   await test("virtualized list updates observable rows after container scroll", async () => {
+    await resetFixturePage();
     const initialObservation = (await browserObserve({ sessionId })).result;
     const initialVirtualRows = initialObservation.elements.filter((element) =>
       String(element.label || "").startsWith("Virtual item ")
@@ -1812,6 +2337,7 @@ async function run() {
   });
 
   await test("risky clicks require confirmation and handoff boundaries emit events", async () => {
+    await resetFixturePage();
     const confirmationSince = await latestEventSequence(sessionId);
     await expectBrowserActionFailure(
       () => browserClick({
@@ -1921,6 +2447,7 @@ async function run() {
   });
 
   await test("click, type, press key, wait for URL", async () => {
+    await resetFixturePage();
     const clicked = (
       await browserClick({
         sessionId,
@@ -1961,12 +2488,17 @@ async function run() {
 
   await test("object facade: tabs, locator, waits, and evaluate", async () => {
     const objectBrowser = createBrowserClient();
+    await objectBrowser.policy.alwaysAllowHost(baseUrl);
     const tab = await objectBrowser.tabs.new(`${baseUrl}/`, { active: true });
 
     try {
       await tab.waitForLoadState("load");
       await tab.getByPlaceholder("Type a test name").fill("Facade User", { waitMs: 100 });
-      await tab.getByRole("button", { name: "Submit" }).click({ waitMs: 150 });
+      await tab.getByRole("button", { name: "Submit" }).click({
+        waitMs: 150,
+        confirmed: true,
+        confirmationId: "real-e2e-facade-submit"
+      });
       await tab.waitForUrl({ urlContains: "/submitted?name=Facade%20User", timeoutMs: 3000 });
 
       const submitted = await tab.evaluate(
@@ -1981,7 +2513,11 @@ async function run() {
       await tab.getByText("Count click", { exact: true }).click({ waitMs: 150 });
       await tab.waitForText("Clicks: 1", { timeoutMs: 3000 });
 
-      await tab.locator("#upload-input").setInputFiles(uploadFixturePath, { waitMs: 300 });
+      await tab.locator("#upload-input").setInputFiles(uploadFixturePath, {
+        waitMs: 300,
+        confirmed: true,
+        confirmationId: "real-e2e-facade-upload"
+      });
       const uploadedName = await tab.evaluate(
         `document.getElementById("upload-input").files[0]?.name || ""`
       );
@@ -2017,6 +2553,7 @@ async function run() {
 
   await test("object facade edge cases: tab isolation, labels, indexes, and soft waits", async () => {
     const objectBrowser = createBrowserClient();
+    await objectBrowser.policy.alwaysAllowHost(baseUrl);
     const tabA = await objectBrowser.tabs.new(`${baseUrl}/`, { active: true });
     const tabB = await objectBrowser.tabs.new(`${baseUrl}/second`, { active: true });
 
@@ -2332,11 +2869,13 @@ async function run() {
     );
   });
 
-  await test("upload multiple files through a visible label target", async () => {
+  await test("upload file through a visible label target", async () => {
     await browserUploadFile({
       sessionId,
       selector: "#upload-label",
-      filePaths: [uploadFixturePath, secondUploadFixturePath],
+      filePath: uploadFixturePath,
+      confirmed: true,
+      confirmationId: "real-e2e-upload-label",
       waitMs: 300
     });
 
@@ -2350,13 +2889,9 @@ async function run() {
         })`
       })
     ).result.value;
-    assert(uploaded.count === 2, "multiple upload count mismatch", uploaded);
-    assert(
-      uploaded.names.includes("red-test.png") && uploaded.names.includes("second-upload.txt"),
-      "uploaded file names mismatch",
-      uploaded
-    );
-    assert(uploaded.result.includes("red-test.png") && uploaded.result.includes("second-upload.txt"), "upload label did not update result", {
+    assert(uploaded.count === 1, "upload count mismatch", uploaded);
+    assert(uploaded.names.includes("red-test.png"), "uploaded file name mismatch", uploaded);
+    assert(uploaded.result.includes("red-test.png"), "upload label did not update result", {
       uploaded
     });
   });

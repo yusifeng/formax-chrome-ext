@@ -391,6 +391,15 @@ export type TabPlaywrightFacade = {
   getByTitle(text: string, args?: JsonObject): LocatorHandle;
   getByDisplayValue(text: string, args?: JsonObject): LocatorHandle;
   frameLocator(selector: string): FrameLocatorHandle;
+  goto(url: string, args?: JsonObject): Promise<unknown>;
+  openUrl(url: string, args?: JsonObject): Promise<unknown>;
+  url(args?: JsonObject): Promise<string | null>;
+  title(args?: JsonObject): Promise<string | null>;
+  reload(args?: JsonObject): Promise<unknown>;
+  back(args?: JsonObject): Promise<unknown>;
+  forward(args?: JsonObject): Promise<unknown>;
+  goBack(args?: JsonObject): Promise<unknown>;
+  goForward(args?: JsonObject): Promise<unknown>;
   evaluate<T = unknown>(
     scriptOrFunction: string | ((arg?: unknown) => unknown),
     argOrOptions?: unknown,
@@ -400,10 +409,13 @@ export type TabPlaywrightFacade = {
   waitForLoadState(stateOrArgs?: string | JsonObject, args?: JsonObject): Promise<unknown>;
   waitForURL(matchOrArgs: string | RegExp | JsonObject, args?: JsonObject): Promise<unknown>;
   waitForUrl(matchOrArgs: string | RegExp | JsonObject, args?: JsonObject): Promise<unknown>;
+  waitForSelector(selectorOrArgs: string | JsonObject, args?: JsonObject): Promise<unknown>;
+  waitForText(textOrArgs: string | JsonObject, args?: JsonObject): Promise<unknown>;
   waitForTimeout(timeoutMs: number): Promise<void>;
   waitForEvent(event: string, args?: JsonObject): Promise<unknown>;
   expectNavigation(action: () => unknown | Promise<unknown>, args?: JsonObject): Promise<unknown>;
   expectNavigation(args?: JsonObject): Promise<unknown>;
+  screenshot(args?: JsonObject): Promise<BrowserScreenshotResult>;
 };
 ```
 
@@ -532,7 +544,7 @@ export type TabClipboardFacade = {
   readText(args?: JsonObject): Promise<string>;
   writeText(text: string, args?: JsonObject): Promise<unknown>;
   read(args?: JsonObject): Promise<unknown[]>;
-  write(items: unknown[], args?: JsonObject): Promise<unknown>;
+  write(items: string | unknown[] | JsonObject, args?: JsonObject): Promise<unknown>;
 };
 ```
 
@@ -564,7 +576,7 @@ export type LocatorHandle = {
   or(locator: LocatorHandle | JsonObject): LocatorHandle;
   nth(index: number): LocatorHandle;
   first(): LocatorHandle;
-  last(): Promise<LocatorHandle>;
+  last(): LocatorHandle;
   all(args?: JsonObject): Promise<LocatorHandle[]>;
   waitFor(args?: JsonObject): Promise<unknown>;
   count(args?: JsonObject): Promise<number>;
@@ -572,6 +584,7 @@ export type LocatorHandle = {
   allInnerTexts(args?: JsonObject): Promise<string[]>;
   textContent(args?: JsonObject): Promise<string | null>;
   innerText(args?: JsonObject): Promise<string>;
+  innerHTML(args?: JsonObject): Promise<string | null>;
   getAttribute(name: string, args?: JsonObject): Promise<string | null>;
   isVisible(args?: JsonObject): Promise<boolean>;
   isHidden(args?: JsonObject): Promise<boolean>;
@@ -607,11 +620,14 @@ export type LocatorHandle = {
   clear(args?: JsonObject): Promise<unknown>;
   fill(value: string, args?: JsonObject): Promise<unknown>;
   type(value: string, args?: JsonObject): Promise<unknown>;
+  pressSequentially(value: string, args?: JsonObject): Promise<unknown>;
   press(key: string, args?: JsonObject): Promise<unknown>;
   setChecked(checked?: boolean, args?: JsonObject): Promise<unknown>;
   selectOption(value: string | string[] | JsonObject | JsonObject[] | null, args?: JsonObject): Promise<unknown>;
   setInputFiles(filePath: string | string[], args?: JsonObject): Promise<unknown>;
   downloadMedia(args?: JsonObject): Promise<BrowserDownloadMediaResult>;
+  page(): TabHandle;
+  toString(): string;
   toJSON(): JsonObject;
 };
 ```
@@ -646,6 +662,7 @@ export type FrameLocatorHandle = {
     argOrOptions?: unknown,
     options?: JsonObject
   ): Promise<T>;
+  toString(): string;
   toJSON(): JsonObject;
 };
 ```

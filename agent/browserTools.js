@@ -37,7 +37,9 @@ function parseBooleanEnv(value) {
 async function browserRpc(action, params = {}, timeoutMs = 30000) {
     const paramsValidation = validateBrowserActionParams(action, params);
     if (paramsValidation.ok === false) {
-        throw new Error(`${paramsValidation.code}: Invalid browser params for ${action}: ${paramsValidation.message}`);
+        const error = new Error(`${paramsValidation.code}: Invalid browser params for ${action}: ${paramsValidation.message}`);
+        error.code = paramsValidation.code;
+        throw error;
     }
     const headers = {
         "content-type": "application/json"
@@ -65,6 +67,9 @@ async function browserRpc(action, params = {}, timeoutMs = 30000) {
         const errorCode = json.errorCode ||
             (typeof json.error === "object" && typeof json.error?.code === "string"
                 ? json.error.code
+                : null) ||
+            (typeof errorMessage === "string"
+                ? errorMessage.match(/^([a-z][a-z0-9_]+):\s+/)?.[1] ?? null
                 : null);
         const error = new Error(errorCode ? `${errorCode}: ${errorMessage}` : errorMessage);
         if (errorCode) {
@@ -185,6 +190,9 @@ export async function browserLocatorAction(args) {
 export async function browserLocatorWait(args) {
     return browserRpc("locatorWait", args);
 }
+export async function browserResolveFrame(args) {
+    return browserRpc("resolveFrame", args);
+}
 export async function browserClick(args) {
     return browserRpc("click", args);
 }
@@ -211,6 +219,12 @@ export async function browserHandleDialog(args) {
 }
 export async function browserScreenshot(args) {
     return browserRpc("screenshot", args);
+}
+export async function browserWaitForFileChooser(args = {}) {
+    return browserRpc("waitForFileChooser", args);
+}
+export async function browserSetFileChooserFiles(args) {
+    return browserRpc("setFileChooserFiles", args);
 }
 export async function browserUploadFile(args) {
     return browserRpc("uploadFile", args);
@@ -325,6 +339,8 @@ export async function callBrowserTool(name, args) {
             return browserLocatorAction(args);
         case "browser_locator_wait":
             return browserLocatorWait(args);
+        case "browser_resolve_frame":
+            return browserResolveFrame(args);
         case "browser_click":
             return browserClick(args);
         case "browser_drag":
@@ -343,6 +359,10 @@ export async function callBrowserTool(name, args) {
             return browserHandleDialog(args);
         case "browser_screenshot":
             return browserScreenshot(args);
+        case "browser_wait_for_file_chooser":
+            return browserWaitForFileChooser(args);
+        case "browser_set_file_chooser_files":
+            return browserSetFileChooserFiles(args);
         case "browser_upload_file":
             return browserUploadFile(args);
         case "browser_cdp":
