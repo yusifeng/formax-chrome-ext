@@ -32,6 +32,11 @@ npm run build
 
 to build both runtime TypeScript and extension TypeScript.
 
+Runtime JavaScript files under `extension/`, `agent/`, `mcp-node-repl/`, and
+`shared/` are generated in place by TypeScript and are intentionally not
+tracked by git. Keep editing the `.ts` sources, then run `npm run build` before
+reloading the unpacked extension or running Node entrypoints directly.
+
 Use:
 
 ```bash

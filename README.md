@@ -14,6 +14,14 @@ Browser API docs start at `docs/api.md`. The generated SDK reference is
 MCP and skill configuration details live in
 `docs/plugin-mcp-configuration.md`.
 
+## Development
+
+TypeScript sources compile to adjacent JavaScript files for the Chrome
+extension, MCP runtime, shared modules, and agent helpers. Those generated
+runtime files are not tracked by git. Run `npm run build` after editing source
+files and before reloading a local unpacked extension or invoking runtime
+entrypoints directly.
+
 ## Install
 
 ### 1. Install the Formax runtime
