@@ -3385,13 +3385,16 @@ async function locatorAction(params: ActionParams = {}) {
   const waitMs = numberOrDefault(params.waitMs, 300);
 
   await debuggerManager.attachTab(tabId);
+  const timeoutMs = numberOrDefault(params.timeoutMs, DEFAULT_CDP_TIMEOUT_MS);
   const target = await locatorExecutionTarget(tabId, locator, {
+    actionKind: kind,
     sessionId: session?.sessionId,
-    timeoutMs: numberOrDefault(params.timeoutMs, DEFAULT_CDP_TIMEOUT_MS)
+    timeoutMs
   });
 
   if (kind === "click" || kind === "dblclick") {
-    const pointerTarget = await resolveLocatorRef(tabId, target.locator, `locatorAction.${kind}`, kind, args, target);
+    const rawPointerTarget = await resolveLocatorRef(tabId, target.locator, `locatorAction.${kind}`, kind, args, target);
+    const pointerTarget = await applyCurrentDispatchFrameOffset(tabId, session?.sessionId, target, rawPointerTarget, timeoutMs);
     await assertBrowserPolicyForTab("click", tabId, session?.sessionId, {
       ...params,
       ...args,
@@ -3432,7 +3435,7 @@ async function locatorAction(params: ActionParams = {}) {
     } else {
       await dispatchMouseClick(tabId, pointerTarget.x, pointerTarget.y, {
         ...args,
-        targetId: target.targetId,
+        targetId: target.dispatchTargetId,
         clickCount: kind === "dblclick" ? 2 : numberOrDefault(args.clickCount, 1)
       });
       await showCursorClick(tabId, pointerTarget.x, pointerTarget.y);
@@ -3447,12 +3450,15 @@ async function locatorAction(params: ActionParams = {}) {
 
   if (kind === "dragTo") {
     const targetLocator = normalizeLocatorPlan(args.targetLocator);
-    const sourcePoint = await resolveLocatorRef(tabId, target.locator, "locatorAction.dragTo.source", kind, args, target);
+    const rawSourcePoint = await resolveLocatorRef(tabId, target.locator, "locatorAction.dragTo.source", kind, args, target);
+    const sourcePoint = await applyCurrentDispatchFrameOffset(tabId, session?.sessionId, target, rawSourcePoint, timeoutMs);
     const targetExecution = await locatorExecutionTarget(tabId, targetLocator, {
+      actionKind: kind,
       sessionId: session?.sessionId,
-      timeoutMs: numberOrDefault(params.timeoutMs, DEFAULT_CDP_TIMEOUT_MS)
+      timeoutMs
     });
-    const targetPoint = await resolveLocatorRef(tabId, targetExecution.locator, "locatorAction.dragTo.target", kind, args, targetExecution);
+    const rawTargetPoint = await resolveLocatorRef(tabId, targetExecution.locator, "locatorAction.dragTo.target", kind, args, targetExecution);
+    const targetPoint = await applyCurrentDispatchFrameOffset(tabId, session?.sessionId, targetExecution, rawTargetPoint, timeoutMs);
 
     await assertBrowserPolicyForTab("click", tabId, session?.sessionId, {
       ...params,
@@ -3479,7 +3485,7 @@ async function locatorAction(params: ActionParams = {}) {
       { x: targetPoint.x, y: targetPoint.y }
     ], {
       ...args,
-      targetId: target.targetId
+      targetId: target.dispatchTargetId
     });
     await sleep(waitMs);
 
@@ -3784,19 +3790,28 @@ async function locatorWait(params: ActionParams = {}) {
   const pollMs = Math.max(50, numberOrDefault(params.pollMs, 100));
   const startedAt = Date.now();
   let lastMatch = null;
+  let lastTarget = null;
 
   await debuggerManager.attachTab(tabId);
-  const target = await locatorExecutionTarget(tabId, locator, {
-    sessionId: session?.sessionId,
-    timeoutMs
-  });
 
   while (Date.now() - startedAt <= timeoutMs) {
-    const match = await locatorState(tabId, target.locator, {
-      executionContextId: target.executionContextId,
-      targetId: target.targetId,
-      timeoutMs
-    });
+    let target;
+    let match;
+    try {
+      target = await locatorExecutionTarget(tabId, locator, {
+        sessionId: session?.sessionId,
+        timeoutMs
+      });
+      lastTarget = target;
+      match = await locatorState(tabId, target.locator, {
+        executionContextId: target.executionContextId,
+        targetId: target.targetId,
+        timeoutMs
+      });
+    } catch {
+      await sleep(pollMs);
+      continue;
+    }
     lastMatch = match;
 
     if (selectorStateIsSatisfied(match, state)) {
@@ -3824,8 +3839,8 @@ async function locatorWait(params: ActionParams = {}) {
     sessionId: session?.sessionId ?? null,
     tabId,
     state,
-    frameId: target.frameId,
-    targetId: target.targetId,
+    frameId: lastTarget?.frameId ?? null,
+    targetId: lastTarget?.targetId ?? null,
     matched: false,
     timedOut: true,
     elapsedMs: Date.now() - startedAt,
@@ -3951,7 +3966,7 @@ async function resolveFrame(params: ActionParams = {}) {
 async function locatorExecutionTarget(
   tabId: number,
   locator: ActionParams,
-  options: { sessionId?: string | null; timeoutMs?: number } = {}
+  options: { actionKind?: string; sessionId?: string | null; timeoutMs?: number } = {}
 ) {
   const frameSelectors = Array.isArray(locator.frameSelectors)
     ? locator.frameSelectors.filter((selector: unknown): selector is string => typeof selector === "string" && selector.trim().length > 0)
@@ -3960,6 +3975,8 @@ async function locatorExecutionTarget(
   if (frameSelectors.length === 0) {
     return {
       locator,
+      dispatchFrameSelectors: null,
+      dispatchTargetId: null,
       frameId: null,
       targetId: null,
       executionContextId: null,
@@ -3967,12 +3984,26 @@ async function locatorExecutionTarget(
     };
   }
 
-  const resolved = await resolveFrame({
-    sessionId: options.sessionId,
-    tabId,
-    frameSelectors,
-    timeoutMs: options.timeoutMs
-  });
+  let resolved;
+  try {
+    resolved = await resolveFrame({
+      sessionId: options.sessionId,
+      tabId,
+      frameSelectors,
+      timeoutMs: options.timeoutMs
+    });
+  } catch {
+    return {
+      locator,
+      dispatchFrameSelectors: frameSelectors,
+      dispatchTargetId: null,
+      frameId: null,
+      targetId: null,
+      executionContextId: null,
+      viewportOffset: { x: 0, y: 0 },
+      dispatchViewportOffset: { x: 0, y: 0 }
+    };
+  }
   const frameId = typeof resolved.frameId === "string" && resolved.frameId.trim()
     ? resolved.frameId.trim()
     : null;
@@ -3980,15 +4011,11 @@ async function locatorExecutionTarget(
     ? resolved.targetId.trim()
     : null;
 
-  if (!frameId && resolved.accessible === true) {
-    return {
-      locator,
-      frameId: null,
-      targetId: null,
-      executionContextId: null,
-      viewportOffset: { x: 0, y: 0 }
-    };
-  }
+  const dispatchOnTopTarget =
+    !targetId &&
+    resolved.accessible === true &&
+    frameSelectors.length === 1 &&
+    ["click", "dblclick", "dragTo", "hover", "highlight"].includes(options.actionKind ?? "");
 
   if (!frameId) {
     throw new Error(`Unable to resolve frame context for locator frameSelectors: ${frameSelectors.join(" -> ")}`);
@@ -4001,14 +4028,53 @@ async function locatorExecutionTarget(
 
   return {
     locator: stripLocatorFrameSelectors(locator),
+    dispatchFrameSelectors: dispatchOnTopTarget
+      ? (Array.isArray(locator.frameSelectors) ? locator.frameSelectors : frameSelectors)
+      : null,
+    dispatchTargetId: dispatchOnTopTarget ? null : targetId,
     frameId,
     targetId,
     executionContextId: await createEvaluationContextForFrame(tabId, frameId, {
       targetId,
       timeoutMs: options.timeoutMs
     }),
-    viewportOffset
+    viewportOffset: dispatchOnTopTarget ? { x: 0, y: 0 } : viewportOffset,
+    dispatchViewportOffset: dispatchOnTopTarget ? viewportOffset : null
   };
+}
+
+async function applyCurrentDispatchFrameOffset(
+  tabId: number,
+  sessionId: string | null | undefined,
+  target: any,
+  pointerTarget: any,
+  timeoutMs: number
+) {
+  const frameSelectors = Array.isArray(target?.dispatchFrameSelectors)
+    ? target.dispatchFrameSelectors.filter((selector: unknown): selector is string => typeof selector === "string" && selector.trim().length > 0)
+    : [];
+
+  if (!frameSelectors.length) {
+    return pointerTarget;
+  }
+
+  let offset = coerceViewportOffset(target?.dispatchViewportOffset);
+
+  try {
+    const resolved = await resolveFrame({
+      sessionId,
+      tabId,
+      frameSelectors,
+      timeoutMs
+    });
+    const path = Array.isArray(resolved.path) ? resolved.path : [];
+    offset = coerceViewportOffset(path.length ? path[path.length - 1]?.viewportOffset : resolved.viewportOffset);
+  } catch {
+    // Reuse the already-resolved frame offset if the same-origin frame path
+    // cannot be re-read after actionability scrolling.
+  }
+
+  return applyViewportOffsetToLocatorTarget(pointerTarget, offset);
 }
 
 function coerceViewportOffset(value: unknown) {

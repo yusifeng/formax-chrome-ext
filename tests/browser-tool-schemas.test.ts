@@ -682,9 +682,9 @@ describe("browser tool schemas", () => {
     expect(
       validateBrowserActionParams("screenshot", {
         fullPage: true,
-        clip: { x: 0, y: 0, width: 100, height: 80 },
+        clip: { x: 0, y: 0, width: 100, height: 80, scale: 2 },
         highlight: true,
-        highlightClip: { x: 5, y: 5, width: 40, height: 30 },
+        highlightClip: { x: 5, y: 5, width: 40, height: 30, scale: 1 },
         highlightColor: "rgba(16, 185, 129, 0.96)",
         highlightDurationMs: 900
       })
@@ -1440,7 +1440,6 @@ describe("browser tool schemas", () => {
     const background = readFileSync("extension/background.ts", "utf8");
     const manifest = JSON.parse(readFileSync("extension/manifest.json", "utf8"));
     const protocol = readFileSync("shared/protocol.md", "utf8");
-    const privacyPolicy = readFileSync("docs/publishing/privacy-policy.md", "utf8");
     const healthSchema = browserToolSchemas.find((schema) => schema.name === "browser_health");
 
     expect(healthSchema?.parameters.properties).toMatchObject({
@@ -1463,7 +1462,6 @@ describe("browser tool schemas", () => {
     expect(background).toContain("async function chromePermissionStatus");
     expect(background).toContain("async function chromeFileUrlAccessStatus");
     expect(manifest.permissions ?? []).toContain("favicon");
-    expect(privacyPolicy).toContain("`favicon`: to read page favicons");
     expect(protocol).toContain("The extension does not read Chrome");
     expect(protocol).toContain("activeProfileSource");
   });

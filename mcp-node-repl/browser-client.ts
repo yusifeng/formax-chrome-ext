@@ -366,6 +366,7 @@ export type TabHandle = {
   readonly dev: BrowserDevFacade;
   info(): Promise<unknown>;
   bringToFront(): Promise<TabHandle>;
+  ensureActive(): Promise<TabHandle>;
   goto(url: string, args?: JsonObject): Promise<unknown>;
   openUrl(url: string, args?: JsonObject): Promise<unknown>;
   url(args?: JsonObject): Promise<string | null>;
@@ -1292,6 +1293,15 @@ class TabHandleImpl implements TabHandle {
     return this;
   }
 
+  async ensureActive() {
+    this.assertOpen();
+    if (this.browser.state.tabId === this.tabId) {
+      return this;
+    }
+
+    return this.bringToFront();
+  }
+
   goto(url: string, args: JsonObject = {}) {
     this.assertOpen();
     return this.transport.result("browser_open_url", this.targetArgs({ ...args, url }));
@@ -1783,6 +1793,7 @@ class LocatorHandleImpl implements LocatorHandle {
   }
 
   async waitFor(args: JsonObject = {}) {
+    await this.tab.ensureActive();
     const options = withTimeoutAlias(args, "locator.waitFor.timeout");
     const result = await this.transport.result<WaitResult>(
       "browser_locator_wait",
@@ -1998,6 +2009,11 @@ class LocatorHandleImpl implements LocatorHandle {
   }
 
   setInputFiles(filePath: string | string[], args: JsonObject = {}) {
+    return this.setInputFilesActive(filePath, args);
+  }
+
+  private async setInputFilesActive(filePath: string | string[], args: JsonObject = {}) {
+    await this.tab.ensureActive();
     return this.transport.result("browser_upload_file", {
       ...args,
       sessionId: this.tab.sessionId,
@@ -2008,6 +2024,7 @@ class LocatorHandleImpl implements LocatorHandle {
   }
 
   async downloadMedia(args: JsonObject = {}) {
+    await this.tab.ensureActive();
     return enrichDownloadMediaResult(await this.transport.result("browser_download_media", {
       ...args,
       sessionId: this.tab.sessionId,
@@ -2034,6 +2051,7 @@ class LocatorHandleImpl implements LocatorHandle {
   }
 
   private async query(kind: string, args: JsonObject = {}) {
+    await this.tab.ensureActive();
     const options = withTimeoutAlias(args, `locator.${kind}.timeout`);
     return this.transport.result<{ value?: unknown; count?: number }>(
       "browser_locator_query",
@@ -2046,6 +2064,7 @@ class LocatorHandleImpl implements LocatorHandle {
 
   private async action(kind: string, actionArgs: JsonObject, args: JsonObject = {}) {
     const options = withTimeoutAlias(args, `locator.${kind}.timeout`);
+    await this.tab.ensureActive();
     await this.assertStrictIfNeeded(args);
     try {
       return await this.transport.result(

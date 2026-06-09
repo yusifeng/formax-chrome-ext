@@ -2373,7 +2373,8 @@ Params:
 {
   "sessionId": "uuid",
   "tabId": 456,
-  "format": "png"
+  "format": "png",
+  "clip": { "x": 0, "y": 0, "width": 240, "height": 160, "scale": 1 }
 }
 ```
 
@@ -2388,11 +2389,13 @@ Result payload:
 }
 ```
 
-The wire protocol returns `dataBase64`. The Node browser-client SDK preserves
-that field and adds local convenience fields: `mimeType`, `dataUrl`, and
-`bytes` (`Uint8Array`). The SDK also accepts `path` or `saveToFile` as
-absolute local output paths; those are client-side options and are not forwarded
-to the extension.
+The optional `clip` is expressed in CSS pixels. `clip.scale`, when provided,
+scales the output image for that crop while the returned `clip` metadata
+preserves the caller's requested value. The wire protocol returns `dataBase64`.
+The Node browser-client SDK preserves that field and adds local convenience
+fields: `mimeType`, `dataUrl`, and `bytes` (`Uint8Array`). The SDK also accepts
+`path` or `saveToFile` as absolute local output paths; those are client-side
+options and are not forwarded to the extension.
 
 Element screenshots are SDK helpers built on top of existing protocol actions:
 `locator.screenshot()` first calls `locatorQuery` with `kind: "boundingBox"` and

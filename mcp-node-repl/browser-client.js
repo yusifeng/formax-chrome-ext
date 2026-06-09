@@ -645,6 +645,13 @@ class TabHandleImpl {
         await this.transport.result("browser_switch_tab", this.targetArgs());
         return this;
     }
+    async ensureActive() {
+        this.assertOpen();
+        if (this.browser.state.tabId === this.tabId) {
+            return this;
+        }
+        return this.bringToFront();
+    }
     goto(url, args = {}) {
         this.assertOpen();
         return this.transport.result("browser_open_url", this.targetArgs({ ...args, url }));
@@ -1043,6 +1050,7 @@ class LocatorHandleImpl {
         return Array.from({ length: total }, (_item, index) => this.nth(index));
     }
     async waitFor(args = {}) {
+        await this.tab.ensureActive();
         const options = withTimeoutAlias(args, "locator.waitFor.timeout");
         const result = await this.transport.result("browser_locator_wait", this.targetArgs(stripClientOptions(options)));
         return assertWaitResult(result, "locator.waitFor", args.soft === true);
@@ -1209,6 +1217,10 @@ class LocatorHandleImpl {
         return this.action("selectOption", selectOptionActionArgs(value), args);
     }
     setInputFiles(filePath, args = {}) {
+        return this.setInputFilesActive(filePath, args);
+    }
+    async setInputFilesActive(filePath, args = {}) {
+        await this.tab.ensureActive();
         return this.transport.result("browser_upload_file", {
             ...args,
             sessionId: this.tab.sessionId,
@@ -1218,6 +1230,7 @@ class LocatorHandleImpl {
         });
     }
     async downloadMedia(args = {}) {
+        await this.tab.ensureActive();
         return enrichDownloadMediaResult(await this.transport.result("browser_download_media", {
             ...args,
             sessionId: this.tab.sessionId,
@@ -1240,6 +1253,7 @@ class LocatorHandleImpl {
         return `Locator<${locatorPlanDebugString(this.plan, this.selector)}>`;
     }
     async query(kind, args = {}) {
+        await this.tab.ensureActive();
         const options = withTimeoutAlias(args, `locator.${kind}.timeout`);
         return this.transport.result("browser_locator_query", this.targetArgs({
             ...stripClientOptions(options),
@@ -1248,6 +1262,7 @@ class LocatorHandleImpl {
     }
     async action(kind, actionArgs, args = {}) {
         const options = withTimeoutAlias(args, `locator.${kind}.timeout`);
+        await this.tab.ensureActive();
         await this.assertStrictIfNeeded(args);
         try {
             return await this.transport.result("browser_locator_action", this.targetArgs({

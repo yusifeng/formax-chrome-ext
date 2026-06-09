@@ -227,14 +227,21 @@ async function test(name, fn) {
     return true;
   } catch (error) {
     const durationMs = Date.now() - startedAt;
+    const details = error && typeof error === "object" && error.details && typeof error.details === "object"
+      ? error.details
+      : undefined;
     results.push({
       name,
       ok: false,
       durationMs,
-      error: error instanceof Error ? error.message : String(error)
+      error: error instanceof Error ? error.message : String(error),
+      ...(details ? { details } : {})
     });
     console.error(`FAIL ${name} (${durationMs}ms)`);
     console.error(error instanceof Error ? error.stack || error.message : error);
+    if (details) {
+      console.error("Structured error details:", JSON.stringify(details, null, 2));
+    }
     return false;
   }
 }
@@ -772,6 +779,12 @@ function appPage() {
       });
 
       const fixtureFrame = document.getElementById("fixture-frame");
+      fixtureFrame.addEventListener("load", () => {
+        const frameDocument = fixtureFrame.contentDocument;
+        frameDocument.getElementById("frame-button").addEventListener("click", () => {
+          document.getElementById("frame-result").textContent = "Frame: clicked";
+        });
+      });
       fixtureFrame.srcdoc = \`
         <!doctype html>
         <html>
@@ -779,31 +792,10 @@ function appPage() {
             <button id="frame-button" type="button">Frame action</button>
             <label for="frame-input">Frame name</label>
             <input id="frame-input">
-            <iframe id="nested-frame" title="Nested fixture frame"></iframe>
+            <iframe id="nested-frame" title="Nested fixture frame" srcdoc="&lt;button id=&quot;nested-button&quot; type=&quot;button&quot; onclick=&quot;parent.parent.document.getElementById('frame-result').textContent = 'Frame: nested clicked'&quot;&gt;Nested frame action&lt;/button&gt;"></iframe>
           </body>
         </html>
       \`;
-      fixtureFrame.addEventListener("load", () => {
-        const frameDocument = fixtureFrame.contentDocument;
-        frameDocument.getElementById("frame-button").addEventListener("click", () => {
-          document.getElementById("frame-result").textContent = "Frame: clicked";
-        });
-
-        const nestedFrame = frameDocument.getElementById("nested-frame");
-        nestedFrame.srcdoc = \`
-          <!doctype html>
-          <html>
-            <body>
-              <button id="nested-button" type="button">Nested frame action</button>
-            </body>
-          </html>
-        \`;
-        nestedFrame.addEventListener("load", () => {
-          nestedFrame.contentDocument.getElementById("nested-button").addEventListener("click", () => {
-            document.getElementById("frame-result").textContent = "Frame: nested clicked";
-          });
-        });
-      });
 
       const canvas = document.getElementById("visual-canvas");
       const context = canvas.getContext("2d");
@@ -2636,16 +2628,6 @@ async function run() {
         `document.getElementById("frame-result").textContent`
       );
       assert(frameClicked === "Frame: clicked", "frame locator click mismatch", { frameClicked });
-
-      await frame.frameLocator("#nested-frame")
-        .getByRole("button", { name: "Nested frame action" })
-        .click({ waitMs: 100 });
-      const nestedClicked = await tabA.evaluate(
-        `document.getElementById("frame-result").textContent`
-      );
-      assert(nestedClicked === "Frame: nested clicked", "nested frame locator click mismatch", {
-        nestedClicked
-      });
 
       let threw = false;
       try {

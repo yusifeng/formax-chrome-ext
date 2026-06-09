@@ -1098,7 +1098,8 @@ export const browserToolSchemas = [
             x: { type: "number" },
             y: { type: "number" },
             width: { type: "number" },
-            height: { type: "number" }
+            height: { type: "number" },
+            scale: { type: "number" }
           },
           required: ["x", "y", "width", "height"],
           additionalProperties: false
@@ -1112,7 +1113,8 @@ export const browserToolSchemas = [
             x: { type: "number" },
             y: { type: "number" },
             width: { type: "number" },
-            height: { type: "number" }
+            height: { type: "number" },
+            scale: { type: "number" }
           },
           required: ["x", "y", "width", "height"],
           additionalProperties: false

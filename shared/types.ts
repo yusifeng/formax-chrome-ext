@@ -1326,9 +1326,9 @@ export type ScreenshotParams = {
   tabId?: number;
   format?: "png" | "jpeg";
   fullPage?: boolean;
-  clip?: BrowserRect;
+  clip?: BrowserRect & { scale?: number };
   highlight?: boolean;
-  highlightClip?: BrowserRect;
+  highlightClip?: BrowserRect & { scale?: number };
   highlightColor?: string;
   highlightDurationMs?: number;
 };
