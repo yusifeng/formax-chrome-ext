@@ -93,13 +93,10 @@ const runtimeEntries = [
   ["scripts/check-native-host-manifest.js", "scripts/check-native-host-manifest.js"],
   ["docs/api.md", "docs/api.md"],
   ["docs/api-troubleshooting.md", "docs/api-troubleshooting.md"],
-  ["docs/backend-boundaries.md", "docs/backend-boundaries.md"],
   ["docs/browser-client-api.md", "docs/browser-client-api.md"],
   ["docs/chrome-troubleshooting.md", "docs/chrome-troubleshooting.md"],
   ["docs/file-management.md", "docs/file-management.md"],
   ["docs/playwright.md", "docs/playwright.md"],
-  ["docs/plugin-mcp-configuration.md", "docs/plugin-mcp-configuration.md"],
-  ["docs/protocol-action-reference.md", "docs/protocol-action-reference.md"],
   ["docs/screenshots.md", "docs/screenshots.md"],
   ["package.json", "package.json"],
 ];
@@ -432,7 +429,7 @@ async function main() {
   const entries = args.includeDebug ? [...runtimeEntries, ...debugEntries] : runtimeEntries;
   const { copied, missing } = await copyEntries(args.dist, versionDir, entries);
   const selfContained = await rewriteInstalledPackage(versionDir, args.includeDebug, args.dryRun);
-  const rewrittenExtensionId = await rewriteInstalledConfig(versionDir, args.extensionId, args.dryRun);
+  const rewrittenExtensionId = await rewriteInstalledConfig(versionDir, extensionId, args.dryRun);
   const dependencyMode = await installNodeDependencies(versionDir, args.dryRun);
   await writeJson(
     path.join(versionDir, "FORMAX-RUNTIME-MANIFEST.json"),

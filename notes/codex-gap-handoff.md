@@ -123,7 +123,6 @@ The worktree is expected to be dirty. Do not reset it. Notable modified files:
 
 Important untracked files created during this effort:
 
-- `docs/backend-boundaries.md`
 - `docs/browser-client-api.md`
 - `notes/codex-gap-todolist.md`
 - `extension/action-validator.ts`

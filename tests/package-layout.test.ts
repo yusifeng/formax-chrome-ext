@@ -86,7 +86,7 @@ describe("package layout", () => {
     expect(extensionIds).toContain('export const DEV_EXTENSION_ID = "hooonkcoopaigliifkabcdjfmjjffmbm";');
     expect(packageDist).not.toContain("--dist-dir");
     expect(packageDist).not.toContain("rewriteLocalTestingConfig");
-    expect(packageJson.scripts["install:formax-runtime:dev"]).toContain(".formax-dev");
+    expect(packageJson.scripts["install:formax-runtime:dev"]).toContain("$HOME/.formax-dev");
     expect(packageJson.scripts["install:formax-runtime:dev"]).toContain("--extension-id dev");
     expect(packageJson.scripts["test:real"]).toContain("run-real-browser-test.js");
     expect(packageJson.scripts["test:real-sites"]).toContain("run-real-browser-test.js");

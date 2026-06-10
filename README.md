@@ -4,15 +4,10 @@ Formax connects local AI agents to Chrome through a Chrome extension and a
 local runtime.
 
 Formax currently supports the Chrome extension backend. It does not provide an
-in-app browser backend or OS-level Computer Use fallback. See
-`docs/backend-boundaries.md` for the supported backend matrix and connector
-preference policy.
+in-app browser backend or OS-level Computer Use fallback.
 
 Browser API docs start at `docs/api.md`. The generated SDK reference is
 `docs/browser-client-api.md`.
-
-MCP and skill configuration details live in
-`docs/plugin-mcp-configuration.md`.
 
 ## Development
 

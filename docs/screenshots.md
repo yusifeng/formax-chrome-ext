@@ -1,42 +1,48 @@
 # Screenshots
 
-Screenshots are supporting evidence for visual state. Prefer DOM extraction for
-structured text and data.
+- If you take a screenshot that the user should see, include the image inline
+  in your Markdown response using Markdown image syntax:
 
-## Full Tab Screenshot
+  ```md
+  ![screenshot](IMAGE_LINK)
+  ```
+
+- If the user has asked you to take screenshots, include them in your final
+  response.
+- If the user has asked you to test a website or verify frontend work, take
+  screenshots at key moments and include the relevant ones in your final
+  response.
+- Prefer DOM extraction for structured text or data. Use screenshots when
+  layout, canvas, charts, images, overlays, or visual confirmation matter.
+
+## Full Page Screenshots
 
 ```js
-const shot = await tab.screenshot();
-console.log(shot.mimeType);
-console.log(shot.dataUrl);
+const shot = await tab.screenshot({ fullPage: true });
+console.log(shot.mimeType, shot.dataUrl);
 ```
 
-The SDK result includes:
+`tab.playwright.screenshot(...)` routes through the same backend. Screenshot
+results include `dataBase64`, `mimeType`, `dataUrl`, and `bytes`.
 
-- `dataBase64`
-- `mimeType`
-- `dataUrl`
-- `bytes`
+Do not paste long base64 strings into user-facing replies.
 
-Use `dataUrl` for inline display or handoff. Use `bytes` for local image
-inspection. Do not paste long base64 strings into user-facing replies unless the
-user explicitly asks for raw image data.
+## Saving Screenshots
 
-## Save To File
-
-`path` and `saveToFile` are SDK-only options. They are not sent to Chrome:
+`path` and `saveToFile` are SDK-only options handled locally:
 
 ```js
 await tab.screenshot({
-  path: "/absolute/path/screenshot.png",
+  fullPage: true,
+  path: "/absolute/path/page.png",
 });
 ```
 
-Use absolute paths for saved files.
+Use absolute paths.
 
 ## Element Screenshots
 
-Locator crop:
+Use locator screenshots when you already have a stable target:
 
 ```js
 await tab.locator("main").screenshot({
@@ -46,60 +52,42 @@ await tab.locator("main").screenshot({
 });
 ```
 
-DOM CUA crop:
+Use DOM CUA screenshots when you only have a current visible `node_id`:
 
 ```js
+const visible = await tab.dom_cua.get_visible_dom();
+const target = visible.nodes.find((node) => node.role === "button");
+if (!target) throw new Error("No visible button node.");
+
 await tab.dom_cua.screenshot({
-  node_id,
-  path: "/absolute/path/node.png",
+  node_id: target.node_id,
+  path: "/absolute/path/button.png",
   padding: 8,
   highlight: true,
 });
 ```
 
-Element screenshots are SDK helpers. They derive a clip from the locator
-bounding box or latest visible DOM node box, then call the tab screenshot API.
-When `highlight: true` is set, the extension draws a best-effort content-script
-overlay around the original element box before capture. `highlightColor` and
-`highlightDurationMs` can tune the overlay. This works for both interactable
-locator targets and non-interactable DOM CUA nodes that have a current box.
+If a node screenshot reports a stale `node_id`, refresh
+`tab.dom_cua.get_visible_dom()` and choose a current node.
 
 ## When To Screenshot
 
 Use screenshots when:
 
-- visual confirmation is needed
-- a locator failed and the page state is unclear
-- layout, overlay, canvas, chart, or image content matters
-- the user explicitly asks to see the page
+- the user asks to see the page
+- visual layout or rendering matters
+- the target is canvas, chart, image, video, or visual-only UI
+- a locator failed and DOM state is not enough to explain the page
+- you need before/after visual evidence
 
-Do not use screenshots as a substitute for DOM text when structured DOM text is
-available.
-
-## After Page Changes
-
-Take a fresh `tab.observe()` or equivalent DOM snapshot after:
-
-- navigation
-- reload
-- modal changes
-- locator timeout
-- strict-mode failure
-- selector parse error
-- unexpected page mutation
-
-Then decide whether a screenshot adds useful visual evidence.
+Do not use screenshots as exploratory text extraction when a targeted DOM read
+or locator query can answer the question.
 
 ## Sensitive Content
 
-Screenshots can contain private page content. Before sharing or saving a
-screenshot, consider whether it includes:
-
-- passwords or tokens
-- personal messages
-- account identifiers
-- financial or health data
-- private documents
+Screenshots can contain private page content. Before sharing or saving one for
+user-visible output, consider whether it contains passwords, tokens, private
+messages, account identifiers, financial or health data, or private documents.
 
 If sensitive content is visible, summarize the relevant state instead of
-displaying the image unless the user explicitly requested the screenshot.
+displaying the screenshot unless the user explicitly asked for the image.

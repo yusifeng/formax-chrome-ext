@@ -1,261 +1,244 @@
 # Playwright-Style Browser Usage
 
-Formax is not Playwright, but the browser-client SDK exposes a small
-Playwright-like facade for agent ergonomics.
+Playwright is a critical part of the JavaScript API available to you.
 
-## Recommended Flow
+You only have access to a limited subset of the Playwright API, so only call
+functions that are explicitly defined in this file or in
+`docs/browser-client-api.md`.
+
+You do have access to `tab.playwright.evaluate(...)`, but only in a read-only
+page scope when you use `mode: "read"`. Use locators for scoped interactions
+and targeted checks. For bulk DOM inspection, prefer one bounded read-only
+`evaluate(...)` that queries and projects the needed data. Avoid loops of
+locator property calls.
+
+The main surfaces are:
+
+- `tab.getByRole(...)`, `tab.locator(...)`, and related helpers
+- `tab.playwright.*` aliases over the same governed tab API
+- `LocatorHandle` methods such as `count()`, `click()`, `fill()`, `evaluate()`,
+  `screenshot()`, and `setInputFiles()`
+- `FrameLocatorHandle` for iframe-scoped locator construction
+
+## Snapshot Discipline
+
+When using Playwright, keep and reuse a recent `tab.playwright.domSnapshot()`
+when it is available and you need it for locator construction or retry
+decisions. Treat the latest relevant snapshot as the source of truth for
+locator construction and retry decisions.
+
+- Keep and reuse the latest relevant `domSnapshot()` until it proves stale or
+  you need locator ground truth for UI that was not present in it.
+- Take a fresh `domSnapshot()` after navigation when you need to orient
+  yourself or construct locators on the new page.
+- If a click times out, strict mode fails, or a selector parse error occurs,
+  take a fresh `domSnapshot()` before forming the next locator.
+- Construct locators only from what appears in the latest snapshot. Do not
+  guess labels, accessible names, or selectors.
+- `tab.observe()` returns a structured object. It is not a string.
+- `tab.dom_cua.get_visible_dom()` returns a structured visible DOM snapshot
+  with current `node_id` values for DOM CUA actions.
+- Do not print full snapshot text repeatedly when a smaller excerpt, a
+  `count()`, a specific attribute, or a direct locator check would answer the
+  question with fewer tokens.
+- Use one broad observation to orient yourself. After that, narrow to the
+  relevant section or a small number of strong candidates.
+- Do not use `locator(...).allTextContents()`, `locator("body").textContent()`,
+  or `locator("body").innerText()` as exploratory search tools across a page
+  or large container.
+
+## Hard Constraints For Playwright In This Runtime
+
+- Do not pass a regex as `name` to `getByRole(...)` in this environment. Use a
+  plain string `name` only.
+- Do not call methods that are not explicitly documented for Formax.
+- Do not treat Formax as full upstream Playwright.
+- Do not use a guessed locator as an exploratory probe. If the latest snapshot
+  does not clearly support the locator, do not spend timeout budget testing it.
+- Do not click, fill, check, select, upload, or press on a locator until you
+  have verified it resolves to exactly one element when uniqueness is not
+  obvious.
+- Do not retry the same failing locator without a fresh `domSnapshot()`.
+- Do not use `.first()`, `.last()`, or `.nth()` unless you have just called
+  `count()` on the same locator and explicitly confirmed why that position is
+  correct.
+- Do not treat observed `ref` values or `[data-agent-browser-ref="..."]`
+  selector candidates as real DOM attributes.
+- Do not call a DOM CUA `snapshot` alias. The method is
+  `tab.dom_cua.get_visible_dom()`.
+- Do not pass Playwright-style page functions to `tab.evaluate(...)`. Use
+  `tab.playwright.evaluate(...)` for function form.
+
+## Required Interaction Recipe
+
+Before every click, fill, select-like action, or press:
+
+1. Reuse the latest relevant `domSnapshot()` when it still contains the
+   locator ground truth you need. Take a fresh one only when it does not.
+2. Build the most stable locator from the latest snapshot.
+3. If uniqueness is not obvious from the selector itself, call `count()` on
+   that locator.
+4. Proceed only if the locator resolves to exactly one element.
+5. Perform the action.
+6. After the action, collect another observation only when the next decision
+   requires it. Prefer a targeted state check when it answers the question.
+
+If `count()` is `0`:
+
+- The selector is wrong, stale, hidden, or the UI state is not ready.
+- Do not click anyway.
+- Re-snapshot and rebuild the locator.
+
+If `count()` is greater than `1`:
+
+- The selector is ambiguous.
+- Scope to the correct container or switch to a stronger attribute.
+- Do not use `.first()` as a shortcut.
+
+Example:
 
 ```js
-const tab = globalThis.__activeBrowserTab || await browser.tabs.new();
-globalThis.__activeBrowserTab = tab;
+const snapshot = await tab.playwright.domSnapshot();
+console.log(snapshot.slice(0, 2000));
 
-await tab.goto("https://example.com");
-await tab.waitForLoadState("load");
-await tab.getByRole("link", { name: "More information" }).click();
+const search = tab.getByPlaceholder("Search");
+const count = await search.count();
+if (count !== 1) throw new Error(`Expected one search input, found ${count}.`);
+
+await search.fill("Formax browser runtime");
+await search.press("Enter");
+await tab.waitForUrl({ urlContains: "search", timeoutMs: 10000, soft: true });
 ```
 
-Prefer:
+## Locator Strategy
 
-1. semantic locators
-2. visible text and labels
-3. CSS locators
-4. observed refs
-5. coordinates only as a last resort
+Build locators from what the snapshot actually shows, not what looks visually
+obvious.
 
-## Locators
+Prefer the most stable contract, in this order:
 
-Common helpers:
+1. `data-testid`
+2. Stable `data-*` attributes
+3. Stable `href` or a strong scoped attribute
+4. Scoped semantic role plus accessible name using a string `name`
+5. Label, placeholder, display value, alt text, title, or visible text
+6. Scoped CSS selectors via `locator(...)`
+7. `tab.dom_cua.get_visible_dom()` plus DOM CUA when locators cannot express
+   the target
+
+Treat generic labels such as `Menu`, `Close`, `Search`, `Submit`, `More`, or
+single-letter options as ambiguous by default. Scope them to the correct
+container before acting.
+
+Treat accessible names as accessibility data, not visible text. Use
+`getByRole(role, { name: "..." })` only when the role and accessible name are
+clearly present in the latest snapshot and likely unique. If a site uses a
+plain text input for search without `role="searchbox"` or `type="search"`, do
+not assume `getByRole("searchbox")` will work.
+
+If you already know the exact destination URL and no click-side effect matters,
+prefer `tab.goto(url)` over a brittle locator click.
+
+## Locator API
+
+Common constructors:
+
+```js
+tab.locator("input[name='q']");
+tab.getByRole("button", { name: "Search" });
+tab.getByLabel("Email");
+tab.getByPlaceholder("Search");
+tab.getByText("Checkout");
+tab.getByTestId("submit");
+tab.getByAltText("Product photo");
+tab.getByTitle("Help");
+tab.getByDisplayValue("Alice");
+tab.frameLocator("iframe[name='login']").getByRole("button", { name: "Sign in" });
+```
+
+Common reads and waits:
+
+```js
+const resultCount = await tab.locator(".result").count();
+await tab.locator(".toast").waitFor({ state: "visible", timeout: 10000 });
+const visible = await tab.getByText("Saved").isVisible();
+const value = await tab.locator("input[name='q']").inputValue();
+const href = await tab.getByText("Details").getAttribute("href");
+```
+
+Common actions:
 
 ```js
 await tab.getByRole("button", { name: "Search" }).click();
 await tab.getByLabel("Email").fill("user@example.com");
-await tab.getByPlaceholder("Search").fill("zod");
-await tab.getByDisplayValue("Alice").fill("Bob");
-await tab.locator("select#country").selectOption([{ label: "Canada" }, { value: "mx" }, { index: 2 }]);
-await tab.getByAltText("Product photo").click();
-await tab.getByTitle("Help").hover();
-await tab.getByText("Checkout").click();
-await tab.locator("input[name='q']").fill("OpenAI Codex");
-await tab.locator(".result-card", { hasText: "OpenAI" }).filter({ visible: true }).click();
-await tab.locator(".result-card", { has: tab.getByRole("button", { name: "Open" }) }).click();
-await tab.locator(".result-card").getByRole("button", { name: "Open" }).click();
-await tab.locator(".result-card").and(tab.getByText("Ready")).or(tab.getByText("Fallback")).count();
-await tab.frameLocator("#outer-frame").frameLocator("#inner-frame").getByRole("button", { name: "Run" }).click();
-await tab.locator("#submit").highlight({ color: "rgba(255, 190, 80, 0.92)" });
-await tab.locator("#search").pressSequentially("codex", { waitMs: 100 });
-const html = await tab.locator(".result-card").innerHTML();
-const owningTab = tab.locator(".result-card").page();
+await tab.locator("select#country").selectOption({ value: "ca" });
+await tab.getByRole("checkbox", { name: "Subscribe" }).setChecked(true);
+await tab.locator("input[type='file']").setInputFiles("/absolute/path/file.txt");
 ```
 
-Locator page-function helpers are available when a higher-level query is not
-enough:
+Use `locator.filter(...)`, `locator.locator(...)`, `locator.and(...)`, and
+`locator.or(...)` to narrow a target.
 
 ```js
-const label = await tab.locator("#submit").evaluate((element) => element.textContent, undefined, { mode: "read" });
-const texts = await tab.locator(".item").evaluateAll((elements) => elements.map((element) => element.textContent), undefined, { mode: "read" });
-await tab.locator("#submit").dispatchEvent("click", { detail: { source: "agent" } });
+const card = tab.locator(".result-card", { hasText: "Formax" });
+const count = await card.count();
+if (count !== 1) throw new Error(`Expected one Formax card, found ${count}.`);
+await card.getByRole("link", { name: "Open" }).click();
 ```
 
-`evaluate` receives the selected element, `evaluateAll` receives the matched
-element array, and both optionally receive a JSON-serializable second argument.
-They use the governed side-effecting locator action path because page functions
-can mutate the document; pass `mode: "read"` only for inspection code. Explicit
-read mode rejects scripts that match obvious mutation patterns before execution.
+Useful locator helpers:
 
-When multiple elements match:
-
-```js
-const items = await tab.locator(".result").all({ limit: 10 });
-const lastItem = tab.locator(".result").last();
-await items[0].click();
-```
-
-Keep limits tight. `locator.all({ limit })` returns bounded `nth()` locator
-handles; it does not serialize DOM content.
-`locator.first()`, `locator.nth(index)`, and `locator.last()` are synchronous
-locator derivations. Negative `nth()` indexes count from the end, so
-`locator.last()` serializes as `index: -1` and does not issue a `count()` call.
-
-For conditional flows, prefer locator queries such as `isVisible()`,
-`isHidden()`, `isEnabled()`, `isDisabled()`, `isEditable()`, `isChecked()`, and
-`inputValue()` before falling back to `evaluate`.
-Use `innerHTML()`, `allInnerTexts()`, or `allTextContents()` for bounded content
-extraction from a locator set.
-
-For focused form/page interactions, use `locator.blur()`,
-`locator.scrollIntoViewIfNeeded()`, and `locator.selectText()` instead of
-custom page JavaScript when those actions express the intent.
-`locator.pressSequentially(text, options)` is a Playwright-style alias for the
-existing governed `locator.type(text, options)` action. It does not currently
-implement Playwright's per-character `delay` option.
-`locator.page()` returns the owning SDK tab handle.
-Use `locator.dragTo(targetLocator, options)` for locator-to-locator drag/drop
-before falling back to coordinate-based `tab.cua.drag`.
-Use `locator.highlight(options)` for debugging or visual verification; it draws
-a best-effort content-script overlay around the locator without taking a
-screenshot.
-Use `locator.selectOption(valueOrSpecs)` for selects; supported specs include
-strings and `{ value }`, `{ label }`, or `{ index }` objects.
-
-Top-frame locators pierce open shadow roots for `css`, `role`, `text`, `label`,
-`placeholder`, `testId`, `altText`, `title`, and `displayValue` queries.
-Closed shadow roots remain opaque; if a target lives there, use page-provided
-controls or coordinates after inspection instead of assuming DOM access exists.
-
-Semantic locators use a lightweight accessible-name approximation across
-`observe`, `elementInfo`, and locator resolution. It covers `aria-labelledby`,
-`aria-label`, native form labels, image alt text, SVG titles, button-like input
-values, and visible text while skipping hidden or `aria-hidden` subtrees.
-
-`locator(selector, { has, hasNot, hasText, hasNotText })` and
-`locator.filter({ has, hasNot, hasText, hasNotText, visible })` are supported.
-Nested `has`/`hasNot` filters accept another locator handle or a raw locator
-plan and match within each candidate element.
-`locator.locator(selector)` and locator-scoped `getByText`, `getByRole`,
-`getByLabel`, `getByPlaceholder`, `getByTestId`, `getByAltText`, `getByTitle`,
-and `getByDisplayValue` resolve inside the parent locator's matched subtree.
-`locator.and(other)` intersects two locators in the same page scope, while
-`locator.or(other)` returns the union with duplicates removed.
-
-`frameLocator(selector)` supports iframe and nested iframe paths that can be
-resolved to a CDP frame id. Locator reads, waits, and actions use a
-frame-scoped execution context when available, then translate element
-coordinates back to the top-level viewport for mouse events. OOPIF edge cases
-are still best-effort rather than full Playwright parity.
-
-File chooser handles opened through a frame locator retain the original locator
-path, so `chooser.setFiles()` can set files in the same frame context while
-still using native-host absolute path validation.
-
-## Actionability
-
-Locator actions perform first-pass checks for:
-
-- attached element
-- visibility
-- stable bounds
-- enabled/editable controls
-- pointer occlusion
-
-Editable checks require an enabled text input, textarea, or contenteditable
-element and honor native `readonly` plus self/ancestor `aria-readonly="true"`.
-Pointer hit testing accounts for open shadow-root descendants when the locator
-targets the shadow host. For elements inside open shadow roots, actionability
-also climbs host ancestors for inert, `aria-disabled`, `aria-readonly`, and
-`pointer-events: none` blockers.
-
-Use `force: true` only after inspecting the page and confirming the target is
-safe to interact with:
-
-```js
-await tab.getByRole("button", { name: "Continue" }).click({ force: true });
-```
-
-`force: true` still requires locator resolution, attachment, and stable bounds.
-
-Use `trial: true` to preflight a locator action without changing the page:
-
-```js
-await tab.getByRole("button", { name: "Continue" }).click({ trial: true });
-```
-
-`trial: true` resolves the locator and runs actionability checks, then returns
-the target point/rect without dispatching pointer or keyboard input, focusing
-the element, mutating DOM state, registering file choosers, or drawing
-highlights.
-
-Locator strict/actionability failures are structured. Strict mismatches surface
-as `BrowserStrictModeError`; actionability failures surface as
-`BrowserActionabilityError` with a reason such as `not_visible`, `disabled`,
-`not_editable`, `occluded`, `outside_viewport`, `not_stable`, or `detached`.
-
-For debugging, locator handles expose both readable and machine-readable
-descriptions:
-
-```js
-const locator = tab.locator(".card").getByRole("button", { name: "Open" });
-console.log(String(locator)); // Locator<locator(".card").getByRole("button", { name: "Open" })>
-console.log(locator.toJSON()); // full locator plan sent to the backend
-```
-
-The string form is a compact diagnostic label, not a new selector contract.
+- `locator.pressSequentially(text, options)` is an alias for governed typing on
+  that locator. Use it when the page needs sequential input semantics.
+- `locator.page()` returns the owning SDK tab handle.
+- `locator.innerHTML()`, `locator.allInnerTexts()`, and
+  `locator.allTextContents()` are supported for bounded, already-scoped
+  extraction.
+- `String(locator)` and `String(frameLocator)` are diagnostic labels.
+  The string form is a compact diagnostic label, not a selector contract.
+- `locator.last()` serializes as `index: -1` through the locator plan. Use it
+  only after `count()` proves the last item is the intended target.
 
 ## Waiting
 
-Use explicit waits around navigation and dynamic UI:
+Prefer concrete waits over fixed sleeps:
 
 ```js
 await tab.goto("https://example.com");
-await tab.playwright.goto("https://example.com/inside-playwright-namespace");
-console.log(await tab.playwright.url());
-console.log(await tab.playwright.title());
-await tab.playwright.reload({ waitForLoad: true });
-await tab.waitForLoadState("commit"); // waits for the next main-frame navigation commit
 await tab.waitForLoadState("load");
-await tab.waitForUrl({ urlContains: "example.com", waitUntil: "load" });
-await tab.waitForText("Example Domain");
-await tab.waitForSelector("main");
+await tab.waitForUrl({ urlContains: "example.com", timeoutMs: 10000 });
+await tab.waitForText("Example Domain", { timeoutMs: 10000 });
+await tab.locator("main").waitFor({ state: "visible", timeout: 10000 });
+```
+
+Playwright-style aliases route through the same backend:
+
+```js
+await tab.playwright.goto("https://example.com");
+await tab.playwright.reload({ waitForLoad: true });
 await tab.playwright.waitForText("Example Domain");
 await tab.playwright.waitForSelector("main");
 await tab.playwright.screenshot({ fullPage: true });
 ```
 
-`tab.playwright.goto/openUrl/url/title/reload/back/forward/goBack/goForward`,
-`tab.playwright.waitForSelector/waitForText`, and
-`tab.playwright.screenshot` are SDK aliases over the governed tab navigation,
-wait, inspection, and screenshot methods. They exist for Playwright-style code
-shape and still route through the same backend actions.
+`tab.playwright.waitForSelector/waitForText` and `tab.playwright.screenshot`
+are aliases over the documented tab wait and screenshot methods.
 
-Playwright-style SDK helpers accept `timeout` as an alias for the backend
-`timeoutMs` field:
-
-```js
-await tab.locator("#ready").waitFor({ state: "visible", timeout: 10_000 });
-await tab.getByRole("button", { name: "Continue" }).click({ timeout: 10_000 });
-```
-
-For action-triggered navigations, start the watcher before the action:
+For action-triggered navigation, start the watcher before the action:
 
 ```js
 await tab.playwright.expectNavigation(
   () => tab.getByRole("link", { name: "Continue" }).click(),
-  { urlContains: "/next", waitUntil: "load", timeout: 10000 }
+  { urlContains: "/next", waitUntil: "load", timeout: 10000 },
 );
 ```
 
-After a locator failure, modal change, reload, or unexpected mutation, take a
-fresh snapshot:
-
-```js
-const observed = await tab.observe();
-```
-
-Do not retry a failing locator repeatedly without new page state.
-
-## Keyboard And Mouse Aliases
-
-`tab.playwright.keyboard` and `tab.playwright.mouse` expose common
-Playwright-style aliases over the governed CUA backend:
-
-```js
-await tab.playwright.keyboard.press("Enter");
-await tab.playwright.keyboard.press(["ControlOrMeta", "A"]);
-await tab.playwright.keyboard.type("OpenAI Codex");
-await tab.playwright.mouse.click(120, 240);
-await tab.playwright.mouse.dblclick(120, 240);
-await tab.playwright.mouse.move(160, 280);
-await tab.playwright.mouse.wheel(0, 600);
-await tab.playwright.mouse.drag([{ x: 10, y: 10 }, { x: 80, y: 80 }]);
-```
-
-Prefer locators for semantic page interactions. Use these aliases when the task
-really is keyboard/mouse oriented, when the page requires a global shortcut, or
-after DOM inspection shows that a coordinate action is the appropriate fallback.
+Use `tab.playwright.waitForTimeout(ms)` only for a known transition that lacks
+a better signal, and follow it with a specific verification step.
 
 ## Evaluate
 
-Use `evaluate` for structured extraction when DOM access is clearer than
-interactive locators:
+Use `tab.evaluate(script, options)` for string scripts:
 
 ```js
 const links = await tab.evaluate(
@@ -263,113 +246,90 @@ const links = await tab.evaluate(
     text: a.innerText.trim(),
     href: a.href
   }))`,
-  { mode: "read", reason: "extract visible links" },
+  { mode: "read", reason: "Extract visible links." },
 );
 ```
 
-Mutating `evaluate` calls should be used intentionally:
+Use `tab.playwright.evaluate(functionOrString, arg, options)` for
+Playwright-shaped page functions:
 
 ```js
-await tab.evaluate("document.querySelector('form').submit()", {
-  mode: "write",
-  reason: "submit the form",
+const title = await tab.playwright.evaluate(() => document.title, undefined, {
+  mode: "read",
+  reason: "Read document title.",
 });
 ```
 
-Explicit `mode: "read"` calls use a conservative pre-execution guard that
-rejects obvious DOM/storage/cookie mutations. The runtime wrapper also blocks
-common mutation APIs and setters while the evaluation is running, including
-DOM insertion/removal, `classList`, style mutation methods, `innerHTML`,
-`outerHTML`, `textContent`, and common form value setters. This is still a
-best-effort denylist plus temporary patch, not a hardened JavaScript sandbox;
-use `mode: "write"` for intentional page changes.
+Use locator evaluate for scoped element reads:
+
+```js
+const label = await tab.locator("#submit").evaluate(
+  (element) => element.textContent,
+  undefined,
+  { mode: "read" },
+);
+```
+
+`mode: "read"` applies a best-effort denylist plus temporary patch against
+obvious mutations. It is not a full JavaScript capability sandbox or
+browser-enforced immutable execution. Use `mode: "write"` for intentional page
+changes.
+
+## DOM CUA And Coordinates
+
+Use DOM CUA when Playwright-style locators cannot express the target but the
+visible DOM snapshot identifies it:
+
+```js
+const visible = await tab.dom_cua.get_visible_dom();
+const target = visible.nodes.find((node) => /Submit/i.test(`${node.role} ${node.name}`));
+if (!target) throw new Error("Submit target was not visible.");
+await tab.dom_cua.click({ node_id: target.node_id });
+```
+
+If a DOM CUA call reports a stale node, refresh
+`tab.dom_cua.get_visible_dom()` and retry with a current `node_id`.
+
+Use `tab.cua.*` coordinate methods only when the task is genuinely visual,
+canvas-based, or otherwise not reachable through DOM or locator APIs.
 
 ## Clipboard
 
-Clipboard reads and writes are sensitive operations:
+Clipboard helpers live under `tab.clipboard`.
 
 ```js
 const text = await tab.clipboard.readText();
 await tab.clipboard.writeText(text.trim());
-await tab.clipboard.write("Plain text");
+await tab.clipboard.write("text", options);
 ```
 
-`tab.clipboard.write("text", options)` is an SDK convenience alias for
-`tab.clipboard.writeText("text", options)`.
-
-For typed clipboard writes, the SDK accepts the backend `{ types: [...] }`
-shape and a `ClipboardItem`-style MIME map:
+`tab.clipboard.write("text", options)` routes to the plain text write helper.
+For typed writes, pass a `ClipboardItem`-style MIME map:
 
 ```js
 await tab.clipboard.write({
   "text/plain": "Plain text",
   "text/html": { text: "<strong>Plain text</strong>" },
-  "image/png": { dataUrl: "data:image/png;base64,iVBORw0KGgo=" },
-  "application/octet-stream": new Uint8Array([1, 2, 3])
 });
 ```
 
-The MIME map is normalized locally before the backend request; clipboard
-binary payloads can be `dataUrl`, `Uint8Array`/`Buffer`, `ArrayBuffer`, or byte
-arrays.
+Clipboard binary payloads can be `dataUrl`, `Uint8Array`/`Buffer`,
+`ArrayBuffer`, or byte arrays.
 
-## Downloads
+## Error Recovery
 
-For download workflows:
-
-```js
-const downloadPromise = tab.playwright.waitForEvent("download", {
-  urlContains: "report",
-  timeoutMs: 30000,
-});
-await tab.getByRole("link", { name: "Download report" }).click();
-const download = await downloadPromise;
-console.log(download.suggestedFilename(), download.path());
-```
-
-Start waiting before clicking the download trigger when possible.
-
-For page media assets, use the locator helper so the extension can resolve the
-asset URL before starting the download:
-
-```js
-const result = await tab.locator("img.hero").downloadMedia({
-  fallbackFetch: true,
-  waitForCompletion: true,
-});
-console.log(result.download?.suggestedFilename(), result.download?.path());
-```
-
-Use `fallbackFetch: true` for session-bound media assets where direct Chrome
-download startup fails; the extension still enforces a bounded response size.
-
-## File Choosers
-
-For upload controls that are opened by clicking a visible label or button-like
-wrapper:
-
-```js
-const chooserPromise = tab.playwright.waitForEvent("filechooser");
-await tab.locator('label[for="asset-upload"]').click();
-const chooser = await chooserPromise;
-await chooser.setFiles("/absolute/path/image.png");
-```
-
-The returned chooser supports `setFiles(paths)` and `isMultiple()`. The
-extension background owns the short-lived `file_chooser_id`, so `setFiles()`
-does not need to rediscover the DOM target. Setting files still uses the same
-native-host upload validation as `locator.setInputFiles(...)`.
-
-## Unsupported Playwright Expectations
-
-Formax does not provide a full browser engine abstraction. These are not
-equivalent to Playwright:
-
-- no isolated browser contexts
-- no bundled browser download/launch management
-- no OS-level UI control
-- no arbitrary Chrome profile file access
-- no direct control of Chrome internal pages such as `chrome://extensions`
-
-Use the Chrome extension backend when the task needs the user's real Chrome
-profile, signed-in state, cookies, extensions, or existing tabs.
+- A strict mode violation means your locator is ambiguous.
+- Do not retry the same locator after a strict mode violation.
+- A selector parse error means the locator syntax is invalid in this runtime.
+- A timeout usually means the target is missing, hidden, stale, offscreen, or
+  the selector is wrong.
+- Do not retry the same locator immediately after a timeout.
+- If a checkbox or radio exists but `check()` or `setChecked()` reports that it
+  is hidden or did not change state, click its scoped visible label or visible
+  control once, then verify checked state.
+- If role or accessible-name targeting is unstable, fall back deliberately to a
+  stable attribute rather than brittle CSS structure.
+- If two locator attempts fail on the same target, switch strategy: use a more
+  stable attribute, scope to a stable container, use DOM CUA from a fresh
+  visible DOM snapshot, navigate directly to a known URL, or report the
+  blocker.

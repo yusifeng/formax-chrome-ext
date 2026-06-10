@@ -1478,17 +1478,21 @@ describe("browser-client object facade", () => {
     await expect(tab.evaluate("document.title")).resolves.toBe("evaluated");
   });
 
-  it("exposes runtime documentation topics", async () => {
-    const { browser } = createMockBrowser();
+  it("reads packaged markdown documentation", async () => {
+    const globals = {};
+    const { agent, browser } = await setupBrowserRuntime({
+      globals,
+      forceNew: true,
+      defaultSessionId: "docs-session"
+    });
 
-    await expect(browser.documentation()).resolves.toMatchObject({
-      name: "Formax browser runtime"
-    });
-    await expect(browser.documentation("tabs")).resolves.toMatchObject({
-      recommendedFlow: expect.arrayContaining([
-        expect.stringContaining("browser.user.openTabs()")
-      ])
-    });
+    await expect(browser.documentation()).resolves.toContain("# Browser API");
+    await expect(browser.documentation("playwright")).resolves.toContain("# Playwright-Style Browser Usage");
+    expect(agent.documentation.list()).toEqual(expect.arrayContaining([
+      "api",
+      "playwright",
+      "file-management"
+    ]));
   });
 
   it("claims user tabs through openTabs claim tokens", async () => {

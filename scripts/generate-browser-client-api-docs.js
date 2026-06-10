@@ -16,12 +16,16 @@ const exportedTypes = [
   "BrowserDownloadsFacade",
   "BrowserDownloadListResult",
   "BrowserDownloadWaitResult",
+  "BrowserDownloadMediaResult",
   "BrowserDownloadHandle",
+  "BrowserFileChooserHandle",
   "BrowserCapabilitiesFacade",
   "BrowserCapabilityHandle",
   "BrowserDevFacade",
   "TabHandle",
   "TabPlaywrightFacade",
+  "TabPlaywrightKeyboardFacade",
+  "TabPlaywrightMouseFacade",
   "TabCuaFacade",
   "TabDomCuaFacade",
   "VisibleDomNode",
@@ -37,7 +41,8 @@ const examples = {
   BrowserRuntimeAgent: [
     "```js",
     "const browser = await agent.browsers.get(\"extension\");",
-    "await browser.documentation();",
+    "nodeRepl.write(await browser.documentation());",
+    "console.log(agent.documentation.list());",
     "```"
   ],
   BrowserClient: [
@@ -51,6 +56,7 @@ const examples = {
     "```js",
     "globalThis.__activeBrowserTab ||= await browser.tabs.new();",
     "const tab = globalThis.__activeBrowserTab;",
+    "await browser.tabs.finalize({ keep: [tab] });",
     "```"
   ],
   BrowserUserFacade: [
@@ -62,7 +68,7 @@ const examples = {
   ],
   BrowserEventsFacade: [
     "```js",
-    "const event = await browser.events.waitFor({ name: \"downloadCompleted\", timeoutMs: 30000 });",
+    "const event = await browser.events.wait({ name: \"downloadCompleted\", timeoutMs: 30000 });",
     "const recent = await browser.events.get({ limit: 20 });",
     "```"
   ],
@@ -80,14 +86,27 @@ const examples = {
   ],
   BrowserDownloadWaitResult: [
     "```js",
-    "const { download, timedOut } = await browser.downloads.wait({ urlContains: \"report\" });",
-    "if (!timedOut) console.log(download?.path());",
+    "const { download } = await browser.downloads.wait({ urlContains: \"report\", timeoutMs: 30000 });",
+    "console.log(download?.path());",
+    "```"
+  ],
+  BrowserDownloadMediaResult: [
+    "```js",
+    "const result = await tab.locator(\"img.hero\").downloadMedia({ waitForCompletion: true });",
+    "console.log(result.media.url, result.download?.path());",
     "```"
   ],
   BrowserDownloadHandle: [
     "```js",
     "const download = await tab.playwright.waitForEvent(\"download\", { timeoutMs: 30000 });",
     "console.log(download.suggestedFilename(), download.path(), download.toJSON());",
+    "```"
+  ],
+  BrowserFileChooserHandle: [
+    "```js",
+    "const chooser = await tab.playwright.waitForEvent(\"filechooser\", { timeoutMs: 10000 });",
+    "await chooser.setFiles(\"/absolute/path/file.txt\");",
+    "console.log(chooser.isMultiple());",
     "```"
   ],
   BrowserCapabilitiesFacade: [
@@ -100,26 +119,39 @@ const examples = {
     "```js",
     "const screenshots = await browser.capabilities.get(\"tab.screenshot\");",
     "console.log(screenshots.available, screenshots.reason);",
+    "console.log(await screenshots.documentation());",
     "```"
   ],
   BrowserDevFacade: [
     "```js",
     "const logs = await browser.dev.logs({ limit: 20 });",
-    "console.log(logs);",
+    "const diagnostics = await browser.dev.diagnostics();",
     "```"
   ],
   TabHandle: [
     "```js",
     "await tab.goto(\"https://example.com\");",
     "const observed = await tab.observe();",
-    "console.log(observed.url);",
+    "console.log(observed.url, observed.elements?.length);",
     "```"
   ],
   TabPlaywrightFacade: [
     "```js",
-    "const downloadPromise = tab.playwright.waitForEvent(\"download\", { timeoutMs: 30000 });",
-    "await tab.getByRole(\"link\", { name: \"Download\" }).click();",
-    "const download = await downloadPromise;",
+    "const snapshot = await tab.playwright.domSnapshot();",
+    "console.log(snapshot.slice(0, 2000));",
+    "const title = await tab.playwright.evaluate(() => document.title, undefined, { mode: \"read\" });",
+    "```"
+  ],
+  TabPlaywrightKeyboardFacade: [
+    "```js",
+    "await tab.playwright.keyboard.press(\"Enter\");",
+    "await tab.playwright.keyboard.type(\"Formax\");",
+    "```"
+  ],
+  TabPlaywrightMouseFacade: [
+    "```js",
+    "await tab.playwright.mouse.click(120, 240);",
+    "await tab.playwright.mouse.wheel(0, 600);",
     "```"
   ],
   TabCuaFacade: [
@@ -130,8 +162,8 @@ const examples = {
   ],
   TabDomCuaFacade: [
     "```js",
-    "const snapshot = await tab.dom_cua.snapshot();",
-    "const target = snapshot.nodes.find((node) => /Submit/i.test(node.name || \"\"));",
+    "const snapshot = await tab.dom_cua.get_visible_dom();",
+    "const target = snapshot.nodes.find((node) => /Submit/i.test(`${node.role} ${node.name}`));",
     "if (target) await tab.dom_cua.click({ node_id: target.node_id });",
     "```"
   ],
@@ -143,8 +175,8 @@ const examples = {
   ],
   VisibleDomSnapshot: [
     "```js",
-    "const snapshot = await tab.dom_cua.snapshot();",
-    "console.log(snapshot.url, snapshot.nodes.length);",
+    "const snapshot = await tab.dom_cua.get_visible_dom();",
+    "console.log(snapshot.url, snapshot.nodes.length, snapshot.text.slice(0, 200));",
     "```"
   ],
   TabClipboardFacade: [
@@ -156,6 +188,8 @@ const examples = {
   LocatorHandle: [
     "```js",
     "const search = tab.getByPlaceholder(\"Search\");",
+    "const count = await search.count();",
+    "if (count !== 1) throw new Error(`Expected one search input, found ${count}.`);",
     "await search.fill(\"Formax browser runtime\");",
     "await search.press(\"Enter\");",
     "```"
@@ -168,12 +202,41 @@ const examples = {
   ]
 };
 
+const ownershipRows = [
+  ["`agent.documentation`", "Read packaged markdown docs by extensionless name."],
+  ["`agent.browsers`", "Discover and select the `extension` backend."],
+  ["`browser.tabs`", "Create, list, switch, close, claim current, and finalize controlled tabs."],
+  ["`browser.user`", "Inspect and claim user-opened tabs, read redacted history, name/finalize/handoff/stop sessions."],
+  ["`browser.events`", "Read, wait for, mark, and clear buffered browser events."],
+  ["`browser.downloads`", "List and wait for Chrome downloads."],
+  ["`browser.capabilities` / `tab.capabilities`", "Discover optional capability availability and documentation."],
+  ["`tab`", "Page navigation, waits, observation, locators, screenshots, clipboard, uploads, evaluate, dialogs, and CDP."],
+  ["`tab.playwright`", "Playwright-shaped aliases over the governed tab API. Limited subset only."],
+  ["`tab.cua`", "Coordinate and keyboard/mouse actions."],
+  ["`tab.dom_cua`", "Visible DOM snapshots and node-id based actions through `get_visible_dom()`."],
+  ["`locator`", "Scoped element reads and actions created from tab or frame locator constructors."]
+];
+
+const guardrails = [
+  "Only call methods listed in this file or another packaged Formax doc.",
+  "`tab.observe()` returns a structured object, not a string.",
+  "`tab.playwright.domSnapshot()` returns a string snapshot.",
+  "`tab.dom_cua.get_visible_dom()` is the visible DOM snapshot method; there is no DOM CUA `snapshot` alias.",
+  "Observed `ref`, `node_id`, and `selectorCandidates` are runtime handles and hints, not DOM attributes.",
+  "Use `tab.evaluate(string, options)` for string scripts and `tab.playwright.evaluate(function, arg, options)` for Playwright-shaped function form.",
+  "Check locator uniqueness with `count()` before meaningful actions when uniqueness is not obvious.",
+  "After timeout, strict-mode failure, selector parse error, stale ref, or unexpected mutation, take a fresh snapshot and rebuild the locator."
+];
+
 const unsupportedFeatures = [
+  ["Full upstream Playwright", "Formax exposes a documented subset only. Do not call undocumented Playwright methods."],
   ["Isolated browser contexts", "The backend controls the user's real Chrome profile through an extension, not a launched browser engine."],
   ["Bundled browser launch/download management", "Chrome is installed and managed by the user."],
   ["OS-level Computer Use", "Formax does not control native desktop apps or browser chrome UI."],
   ["Chrome internal pages", "`chrome://`, `edge://`, `file://`, and extension pages are blocked by MVP policy unless a specific future capability changes that boundary."],
   ["Arbitrary profile-file access", "The runtime must not read Chrome profile files, cookies, passwords, tokens, or local storage secrets."],
+  ["Bookmarks", "Bookmarks are intentionally not exposed."],
+  ["Browser/system notifications", "Browser/system notifications are intentionally not exposed."],
   ["Native Chrome UI automation", "Permission bubbles, extension popups, and OS file pickers are outside the page DOM and require user action."]
 ];
 
@@ -238,25 +301,15 @@ const sections = exportedTypes.map((name) => {
   return section.join("\n");
 });
 
-const unsupportedSection = [
-  "## Unsupported Features And Reasons",
-  "",
-  "| Feature | Reason |",
-  "| --- | --- |",
-  ...unsupportedFeatures.map(([feature, reason]) => `| ${feature} | ${reason} |`)
-].join("\n");
-
 const content = [
   "# Browser Client API",
   "",
   "<!-- Generated by `node scripts/generate-browser-client-api-docs.js`. Do not edit by hand. -->",
   "",
-  "This file documents the public Formax browser-client SDK facade exposed by",
-  "`mcp-node-repl/browser-client.ts`. It describes the TypeScript surface area,",
-  "including Codex-compatible namespaces. Runtime availability still depends on",
-  "`browser.capabilities` and `tab.capabilities`; unsupported surfaces are kept",
-  "explicit so callers fail with clear errors instead of silently taking a wrong",
-  "path.",
+  "This is the exact public Formax browser-client SDK surface exposed by",
+  "`mcp-node-repl/browser-client.ts`. Use it when you need method ownership,",
+  "signatures, and supported object shapes. For interaction strategy, read",
+  "`docs/playwright.md`; for runtime setup, read `docs/api.md`.",
   "",
   "Regenerate after SDK facade changes:",
   "",
@@ -264,8 +317,35 @@ const content = [
   "npm run docs:browser-api",
   "```",
   "",
+  "## Operating Contract",
+  "",
+  ...guardrails.map((item) => `- ${item}`),
+  "",
+  "## Surface Ownership",
+  "",
+  "| Surface | Owns |",
+  "| --- | --- |",
+  ...ownershipRows.map(([surface, owns]) => `| ${surface} | ${owns} |`),
+  "",
+  "## Common Starting Pattern",
+  "",
+  "```js",
+  "const browser = await agent.browsers.get(\"extension\");",
+  "globalThis.__activeBrowserTab ||= await browser.tabs.new();",
+  "const tab = globalThis.__activeBrowserTab;",
+  "",
+  "const snapshot = await tab.playwright.domSnapshot();",
+  "console.log(snapshot.slice(0, 2000));",
+  "```",
+  "",
+  "## Type Reference",
+  "",
   ...sections,
-  unsupportedSection,
+  "## Unsupported Features And Reasons",
+  "",
+  "| Feature | Reason |",
+  "| --- | --- |",
+  ...unsupportedFeatures.map(([feature, reason]) => `| ${feature} | ${reason} |`),
   ""
 ].join("\n");
 

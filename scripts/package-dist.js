@@ -26,13 +26,10 @@ const copyEntries = [
   ["tests/scripts/mcp-node-repl-smoke.js", "tests/scripts/mcp-node-repl-smoke.js"],
   ["docs/api.md", "docs/api.md"],
   ["docs/api-troubleshooting.md", "docs/api-troubleshooting.md"],
-  ["docs/backend-boundaries.md", "docs/backend-boundaries.md"],
   ["docs/browser-client-api.md", "docs/browser-client-api.md"],
   ["docs/chrome-troubleshooting.md", "docs/chrome-troubleshooting.md"],
   ["docs/file-management.md", "docs/file-management.md"],
   ["docs/playwright.md", "docs/playwright.md"],
-  ["docs/plugin-mcp-configuration.md", "docs/plugin-mcp-configuration.md"],
-  ["docs/protocol-action-reference.md", "docs/protocol-action-reference.md"],
   ["docs/screenshots.md", "docs/screenshots.md"]
 ];
 

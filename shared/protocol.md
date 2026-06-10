@@ -75,17 +75,11 @@ schemas directly and validates tool/RPC params before sending requests to the
 native host. The native host and extension keep independent validation
 boundaries so bypassing one layer does not bypass request-shape validation.
 
-The generated action index in `docs/protocol-action-reference.md` is derived
-from `shared/action-registry.ts` and `shared/browser-tool-schemas.ts`. Run
-`npm run docs:protocol` after action/schema changes, and run
-`npm run check:protocol-sync` to verify that the shared registry, JSON schemas,
-`shared/types.ts` `BrowserAction` union, `shared/protocol.md` action sections,
-and generated reference are synchronized.
+Keep `shared/action-registry.ts`, `shared/browser-tool-schemas.ts`,
+`shared/types.ts`, and the action sections in this file synchronized whenever
+browser actions or schemas change.
 
 ## Action Families
-
-See [docs/protocol-action-reference.md](../docs/protocol-action-reference.md)
-for the generated action table.
 
 High-level families:
 
@@ -271,7 +265,6 @@ Keep these in sync with this protocol contract:
 - [shared/types.ts](./types.ts)
 - [shared/action-registry.ts](./action-registry.ts)
 - [shared/browser-tool-schemas.ts](./browser-tool-schemas.ts)
-- [docs/protocol-action-reference.md](../docs/protocol-action-reference.md)
 
 Regenerate the action reference with:
 

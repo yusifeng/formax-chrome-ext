@@ -18,7 +18,7 @@ npm run check:extension-installed
 npm run check:native-host
 ```
 
-From the browser runtime, inspect health before retrying actions:
+From the browser runtime, check health before retrying actions:
 
 ```js
 const health = await browser.health();
@@ -33,41 +33,24 @@ dchkbbjmkheilkmencpckilhmmcppdne
 
 ## Extension Disconnected
 
-Symptoms:
-
-- Formax toolbar popup shows `Disconnected`.
-- `browser.health()` reports `nativeConnected: false`.
-- Actions fail before a tab opens or before a debugger attaches.
-
-Fix:
+If the popup shows `Disconnected` or `browser.health()` reports
+`nativeConnected: false`:
 
 1. Open `chrome://extensions`.
 2. Confirm Formax is installed and enabled.
-3. Click the extension reload button.
-4. Click the Formax toolbar icon and confirm it shows `Connected`.
+3. Reload the extension.
+4. Open the Formax toolbar popup and confirm it shows `Connected`.
 5. Run `~/.formax/bin/formax-doctor` or the source checkout checks again.
 
-If this is a source checkout, rebuild before reloading:
-
-```bash
-npm run build
-```
+If this is a source checkout, run `npm run build` before reloading the
+extension.
 
 ## Native Host Missing
 
-Symptoms:
+If Chrome cannot reach the native host:
 
-- Chrome extension is installed, but the popup never reaches `Connected`.
-- `browser.health()` reports `nativeConnected: false`.
-- Chrome native messaging errors mention host not found or forbidden.
-
-Fix for installed runtime:
-
-```bash
-~/.formax/bin/formax-doctor
-```
-
-Fix for source checkout:
+- Installed runtime: run `~/.formax/bin/formax-doctor`
+- Source checkout:
 
 ```bash
 npm run package:dist
@@ -75,62 +58,30 @@ npm run install:formax-runtime
 npm run check:native-host
 ```
 
-The native host manifest must allow the active extension origin:
+The native host manifest must allow:
 
 ```text
 chrome-extension://dchkbbjmkheilkmencpckilhmmcppdne/
 ```
 
-On macOS, the user-level manifest is normally under:
-
-```text
-~/Library/Application Support/Google/Chrome/NativeMessagingHosts/
-```
-
-On Linux, it is normally under:
-
-```text
-~/.config/google-chrome/NativeMessagingHosts/
-```
-
 ## Wrong Chrome Profile
 
-Symptoms:
+If Formax is installed in one Chrome profile but the user is browsing in
+another:
 
-- The extension is installed in one Chrome profile, but the user is browsing in
-  another profile.
-- Formax cannot see the tab the user expects.
-- `browser.user.openTabs({ currentWindow: true })` returns a different set of
-  tabs than the user is looking at.
-
-Fix:
-
-1. Confirm the active Chrome window profile avatar/name.
-2. Inspect `browser.health().profile`. `extensionInstanceId` identifies the
-   extension instance and `incognito` identifies the extension context, but
-   `activeProfileName` may be `null` because the extension does not read Chrome
-   profile files.
+1. Confirm the active Chrome window profile.
+2. Check `browser.health().profile`.
 3. Open `chrome://extensions` in that same window.
 4. Install or enable Formax in that profile.
-5. Retry `browser.user.openTabs({ currentWindow: true })` before claiming a tab.
+5. Retry `browser.user.openTabs({ currentWindow: true })`.
 
-Do not guess tab IDs across profiles. Claim a tab only from descriptors returned
-by `browser.user.openTabs()`.
+Do not guess tab IDs across profiles. Claim a tab only from descriptors
+returned by `browser.user.openTabs()`.
 
 ## Local Unpacked Extension ID Mismatch
 
-Symptoms:
-
-- A Web Store install works, but a locally loaded unpacked extension does not.
-- Native messaging reports that access is forbidden.
-- The ID in `chrome://extensions` is not `dchkbbjmkheilkmencpckilhmmcppdne`.
-
-Cause:
-
-Chrome can assign a different ID to local unpacked builds. The native host
-manifest must list the exact active extension origin.
-
-Fix for source checkout local testing:
+If local unpacked testing uses a different extension ID than the Web Store
+build:
 
 ```bash
 npm run install:formax-runtime -- --extension-id <local-unpacked-extension-id>
@@ -140,90 +91,55 @@ Then reload the unpacked extension in `chrome://extensions`, or restart Chrome.
 
 ## Stale Extension Background After Rebuild
 
-Symptoms:
-
-- `browser.health()` works, but newer actions or schemas fail.
-- Real-browser tests say the extension background is stale.
-- A TypeScript rebuild succeeded, but Chrome still behaves like the old build.
-
-Fix:
+If Chrome still behaves like the old build after a successful rebuild:
 
 1. Run `npm run build`.
 2. Open `chrome://extensions`.
-3. Click reload on the unpacked Formax extension.
+3. Reload the unpacked Formax extension.
 4. Re-run the failing action or `npm run test:real`.
 
 Chrome extension service workers can keep old code until the extension is
 reloaded.
 
-For public website smoke coverage after the local fixture checks pass, run:
+For public website smoke coverage after local fixture checks pass:
 
 ```bash
 npm run test:real-sites
 ```
 
-This opens a public search page, a public documentation page, a GitHub public
-repository page, and an npm package page. Set
-`FORMAX_REAL_SITE_SIGNED_IN_URL=https://example.com/account` to add an optional
-manual signed-in smoke target. Public websites can change markup or throttle
-requests, so inspect network/page changes before assuming a runtime regression.
-
 ## File Upload Permission Missing
 
-Symptoms:
-
-- Upload actions fail before the page receives the file.
-- `browser.health()` reports file URL access is disabled.
-- The target page is a local `file://` test page or the browser blocks the file
-  chooser flow.
-
-Fix:
+If upload fails on a local `file://` page, or Chrome blocks local file access:
 
 1. Open `chrome://extensions`.
 2. Open Formax details.
-3. Enable `Allow access to file URLs` when the task involves local file pages.
-4. For source/runtime upload validation, make sure the file path is absolute.
-5. If `AGENT_BROWSER_ALLOWED_UPLOAD_ROOTS` is set, place the file under one of
-   those allowed roots.
-
-Never upload a file unless the user explicitly requested that exact file and
-destination.
+3. Enable `Allow access to file URLs`.
+4. Make sure the upload path is absolute.
+5. If `AGENT_BROWSER_ALLOWED_UPLOAD_ROOTS` is set, use a file under an allowed
+   root.
 
 ## Debugger Detached Or User Takeover
 
-Symptoms:
+If an action fails after DevTools opened, the tab moved, or the user took over
+the page:
 
-- An action fails after the user opens DevTools, closes the tab, moves it, or
-  interacts with the page during automation.
-- Events include `debuggerDetached`.
-- The page state no longer matches the last snapshot.
-
-Fix:
-
-1. Ask the user to close DevTools for the controlled tab if it is open.
-2. Run `tab.observe()` or `browser.user.openTabs()` again to get fresh state.
+1. Close DevTools for the controlled tab if it is open.
+2. Run `tab.observe()` or `browser.user.openTabs()` again.
 3. Reclaim the intended tab from a returned descriptor if needed.
-4. Retry only after the current tab/session is clear.
+4. Retry only after current tab state is clear.
 
-If the user intentionally took over the tab, stop controlling it and report that
-manual takeover interrupted automation.
+If the user intentionally took over the tab, stop controlling it and report the
+interruption.
 
-## Chrome Extension UI Blocking Automation
-
-Symptoms:
-
-- Chrome permission bubbles, extension popups, download shelves, or browser UI
-  overlays cover the page.
-- Locator actionability reports pointer occlusion.
-- Coordinate clicks hit browser chrome instead of page content.
-
-Fix:
-
-1. Prefer DOM/locator actions over coordinates.
-2. Ask the user to close Chrome UI overlays if they are outside page DOM.
-3. Take a fresh `tab.observe()` after the overlay is dismissed.
-4. Use `force: true` only after inspecting the page and confirming the overlay is
-   not hiding the target.
+## Chrome UI Blocking Automation
 
 Formax controls web pages through the extension backend. It does not control
 native Chrome UI or OS dialogs.
+
+If permission bubbles, extension popups, download shelves, or browser overlays
+cover the page:
+
+1. Prefer DOM or locator actions over coordinates.
+2. Close the Chrome UI overlay.
+3. Take a fresh `tab.observe()`.
+4. Use `force: true` only after confirming the page target is still safe.

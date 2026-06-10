@@ -3,9 +3,12 @@
 Use this guide when JavaScript browser-client calls fail from the MCP
 `node_repl`, agent wrapper, or test harness.
 
-## Start With Health
+IMPORTANT: do not switch to unrelated browser-control paths before checking the
+selected backend workflow first.
 
-Run this before retrying a browser action:
+## Start Here
+
+Check runtime health before retrying:
 
 ```js
 const browser = await agent.browsers.get("extension");
@@ -13,33 +16,26 @@ const health = await browser.health();
 console.log(JSON.stringify(health, null, 2));
 ```
 
-Check these fields first:
+Look at these fields first:
 
-- `nativeConnected`: the extension is connected to the native messaging host.
-- `extension`: the loaded extension version and action registry.
-- `permissions`: required Chrome permissions are present.
-- `fileUrlAccess`: whether Chrome allows extension access to `file://` URLs.
+- `nativeConnected`
+- `extension`
+- `permissions`
+- `fileUrlAccess`
 
-If `nativeConnected` is false, switch to
-`docs/chrome-troubleshooting.md#native-host-missing`.
+If `nativeConnected` is false, stop and read `chrome-troubleshooting`.
 
-## Runtime Bootstrap Fails
+## Bootstrap Failures
 
-Symptoms:
-
-- Importing `./scripts/browser-client.mjs` fails.
-- Packaged installs cannot find the SDK from the current working directory.
-
-Fix:
-
-Use the guarded bootstrap from `skills/control-chrome/SKILL.md`. It tries the source checkout
-path first, then the packaged install path:
+If the installed SDK entry point cannot be imported, or `browser`, `agent`, or
+`tab` is missing in a fresh `node_repl` session, re-run the bootstrap from
+`SKILL.md` using:
 
 ```text
 ~/.formax/plugins/cache/formax/chrome/latest/scripts/browser-client.mjs
 ```
 
-If both paths fail, install the runtime again:
+If that path still fails, reinstall the runtime:
 
 ```bash
 npm run package:dist
@@ -48,78 +44,82 @@ npm run install:formax-runtime
 
 ## Common Failure Mapping
 
-Return concise user-facing messages. Keep raw errors for logs and tests.
+Keep user-facing messages short. Keep raw errors for logs and tests.
 
-| Failure | User-facing message |
-| --- | --- |
-| Extension disconnected | Formax is not connected to Chrome. Reload the extension and run the doctor check. |
-| Native host missing | The local Formax native host is not installed or Chrome cannot launch it. Reinstall the runtime. |
-| Extension ID mismatch | The active Chrome extension ID is not allowed by the native host manifest. Reinstall with the active unpacked extension ID. |
-| Stale extension background | Chrome is still running an old extension background. Reload the extension in `chrome://extensions`. |
-| File upload rejected | The file path must be absolute, exist locally, and pass native host upload-root validation. |
-| Debugger detached | Chrome detached the debugger, often because DevTools opened or the tab changed. Refresh state before retrying. |
+| Failure | Meaning | Next step |
+| --- | --- | --- |
+| Extension disconnected | Chrome extension is not connected. | Reload the extension and re-check health. |
+| Native host missing | Chrome cannot launch the native host. | Reinstall the runtime. |
+| Extension ID mismatch | Native host manifest does not allow the active extension ID. | Reinstall with the active extension ID. |
+| Stale extension background | Chrome is still running old extension code. | Reload the extension in `chrome://extensions`. |
+| File upload rejected | Path is invalid or blocked by validation. | Check absolute path, existence, and upload roots. |
+| Debugger detached | Chrome dropped the debugger session. | Refresh state and rediscover the tab. |
 
-Do not show local tokens, full stack traces, internal RPC payloads, or unfiltered
-CDP parameters in final user-facing replies.
+Do not expose tokens, raw stack traces, internal RPC payloads, or unfiltered
+CDP parameters in user-facing replies.
 
-## Stale Handles And Snapshots
+## Stale State
 
-Symptoms:
+When a locator, ref, or `node_id` stops matching the page:
 
-- A locator resolves to nothing after navigation.
-- A ref from `tab.observe()` no longer clicks the intended element.
-- Strict-mode or actionability checks fail repeatedly.
+1. Refresh `tab.playwright.domSnapshot()` for locator work.
+2. Refresh `tab.observe()` for structured visible elements and refs.
+3. Refresh `tab.dom_cua.get_visible_dom()` for DOM CUA `node_id` actions.
+4. Rebuild the target from current page state.
 
-Fix:
+Do not reuse old refs after navigation or major page changes.
 
-1. Take a fresh `tab.observe()` after navigation, modal changes, reloads, or
-   locator failures.
-2. Rebuild selectors from the latest snapshot.
-3. Retry on the same tab.
-4. Open a new tab only when the user asks for one or the old tab is closed.
+## Locator Failures
+
+- `strict_mode_violation`: the locator is ambiguous. Scope tighter.
+- `locator_not_found`: the target is missing, stale, hidden, or the locator is
+  wrong. Re-snapshot before rebuilding it.
+- `locator_actionability`: the target exists but is not actionable. Check
+  visibility, occlusion, disabled state, and viewport position before retrying.
+- `dom_cua_stale_node`: the current `node_id` is stale. Refresh
+  `tab.dom_cua.get_visible_dom()` and choose a current node.
+
+If two locator strategies fail on the same target, change strategy instead of
+repeating the same pattern.
 
 ## Upload Failures
 
-Check the file before calling upload helpers:
+Before retrying an upload, check:
 
-- Path is absolute.
-- File exists and is a regular file.
-- User requested that exact file and destination.
-- If `AGENT_BROWSER_ALLOWED_UPLOAD_ROOTS` is set, the file is under an allowed
-  root.
-- If the page is `file://`, Chrome file URL access is enabled for the extension.
+- the path is absolute
+- the file exists and is a regular file
+- the user asked for that exact file
+- `AGENT_BROWSER_ALLOWED_UPLOAD_ROOTS` allows it when configured
+- `fileUrlAccess` is enabled when the page itself is `file://`
 
-Prefer file chooser-aware helpers when available. Direct file input assignment
-only works when the target input can be resolved and Chrome accepts the file.
+Prefer the file chooser flow or a resolved file input. Do not guess at OS-level
+picker automation.
 
 ## Debugger Detach And User Takeover
 
-If a tab emits `debuggerDetached` or suddenly stops accepting actions:
+If a tab stops accepting actions or emits `debuggerDetached`:
 
-1. Check whether the user opened DevTools or manually took over the page.
-2. Re-read events with `browser.getEvents()` if diagnostics are needed.
-3. Use `browser.user.openTabs()` to rediscover the tab.
+1. Check whether DevTools is open or the user manually took over the page.
+2. Read `browser.events.get({ limit: ... })` if you need recent diagnostics.
+3. Re-discover the tab through `browser.user.openTabs()`.
 4. Claim the returned descriptor instead of guessing the tab ID.
-5. Continue only after the user-visible tab state is clear.
 
-## Raw CDP And Evaluate Diagnostics
+## Raw CDP And Evaluate
 
-Use high-level APIs for normal work. Raw CDP and mutating `evaluate` are
-advanced diagnostic tools:
+Use high-level APIs first. Raw CDP and mutating `evaluate` are diagnostic tools.
 
 - Provide a short `reason`.
-- Do not log script bodies, secrets, or bulky CDP parameters in user-facing
-  messages.
-- Prefer `tab.observe()`, locators, screenshots, network summaries, console
-  events, and page errors before raw CDP.
+- Do not surface script bodies or bulky CDP params to users.
+- Prefer locators, `tab.observe()`, screenshots, console events, and page
+  errors before raw CDP.
 
-## What To Collect For A Bug Report
+## Bug Reports
 
 Collect only non-secret diagnostics:
 
-- `browser.health()` summary with tokens removed.
-- The action name and high-level parameters.
-- Current URL origin, not full sensitive query strings.
-- Recent `browser.getEvents()` entries relevant to the failure.
-- Whether this is Web Store install or local unpacked build.
-- Whether Chrome DevTools was open on the controlled tab.
+- `browser.health()` summary
+- action name and high-level parameters
+- current URL origin
+- recent `browser.events.get({ limit: ... })` entries relevant to the failure
+- whether this is Web Store install or local unpacked build
+- whether DevTools was open on the controlled tab

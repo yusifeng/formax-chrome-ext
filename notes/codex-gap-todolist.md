@@ -553,7 +553,6 @@ Reference sources used:
   - [x] `docs/screenshots.md`
   - [x] `docs/chrome-troubleshooting.md`
   - [x] `docs/api-troubleshooting.md`
-  - [x] `docs/backend-boundaries.md`
 
 - [x] Update `skill/SKILL.md`:
   - [x] Bootstrap with absolute installed browser-client path in packaged
@@ -844,9 +843,9 @@ These are explicitly not equivalent to Codex yet:
       `tap()` remains intentionally unclaimed until the backend has real touch
       input semantics instead of a click alias.
 - [ ] MCP server exposes only `js`, which is intentional. Skill, API docs, MCP
-      configuration docs, and runtime `agent.documentation.get("browserUse")`
-      now document the Formax browser-use operating model, but this still does
-      not fully match Codex's complete browser-use guidance.
+      configuration docs, and the runtime documentation API now document the
+      Formax browser-use operating model, but this still does not fully match
+      Codex's complete browser-use guidance.
 - [ ] Tests now cover local real-browser fixture failures for locator
       strict-mode, missing targets, hidden targets, and occlusion/actionability,
       but public-site and complex cross-frame/OOPIF failures are still not fully

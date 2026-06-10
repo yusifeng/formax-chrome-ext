@@ -387,12 +387,12 @@ async function runSelfCheck() {
           "const runtime = await import('./scripts/browser-client.mjs');",
           "const { agent, browser } = await runtime.setupBrowserRuntime({ globals: globalThis });",
           "const docs = await browser.documentation();",
-          "const tabDocs = await agent.documentation.get('tabs');",
+          "const playwrightDocs = await agent.documentation.get('playwright');",
           "return {",
           "  browserList: agent.browsers.list(),",
           "  toolNames: browser.tools.map((tool) => tool.name),",
-          "  docsName: docs.name,",
-          "  tabDocsMentionOpenTabs: JSON.stringify(tabDocs).includes('browser.user.openTabs'),",
+          "  docsHasApiHeading: docs.includes('# Browser API'),",
+          "  playwrightDocsHasHeading: playwrightDocs.includes('# Playwright-Style Browser Usage'),",
           "  hasBrowserDocumentation: typeof browser.documentation === 'function',",
           "  hasAgentDocumentation: typeof agent.documentation?.get === 'function',",
           "  hasUserOpenTabs: typeof browser.user?.openTabs === 'function',",
@@ -406,8 +406,8 @@ async function runSelfCheck() {
   );
 
   assert.deepEqual(result.result.browserList, ["extension"]);
-  assert.equal(result.result.docsName, "Formax browser runtime");
-  assert.equal(result.result.tabDocsMentionOpenTabs, true);
+  assert.equal(result.result.docsHasApiHeading, true);
+  assert.equal(result.result.playwrightDocsHasHeading, true);
   assert.equal(result.result.hasBrowserDocumentation, true);
   assert.equal(result.result.hasAgentDocumentation, true);
   assert.equal(result.result.hasUserOpenTabs, true);

@@ -66,6 +66,15 @@ only after the extension and native host are installed and the extension popup
 shows `Connected`. Reload the unpacked extension in `chrome://extensions` after
 rebuilding extension files.
 
+For the local unpacked development extension flow, use:
+
+```bash
+npm run install:formax-runtime:dev
+```
+
+This installs the runtime into `~/.formax-dev` and rewrites the native host
+manifest for the fixed development extension ID alias `dev`.
+
 ## Chrome Extension ID
 
 The Chrome Web Store extension ID for this project is:
@@ -111,6 +120,16 @@ For a local unpacked extension with a different ID:
 cd /Users/david/Documents/github/formax-extension
 npm run install:formax-runtime -- --extension-id <local-unpacked-extension-id>
 ```
+
+The repository also keeps a fixed local development install path and ID alias:
+
+```bash
+cd /Users/david/Documents/github/formax-extension
+npm run install:formax-runtime:dev
+```
+
+That command installs into `~/.formax-dev` and uses the development extension
+ID alias defined in `scripts/extension-ids.js`.
 
 After changing the native host manifest or reloading/reinstalling the extension, reload the extension in Chrome or restart Chrome before testing native messaging again.
 
