@@ -4,6 +4,7 @@ import { execFile } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { resolveExtensionId } from "./extension-ids.js";
 
 const execFileAsync = promisify(execFile);
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -46,7 +47,7 @@ function printUsage() {
 
 Options:
   --json                         Print machine-readable JSON
-  --extension-id <id>            Override expected Chrome extension ID
+  --extension-id <id>            Override expected Chrome extension ID. Known labels: dev, prod
   --chrome-user-data-dir <path>  Chrome user data directory override
   --manifest-path <path>         Native host manifest path override
 `);
@@ -119,7 +120,7 @@ function printHuman(result) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const sharedArgs = [];
-  if (args.extensionId) sharedArgs.push("--extension-id", args.extensionId);
+  if (args.extensionId) sharedArgs.push("--extension-id", resolveExtensionId(args.extensionId));
 
   const extensionArgs = [...sharedArgs];
   if (args.chromeUserDataDir) extensionArgs.push("--chrome-user-data-dir", args.chromeUserDataDir);

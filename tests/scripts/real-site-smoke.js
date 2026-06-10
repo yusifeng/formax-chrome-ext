@@ -8,7 +8,6 @@ import {
   browserOpenUrl,
   browserStartSession,
   browserStopSession,
-  browserUpdatePolicy,
   browserWaitForLoadState,
   browserWaitForText,
   browserWaitForUrl
@@ -53,21 +52,11 @@ function hostFor(url) {
   return new URL(url).host;
 }
 
-async function allowUrl(url) {
-  await browserUpdatePolicy({
-    sessionId,
-    decision: "allow",
-    url
-  });
-}
-
 async function gotoPublicSite(url, options = {}) {
-  await allowUrl(url);
   const opened = (
     await browserOpenUrl({
       sessionId,
       url,
-      waitUntil: options.waitUntil || "domcontentloaded",
       timeoutMs: options.timeoutMs || DEFAULT_TIMEOUT_MS
     })
   ).result;
@@ -128,10 +117,10 @@ async function run() {
     assert(wait.matched === true, "MDN docs page did not expose HTML text", wait);
     const heading = (await browserLocatorQuery({
       sessionId,
-      locator: { kind: "role", role: "heading", name: "HTML", exact: false },
+      locator: { kind: "css", selector: "main h1, article h1" },
       kind: "count"
     })).result;
-    assert(Number(heading.value) >= 1, "MDN docs page did not expose a heading locator", heading);
+    assert(Number(heading.value) >= 1, "MDN docs page did not expose a primary heading", heading);
   });
 
   await test("GitHub public repository page", async () => {

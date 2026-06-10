@@ -10,7 +10,6 @@ destination.
 
 Requirements:
 
-- `confirmed: true`
 - absolute local file path
 - path exists and is a regular file
 - file is under `AGENT_BROWSER_ALLOWED_UPLOAD_ROOTS` when that environment
@@ -22,16 +21,12 @@ Requirements:
 Example:
 
 ```js
-await tab.locator('input[type="file"]').setInputFiles("/absolute/path/file.txt", {
-  confirmed: true,
-});
+await tab.locator('input[type="file"]').setInputFiles("/absolute/path/file.txt");
 
 await tab.locator('label[for="multi-upload"]').setInputFiles([
   "/absolute/path/first.txt",
   "/absolute/path/second.txt",
-], {
-  confirmed: true,
-});
+]);
 ```
 
 When the page expects a chooser-trigger click, start waiting before clicking:
@@ -48,9 +43,9 @@ if (chooser.isMultiple()) {
   await chooser.setFiles([
     "/absolute/path/first.txt",
     "/absolute/path/second.txt",
-  ], { confirmed: true });
+  ]);
 } else {
-  await chooser.setFiles("/absolute/path/file.txt", { confirmed: true });
+  await chooser.setFiles("/absolute/path/file.txt");
 }
 ```
 
@@ -64,8 +59,7 @@ Direct protocol action for simple cases:
 ```js
 await tab.uploadFile({
   selector: 'input[type="file"]',
-  filePath: "/absolute/path/file.txt",
-  confirmed: true,
+  filePath: "/absolute/path/file.txt"
 });
 
 await tab.uploadFile({
@@ -73,8 +67,7 @@ await tab.uploadFile({
   filePaths: [
     "/absolute/path/first.txt",
     "/absolute/path/second.txt",
-  ],
-  confirmed: true,
+  ]
 });
 ```
 
@@ -87,7 +80,6 @@ For image/video/audio assets already present on the page, prefer
 
 ```js
 const result = await tab.locator("img.hero").downloadMedia({
-  originApproved: true,
   filename: "assets/hero.png",
   fallbackFetch: true,
   waitForCompletion: true,
@@ -97,10 +89,8 @@ console.log(result.media.url);
 console.log(result.download?.suggestedFilename(), result.download?.path());
 ```
 
-The extension resolves the asset URL from the element, requires HTTP(S), checks
-the asset origin, then starts a Chrome download. Ordinary media downloads need
-`originApproved: true`; runnable or installable downloads also require
-`confirmed: true`.
+The extension resolves the asset URL from the element, requires HTTP(S), then
+starts a Chrome download.
 
 `fallbackFetch: true` keeps Chrome downloads as the first attempt, then fetches
 the media with browser credentials only if direct download startup fails. The
@@ -125,8 +115,8 @@ To enable it:
 4. Reload the extension.
 
 This is only needed for workflows involving local file pages or Chrome file URL
-access. Normal uploads to `https://` pages still require absolute path and
-confirmation validation.
+access. Normal uploads to `https://` pages still require absolute path
+validation.
 
 ## Downloads
 
@@ -164,11 +154,11 @@ that download and destination.
 ## Clipboard
 
 Clipboard reads and writes affect global user state or reveal sensitive
-telemetry. Require confirmation every time:
+telemetry:
 
 ```js
-const text = await tab.clipboard.readText({ confirmed: true });
-await tab.clipboard.writeText("approved text", { confirmed: true });
+const text = await tab.clipboard.readText();
+await tab.clipboard.writeText("updated text");
 ```
 
 Typed clipboard payloads:
@@ -183,7 +173,7 @@ await tab.clipboard.write([
       },
     ],
   },
-], { confirmed: true });
+]);
 ```
 
 Do not paste clipboard contents into final answers unless the user explicitly

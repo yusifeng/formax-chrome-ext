@@ -29,7 +29,6 @@ const copyEntries = [
   ["docs/backend-boundaries.md", "docs/backend-boundaries.md"],
   ["docs/browser-client-api.md", "docs/browser-client-api.md"],
   ["docs/chrome-troubleshooting.md", "docs/chrome-troubleshooting.md"],
-  ["docs/confirmations.md", "docs/confirmations.md"],
   ["docs/file-management.md", "docs/file-management.md"],
   ["docs/playwright.md", "docs/playwright.md"],
   ["docs/plugin-mcp-configuration.md", "docs/plugin-mcp-configuration.md"],

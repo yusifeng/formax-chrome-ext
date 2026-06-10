@@ -197,7 +197,7 @@ Added/improved:
   - `ArrayBuffer`
   - byte arrays
 - SDK direct string alias:
-  - `tab.clipboard.write("text", { confirmed: true })`
+  - `tab.clipboard.write("text")`
   - routes through `browser_clipboard_write_text`, not typed item backend.
 
 Relevant files:

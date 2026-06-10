@@ -61,7 +61,7 @@ Prefer the object API:
 - `browser.user.claimTab(tabDescriptorOrClaimTokenArgs)`
 - `browser.tabs.list({ all: true })`
 - `browser.tabs.get(tabId)`
-- `browser.user.history({ query, from, to, limit, confirmed: true })`
+- `browser.user.history({ query, from, to, limit })`
 - `browser.nameSession(name)`
 - `browser.stopSession({ sessionId, closeTabs: true })`
 - `tab.goto(url)`
@@ -85,10 +85,10 @@ Prefer the object API:
 - `tab.cua.click({ x, y, button: "back" })`
 - `tab.cua.keypress({ keys: ["ControlOrMeta", "Shift", "Space"] })`
 - `tab.dom_cua.scroll({ node_id, y: 400 })`
-- `tab.clipboard.readText({ confirmed: true })`
-- `tab.clipboard.writeText(text, { confirmed: true })`
-- `tab.clipboard.read({ confirmed: true })`
-- `tab.clipboard.write([{ types: [{ mimeType, text, dataBase64 }] }], { confirmed: true })`
+- `tab.clipboard.readText()`
+- `tab.clipboard.writeText(text)`
+- `tab.clipboard.read()`
+- `tab.clipboard.write([{ types: [{ mimeType, text, dataBase64 }] }])`
 
 The flat browser methods still exist as fallback, such as `browser.openUrl(url)`, `browser.observe()`, and `browser.rawCdp(method, params)`.
 
@@ -414,11 +414,16 @@ If a JavaScript error or tool error happens:
 - Do not reset the kernel unless state is clearly corrupted.
 - Do not expose raw stack traces, internal RPC details, tokens, paths, or unfiltered runtime errors to the user; summarize the actionable failure.
 
-## Confirmations
+## Sensitive Operations
 
-Ask the user for explicit confirmation before file uploads, sensitive typing, deleting or modifying third-party records, sending messages or posts, submitting forms with external side effects, financial transactions, subscription changes, permission grants, raw CDP on arbitrary websites, or mutating `evaluate` calls. Only pass `confirmed: true` or `originApproved: true` after the user has approved that exact action and destination in the current task.
+Treat file uploads, sensitive typing, deleting or modifying third-party records,
+sending messages or posts, submitting forms with external side effects,
+financial transactions, subscription changes, raw CDP on arbitrary websites,
+and mutating `evaluate` calls as high-risk work. Only perform them when the
+user explicitly asked for that outcome in the current task.
 
-Browser history and clipboard access also require explicit confirmation for every request and have no always-allow path. Treat returned history entries and clipboard text as sensitive telemetry. Only use the minimum query/time range or clipboard operation needed for the task.
+Treat browser history and clipboard access as sensitive telemetry. Only use the
+minimum query/time range or clipboard operation needed for the task.
 
 ## File Uploads
 

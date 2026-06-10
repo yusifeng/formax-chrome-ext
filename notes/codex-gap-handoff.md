@@ -179,8 +179,7 @@ High-level completed areas before the latest pause:
 
 - Browser history:
   - Backend `getHistory`.
-  - SDK `browser.user.history({ query, from, to, limit, confirmed: true })`.
-  - Per-request confirmation required; no always-allow path.
+  - SDK `browser.user.history({ query, from, to, limit })`.
   - Manifest includes `history`.
 
 - Clipboard:

@@ -189,22 +189,6 @@ Fix:
 Never upload a file unless the user explicitly requested that exact file and
 destination.
 
-## Blocked Website
-
-Symptoms:
-
-- Navigation, clicking, typing, upload, evaluate, raw CDP, downloads, or history
-  lookup fails with a blocked-host policy message.
-- `browser.getPolicy()` shows the host under `blockedHosts`.
-
-Fix:
-
-1. Treat the block as intentional until the user says otherwise.
-2. Explain the blocked host, not the internal stack trace.
-3. If the user wants to unblock it, update policy explicitly for that host.
-
-Do not bypass a blocked host with raw CDP, constructed URLs, or another tab.
-
 ## Debugger Detached Or User Takeover
 
 Symptoms:

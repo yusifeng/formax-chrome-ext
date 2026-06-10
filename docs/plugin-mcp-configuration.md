@@ -49,26 +49,11 @@ If your agent supports custom skills, add the `skills/control-chrome/SKILL.md`
 file. If it does not, paste the file contents into that agent's browser-control
 system instructions.
 
-## Configure Tool Approval Policy
+## Configure Tool Safety
 
-If your MCP client supports per-tool approval policy, use the most restrictive
-policy that still lets the Node REPL run:
-
-- Allow the MCP `node_repl` JavaScript execution tool only for trusted local
-  Formax browser-control tasks.
-- Require confirmation for file uploads, browser history, clipboard reads and
-  writes, sensitive typing, mutating `evaluate`, raw CDP, form submissions with
-  side effects, permission grants, purchases, posts, and destructive actions.
-- Do not create persistent always-allow approval for browser history or
-  clipboard access.
-- Keep raw CDP and mutating `evaluate` as explicitly approved diagnostic tools,
-  not normal browsing primitives.
-- Deny or ask on tools that expose arbitrary local filesystem reads unless the
-  task needs a specific user-approved file.
-
-Formax also enforces confirmations and policy checks in the native host and
-extension backend. Client-side approval should be treated as an additional
-safety layer, not the only guardrail.
+If your MCP client supports per-tool safety policy, keep the Node REPL surface
+restricted to trusted local Formax browser-control tasks and avoid exposing
+additional browser-control tools in parallel.
 
 ## Use Only Node REPL Browser Control
 
@@ -85,8 +70,7 @@ when using this runtime. Reasons:
 - The skill assumes state is stored in the persistent Node runtime.
 - `browser.user.openTabs()` and `browser.user.claimTab()` provide safer user-tab
   claiming than naked tab IDs.
-- Confirmation, policy, and session/finalize patterns are documented for the
-  SDK object model.
+- Session and finalize patterns are documented for the SDK object model.
 - Keeping one browser-control surface avoids duplicate tab groups and mixed
   session ownership.
 
@@ -104,8 +88,8 @@ await agent.documentation.get("safety");
 
 The `browserUse` topic mirrors the packaged skill's operating model: prefer
 structured integrations before Chrome, reuse or claim one working tab, verify
-after meaningful actions, resolve pending approvals only after user approval,
-and finalize handoff or deliverable tabs as the final browser action.
+after meaningful actions, and finalize handoff or deliverable tabs as the final
+browser action.
 
 ## Verify Configuration
 

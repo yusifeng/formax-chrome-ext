@@ -27,8 +27,6 @@ const ALLOWED_ACTIONS: &[&str] = &[
     "clearEvents",
     "waitForEvent",
     "getDiagnostics",
-    "getPolicy",
-    "updatePolicy",
     "startSession",
     "nameSession",
     "openTabs",
@@ -540,28 +538,6 @@ fn validate_action_param_shape(action: &str, params: &Map<String, Value>) -> Res
                 ("nativeDiagnostics", ParamKind::Object, false),
             ],
         ),
-        "getPolicy" => {
-            validate_param_specs(action, params, &[("sessionId", ParamKind::String, false)])
-        }
-        "updatePolicy" => {
-            validate_param_specs(
-                action,
-                params,
-                &[
-                    ("decision", ParamKind::String, false),
-                    ("sessionId", ParamKind::String, false),
-                    ("host", ParamKind::String, false),
-                    ("url", ParamKind::String, false),
-                    ("reset", ParamKind::Boolean, false),
-                ],
-            )?;
-            validate_string_enum(
-                action,
-                params,
-                "decision",
-                &["allow", "always_allow", "deny"],
-            )
-        }
         "startSession" => validate_param_specs(
             action,
             params,
@@ -609,7 +585,6 @@ fn validate_action_param_shape(action: &str, params: &Map<String, Value>) -> Res
                 ("from", ParamKind::Number, false),
                 ("to", ParamKind::Number, false),
                 ("limit", ParamKind::Number, false),
-                ("confirmed", ParamKind::Boolean, false),
             ],
         ),
         "clipboardReadText" => validate_param_specs(
@@ -618,7 +593,6 @@ fn validate_action_param_shape(action: &str, params: &Map<String, Value>) -> Res
             &[
                 ("sessionId", ParamKind::String, false),
                 ("tabId", ParamKind::Number, false),
-                ("confirmed", ParamKind::Boolean, false),
             ],
         ),
         "clipboardWriteText" => validate_param_specs(
@@ -628,7 +602,6 @@ fn validate_action_param_shape(action: &str, params: &Map<String, Value>) -> Res
                 ("sessionId", ParamKind::String, false),
                 ("tabId", ParamKind::Number, false),
                 ("text", ParamKind::String, true),
-                ("confirmed", ParamKind::Boolean, false),
                 ("sensitive", ParamKind::Boolean, false),
             ],
         ),
@@ -638,7 +611,6 @@ fn validate_action_param_shape(action: &str, params: &Map<String, Value>) -> Res
             &[
                 ("sessionId", ParamKind::String, false),
                 ("tabId", ParamKind::Number, false),
-                ("confirmed", ParamKind::Boolean, false),
             ],
         ),
         "clipboardWrite" => validate_param_specs(
@@ -648,7 +620,6 @@ fn validate_action_param_shape(action: &str, params: &Map<String, Value>) -> Res
                 ("sessionId", ParamKind::String, false),
                 ("tabId", ParamKind::Number, false),
                 ("items", ParamKind::ObjectArray, true),
-                ("confirmed", ParamKind::Boolean, false),
                 ("sensitive", ParamKind::Boolean, false),
             ],
         ),
@@ -920,8 +891,6 @@ fn validate_action_param_shape(action: &str, params: &Map<String, Value>) -> Res
                     ("clickCount", ParamKind::Number, false),
                     ("modifiers", ParamKind::StringArray, false),
                     ("waitMs", ParamKind::Number, false),
-                    ("confirmed", ParamKind::Boolean, false),
-                    ("confirmationId", ParamKind::String, false),
                 ],
             )?;
             validate_string_enum(
@@ -943,7 +912,6 @@ fn validate_action_param_shape(action: &str, params: &Map<String, Value>) -> Res
                     ("button", ParamKind::String, false),
                     ("modifiers", ParamKind::StringArray, false),
                     ("waitMs", ParamKind::Number, false),
-                    ("confirmed", ParamKind::Boolean, false),
                 ],
             )?;
             validate_string_enum(
@@ -1002,7 +970,6 @@ fn validate_action_param_shape(action: &str, params: &Map<String, Value>) -> Res
                 ("clear", ParamKind::Boolean, false),
                 ("waitMs", ParamKind::Number, false),
                 ("sensitive", ParamKind::Boolean, false),
-                ("confirmed", ParamKind::Boolean, false),
             ],
         ),
         "evaluate" => {
@@ -1018,8 +985,6 @@ fn validate_action_param_shape(action: &str, params: &Map<String, Value>) -> Res
                     ("awaitPromise", ParamKind::Boolean, false),
                     ("timeoutMs", ParamKind::Number, false),
                     ("mode", ParamKind::String, false),
-                    ("confirmed", ParamKind::Boolean, false),
-                    ("confirmationId", ParamKind::String, false),
                     ("reason", ParamKind::String, false),
                 ],
             )?;
@@ -1090,8 +1055,6 @@ fn validate_action_param_shape(action: &str, params: &Map<String, Value>) -> Res
                 ("filePaths", ParamKind::StringArray, false),
                 ("timeoutMs", ParamKind::Number, false),
                 ("waitMs", ParamKind::Number, false),
-                ("confirmed", ParamKind::Boolean, false),
-                ("confirmationId", ParamKind::String, false),
             ],
         ),
         "uploadFile" => validate_param_specs(
@@ -1106,8 +1069,6 @@ fn validate_action_param_shape(action: &str, params: &Map<String, Value>) -> Res
                 ("filePath", ParamKind::String, false),
                 ("filePaths", ParamKind::StringArray, false),
                 ("waitMs", ParamKind::Number, false),
-                ("confirmed", ParamKind::Boolean, false),
-                ("confirmationId", ParamKind::String, false),
             ],
         ),
         "downloadMedia" => {
@@ -1127,9 +1088,6 @@ fn validate_action_param_shape(action: &str, params: &Map<String, Value>) -> Res
                     ("pollMs", ParamKind::Number, false),
                     ("fallbackFetch", ParamKind::Boolean, false),
                     ("fallbackMaxBytes", ParamKind::Number, false),
-                    ("originApproved", ParamKind::Boolean, false),
-                    ("confirmed", ParamKind::Boolean, false),
-                    ("confirmationId", ParamKind::String, false),
                 ],
             )?;
             validate_string_enum(
@@ -1155,9 +1113,6 @@ fn validate_action_param_shape(action: &str, params: &Map<String, Value>) -> Res
                 ("method", ParamKind::String, true),
                 ("params", ParamKind::Object, false),
                 ("timeoutMs", ParamKind::Number, false),
-                ("originApproved", ParamKind::Boolean, false),
-                ("confirmed", ParamKind::Boolean, false),
-                ("confirmationId", ParamKind::String, false),
                 ("reason", ParamKind::String, false),
             ],
         ),
@@ -1168,9 +1123,6 @@ fn validate_action_param_shape(action: &str, params: &Map<String, Value>) -> Res
                 ("sessionId", ParamKind::String, false),
                 ("tabId", ParamKind::Number, false),
                 ("targetId", ParamKind::String, true),
-                ("originApproved", ParamKind::Boolean, false),
-                ("confirmed", ParamKind::Boolean, false),
-                ("confirmationId", ParamKind::String, false),
                 ("reason", ParamKind::String, false),
             ],
         ),
@@ -2449,9 +2401,7 @@ mod tests {
         assert!(validate_action_params(
             "click",
             &json!({
-                "selector": "#delete-account-button",
-                "confirmed": true,
-                "confirmationId": "confirm-click-1"
+                "selector": "#delete-account-button"
             }),
             &[]
         )
@@ -2500,8 +2450,7 @@ mod tests {
                 "attribute": "src",
                 "conflictAction": "uniquify",
                 "fallbackFetch": true,
-                "fallbackMaxBytes": 1048576,
-                "originApproved": true
+                "fallbackMaxBytes": 1048576
             }),
             &[]
         )
@@ -2509,8 +2458,7 @@ mod tests {
         assert!(validate_action_params(
             "downloadMedia",
             &json!({
-                "attribute": "src",
-                "originApproved": true
+                "attribute": "src"
             }),
             &[]
         )
@@ -2684,9 +2632,6 @@ mod tests {
                 "method": "DOMSnapshot.captureSnapshot",
                 "params": {},
                 "targetId": "target-1",
-                "originApproved": true,
-                "confirmed": true,
-                "confirmationId": "confirm-1",
                 "reason": "diagnostic snapshot"
             }),
             &[]
@@ -2698,9 +2643,6 @@ mod tests {
                 "sessionId": "session-a",
                 "tabId": 101,
                 "targetId": "target-1",
-                "originApproved": true,
-                "confirmed": true,
-                "confirmationId": "confirm-1",
                 "reason": "target lifecycle"
             }),
             &[]

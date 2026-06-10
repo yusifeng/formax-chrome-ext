@@ -3,6 +3,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { resolveExtensionId } from "./extension-ids.js";
 
 const root = process.cwd();
 
@@ -43,7 +44,7 @@ function printUsage() {
 
 Options:
   --json                         Print machine-readable JSON
-  --extension-id <id>            Override extension ID
+  --extension-id <id>            Override extension ID. Known labels: dev, prod
   --config <path>                Extension config JSON. Default: ./config/extension-id.json
   --chrome-user-data-dir <path>  Chrome user data directory override
 `);
@@ -150,7 +151,7 @@ function summarizeSetting(setting) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const config = await readJson(args.config);
-  const extensionId = args.extensionId ?? config.extensionId;
+  const extensionId = resolveExtensionId(args.extensionId ?? config.extensionId);
   const chromeUserDataDir = args.chromeUserDataDir ?? defaultChromeUserDataDir();
   const profiles = await discoverProfileDirs(chromeUserDataDir);
   const profileResults = [];

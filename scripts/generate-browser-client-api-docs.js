@@ -149,8 +149,8 @@ const examples = {
   ],
   TabClipboardFacade: [
     "```js",
-    "const text = await tab.clipboard.readText({ confirmed: true });",
-    "await tab.clipboard.writeText(text.trim(), { confirmed: true });",
+    "const text = await tab.clipboard.readText();",
+    "await tab.clipboard.writeText(text.trim());",
     "```"
   ],
   LocatorHandle: [
@@ -174,8 +174,6 @@ const unsupportedFeatures = [
   ["OS-level Computer Use", "Formax does not control native desktop apps or browser chrome UI."],
   ["Chrome internal pages", "`chrome://`, `edge://`, `file://`, and extension pages are blocked by MVP policy unless a specific future capability changes that boundary."],
   ["Arbitrary profile-file access", "The runtime must not read Chrome profile files, cookies, passwords, tokens, or local storage secrets."],
-  ["Persistent approval for clipboard/history", "Clipboard and history are sensitive telemetry and require confirmation for every request."],
-  ["Bypassing blocked hosts", "Blocked host policy applies to navigation, interaction, uploads, evaluate, raw CDP, downloads, and history."],
   ["Native Chrome UI automation", "Permission bubbles, extension popups, and OS file pickers are outside the page DOM and require user action."]
 ];
 

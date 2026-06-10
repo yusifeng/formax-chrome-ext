@@ -73,26 +73,6 @@ const EXTENSION_ACTION_PARAM_SPECS: Record<string, ExtensionParamSpec[]> = {
     extParam("includeSnapshots", "boolean"),
     extParam("nativeDiagnostics", "object")
   ],
-  getPolicy: [extParam("sessionId", "string")],
-  updatePolicy: [
-    extParam("decision", "string"),
-    extParam("sessionId", "string"),
-    extParam("host", "string"),
-    extParam("url", "string"),
-    extParam("reset", "boolean")
-  ],
-  getPendingApprovals: [
-    extParam("sessionId", "string"),
-    extParam("kind", "string"),
-    extParam("includeResolved", "boolean"),
-    extParam("limit", "number")
-  ],
-  resolveApproval: [
-    extParam("approvalId", "string", true),
-    extParam("decision", "string", true),
-    extParam("policyDecision", "string"),
-    extParam("sessionId", "string")
-  ],
   startSession: [
     extParam("sessionId", "string", true),
     extParam("turnId", "string"),
@@ -120,36 +100,26 @@ const EXTENSION_ACTION_PARAM_SPECS: Record<string, ExtensionParamSpec[]> = {
     extParam("query", "string"),
     extParam("from", "number"),
     extParam("to", "number"),
-    extParam("limit", "number"),
-    extParam("confirmed", "boolean"),
-    extParam("confirmationId", "string")
+    extParam("limit", "number")
   ],
   clipboardReadText: [
     extParam("sessionId", "string"),
-    extParam("tabId", "number"),
-    extParam("confirmed", "boolean"),
-    extParam("confirmationId", "string")
+    extParam("tabId", "number")
   ],
   clipboardWriteText: [
     extParam("sessionId", "string"),
     extParam("tabId", "number"),
     extParam("text", "string", true),
-    extParam("confirmed", "boolean"),
-    extParam("confirmationId", "string"),
     extParam("sensitive", "boolean")
   ],
   clipboardRead: [
     extParam("sessionId", "string"),
-    extParam("tabId", "number"),
-    extParam("confirmed", "boolean"),
-    extParam("confirmationId", "string")
+    extParam("tabId", "number")
   ],
   clipboardWrite: [
     extParam("sessionId", "string"),
     extParam("tabId", "number"),
     extParam("items", "objectArray", true),
-    extParam("confirmed", "boolean"),
-    extParam("confirmationId", "string"),
     extParam("sensitive", "boolean")
   ],
   createTab: [
@@ -262,18 +232,14 @@ const EXTENSION_ACTION_PARAM_SPECS: Record<string, ExtensionParamSpec[]> = {
     extParam("button", "string"),
     extParam("clickCount", "number"),
     extParam("modifiers", "stringArray"),
-    extParam("waitMs", "number"),
-    extParam("confirmed", "boolean"),
-    extParam("confirmationId", "string")
+    extParam("waitMs", "number")
   ],
   drag: [
     ...EXTENSION_SESSION_TAB_PARAMS,
     extParam("path", "objectArray", true),
     extParam("button", "string"),
     extParam("modifiers", "stringArray"),
-    extParam("waitMs", "number"),
-    extParam("confirmed", "boolean"),
-    extParam("confirmationId", "string")
+    extParam("waitMs", "number")
   ],
   moveMouse: [
     ...EXTENSION_SESSION_TAB_PARAMS,
@@ -301,9 +267,7 @@ const EXTENSION_ACTION_PARAM_SPECS: Record<string, ExtensionParamSpec[]> = {
     extParam("text", "string", true),
     extParam("clear", "boolean"),
     extParam("waitMs", "number"),
-    extParam("sensitive", "boolean"),
-    extParam("confirmed", "boolean"),
-    extParam("confirmationId", "string")
+    extParam("sensitive", "boolean")
   ],
   evaluate: [
     ...EXTENSION_SESSION_TAB_PARAMS,
@@ -313,8 +277,6 @@ const EXTENSION_ACTION_PARAM_SPECS: Record<string, ExtensionParamSpec[]> = {
     extParam("awaitPromise", "boolean"),
     extParam("timeoutMs", "number"),
     extParam("mode", "string"),
-    extParam("confirmed", "boolean"),
-    extParam("confirmationId", "string"),
     extParam("reason", "string")
   ],
   pressKey: [
@@ -351,9 +313,7 @@ const EXTENSION_ACTION_PARAM_SPECS: Record<string, ExtensionParamSpec[]> = {
     extParam("filePath", "string"),
     extParam("filePaths", "stringArray"),
     extParam("timeoutMs", "number"),
-    extParam("waitMs", "number"),
-    extParam("confirmed", "boolean"),
-    extParam("confirmationId", "string")
+    extParam("waitMs", "number")
   ],
   uploadFile: [
     ...EXTENSION_SESSION_TAB_PARAMS,
@@ -362,9 +322,7 @@ const EXTENSION_ACTION_PARAM_SPECS: Record<string, ExtensionParamSpec[]> = {
     extParam("locator", "locator"),
     extParam("filePath", "string"),
     extParam("filePaths", "stringArray"),
-    extParam("waitMs", "number"),
-    extParam("confirmed", "boolean"),
-    extParam("confirmationId", "string")
+    extParam("waitMs", "number")
   ],
   downloadMedia: [
     ...EXTENSION_SESSION_TAB_PARAMS,
@@ -377,17 +335,11 @@ const EXTENSION_ACTION_PARAM_SPECS: Record<string, ExtensionParamSpec[]> = {
     extParam("timeoutMs", "number"),
     extParam("pollMs", "number"),
     extParam("fallbackFetch", "boolean"),
-    extParam("fallbackMaxBytes", "number"),
-    extParam("originApproved", "boolean"),
-    extParam("confirmed", "boolean"),
-    extParam("confirmationId", "string")
+    extParam("fallbackMaxBytes", "number")
   ],
   attachTarget: [
     ...EXTENSION_SESSION_TAB_PARAMS,
     extParam("targetId", "string", true),
-    extParam("originApproved", "boolean"),
-    extParam("confirmed", "boolean"),
-    extParam("confirmationId", "string"),
     extParam("reason", "string")
   ],
   detachTarget: [
@@ -401,9 +353,6 @@ const EXTENSION_ACTION_PARAM_SPECS: Record<string, ExtensionParamSpec[]> = {
     extParam("method", "string", true),
     extParam("params", "object"),
     extParam("timeoutMs", "number"),
-    extParam("originApproved", "boolean"),
-    extParam("confirmed", "boolean"),
-    extParam("confirmationId", "string"),
     extParam("reason", "string")
   ],
   listTabs: [
@@ -519,9 +468,6 @@ const EXTENSION_SUPPORTED_KEYS = [
 ];
 
 const EXTENSION_ACTION_PARAM_ENUMS: Record<string, Record<string, string[]>> = {
-  updatePolicy: {
-    decision: ["allow", "always_allow", "deny"]
-  },
   waitForLoadState: {
     state: ["commit", "load", "domcontentloaded", "networkidle"]
   },

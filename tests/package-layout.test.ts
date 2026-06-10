@@ -51,6 +51,7 @@ describe("package layout", () => {
     const packageDist = read("scripts/package-dist.js");
     const packageJson = JSON.parse(read("package.json"));
     const installer = read("scripts/install-formax-runtime.js");
+    const extensionIds = read("scripts/extension-ids.js");
 
     for (const artifact of [
       ".formax-plugin",
@@ -81,10 +82,14 @@ describe("package layout", () => {
     expect(installer).toContain("rewriteInstalledPackage");
     expect(installer).toContain("rewriteInstalledConfig");
     expect(installer).not.toContain('["node_modules", "node_modules"]');
+    expect(extensionIds).toContain('export const WEB_STORE_EXTENSION_ID = "dchkbbjmkheilkmencpckilhmmcppdne";');
+    expect(extensionIds).toContain('export const DEV_EXTENSION_ID = "hooonkcoopaigliifkabcdjfmjjffmbm";');
     expect(packageDist).not.toContain("--dist-dir");
     expect(packageDist).not.toContain("rewriteLocalTestingConfig");
     expect(packageJson.scripts["install:formax-runtime:dev"]).toContain(".formax-dev");
-    expect(packageJson.scripts["install:formax-runtime:dev"]).toContain("hooonkcoopaigliifkabcdjfmjjffmbm");
+    expect(packageJson.scripts["install:formax-runtime:dev"]).toContain("--extension-id dev");
+    expect(packageJson.scripts["test:real"]).toContain("run-real-browser-test.js");
+    expect(packageJson.scripts["test:real-sites"]).toContain("run-real-browser-test.js");
   });
 
   it("packages only the bundled browser client entrypoint for runtime distribution", () => {

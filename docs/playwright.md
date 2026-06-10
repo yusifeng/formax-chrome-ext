@@ -53,7 +53,7 @@ enough:
 ```js
 const label = await tab.locator("#submit").evaluate((element) => element.textContent, undefined, { mode: "read" });
 const texts = await tab.locator(".item").evaluateAll((elements) => elements.map((element) => element.textContent), undefined, { mode: "read" });
-await tab.locator("#submit").dispatchEvent("click", { detail: { source: "agent" } }, { confirmed: true });
+await tab.locator("#submit").dispatchEvent("click", { detail: { source: "agent" } });
 ```
 
 `evaluate` receives the selected element, `evaluateAll` receives the matched
@@ -204,8 +204,7 @@ await tab.playwright.screenshot({ fullPage: true });
 `tab.playwright.waitForSelector/waitForText`, and
 `tab.playwright.screenshot` are SDK aliases over the governed tab navigation,
 wait, inspection, and screenshot methods. They exist for Playwright-style code
-shape; host approval and navigation policy are still enforced by the same
-backend actions.
+shape and still route through the same backend actions.
 
 Playwright-style SDK helpers accept `timeout` as an alias for the backend
 `timeoutMs` field:
@@ -268,13 +267,12 @@ const links = await tab.evaluate(
 );
 ```
 
-Mutating `evaluate` calls require explicit confirmation:
+Mutating `evaluate` calls should be used intentionally:
 
 ```js
 await tab.evaluate("document.querySelector('form').submit()", {
   mode: "write",
-  confirmed: true,
-  reason: "submit the form the user approved",
+  reason: "submit the form",
 });
 ```
 
@@ -284,16 +282,16 @@ common mutation APIs and setters while the evaluation is running, including
 DOM insertion/removal, `classList`, style mutation methods, `innerHTML`,
 `outerHTML`, `textContent`, and common form value setters. This is still a
 best-effort denylist plus temporary patch, not a hardened JavaScript sandbox;
-use `mode: "write"` with confirmation for intentional page changes.
+use `mode: "write"` for intentional page changes.
 
 ## Clipboard
 
-Clipboard reads and writes require explicit per-request confirmation:
+Clipboard reads and writes are sensitive operations:
 
 ```js
-const text = await tab.clipboard.readText({ confirmed: true });
-await tab.clipboard.writeText(text.trim(), { confirmed: true });
-await tab.clipboard.write("Plain text", { confirmed: true });
+const text = await tab.clipboard.readText();
+await tab.clipboard.writeText(text.trim());
+await tab.clipboard.write("Plain text");
 ```
 
 `tab.clipboard.write("text", options)` is an SDK convenience alias for
@@ -308,13 +306,12 @@ await tab.clipboard.write({
   "text/html": { text: "<strong>Plain text</strong>" },
   "image/png": { dataUrl: "data:image/png;base64,iVBORw0KGgo=" },
   "application/octet-stream": new Uint8Array([1, 2, 3])
-}, { confirmed: true });
+});
 ```
 
 The MIME map is normalized locally before the backend request; clipboard
 binary payloads can be `dataUrl`, `Uint8Array`/`Buffer`, `ArrayBuffer`, or byte
-arrays. Clipboard security still requires `confirmed: true` for every read or
-write.
+arrays.
 
 ## Downloads
 
@@ -333,23 +330,18 @@ console.log(download.suggestedFilename(), download.path());
 Start waiting before clicking the download trigger when possible.
 
 For page media assets, use the locator helper so the extension can resolve the
-asset URL and apply origin policy before starting the download:
+asset URL before starting the download:
 
 ```js
 const result = await tab.locator("img.hero").downloadMedia({
-  originApproved: true,
   fallbackFetch: true,
   waitForCompletion: true,
 });
 console.log(result.download?.suggestedFilename(), result.download?.path());
 ```
 
-Ordinary image/video/audio downloads need origin approval but not confirmation.
-Runnable or installable files such as `.dmg`, `.pkg`, `.exe`, or `.sh` also
-require `confirmed: true`.
 Use `fallbackFetch: true` for session-bound media assets where direct Chrome
-download startup fails; the extension still re-checks policy for redirected
-final URLs and enforces a bounded response size.
+download startup fails; the extension still enforces a bounded response size.
 
 ## File Choosers
 
@@ -360,7 +352,7 @@ wrapper:
 const chooserPromise = tab.playwright.waitForEvent("filechooser");
 await tab.locator('label[for="asset-upload"]').click();
 const chooser = await chooserPromise;
-await chooser.setFiles("/absolute/path/image.png", { confirmed: true });
+await chooser.setFiles("/absolute/path/image.png");
 ```
 
 The returned chooser supports `setFiles(paths)` and `isMultiple()`. The

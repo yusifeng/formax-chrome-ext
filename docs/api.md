@@ -30,8 +30,7 @@ The recommended MCP integration intentionally exposes only the JavaScript
 `node_repl` tool surface to the model. Import the Formax browser SDK inside that
 persistent runtime and use the object API. Do not expose separate flat browser
 tools alongside node_repl unless you are testing backward-compatible aliases;
-mixing tool surfaces splits session state, pending approval handling, and tab
-handoff semantics.
+mixing tool surfaces splits session state and tab handoff semantics.
 
 To inspect backend availability:
 
@@ -54,13 +53,11 @@ const snapshot = await tab.observe();
 Core namespaces:
 
 - `browser.tabs`: create, list, get, switch, close, and finalize controlled tabs.
-- `browser.user`: inspect and claim user-opened tabs, read confirmed history,
+- `browser.user`: inspect and claim user-opened tabs, read history,
   finalize handoffs, and stop user-facing sessions. Bookmarks and
   browser/system notifications are intentionally not exposed.
 - `browser.events`: read, clear, and wait for buffered browser events.
 - `browser.downloads`: list and wait for Chrome downloads.
-- `browser.policy`: inspect/update allow/block policy and resolve pending
-  approval requests.
 - `browser.capabilities`: inspect supported backend capabilities.
 - `browser.dev`: development and diagnostic helpers.
 - `tab`: page navigation, locators, DOM observation, CUA-style actions,
@@ -111,7 +108,6 @@ Important fields:
 - `extension`
 - `permissions`
 - `fileUrlAccess`
-- `policy`
 
 See `docs/chrome-troubleshooting.md` for Chrome connection issues and
 `docs/api-troubleshooting.md` for API failure mapping.
@@ -137,7 +133,6 @@ you need current capability details.
 - `skills/control-chrome/SKILL.md`: browser-use operating model for agents using the MCP
   `node_repl`.
 - `docs/playwright.md`: Playwright-style locator and wait patterns.
-- `docs/confirmations.md`: confirmation and approval requirements.
 - `docs/file-management.md`: uploads, downloads, clipboard, and local files.
 - `docs/screenshots.md`: full-page and element screenshot guidance.
 - `docs/chrome-troubleshooting.md`: extension, native host, profile, and Chrome
@@ -148,8 +143,7 @@ you need current capability details.
 ## Security Boundary
 
 The native host validates RPC action names and request shapes before forwarding
-to the extension. The extension enforces browser policy, confirmation
-requirements, and URL restrictions.
+to the extension. The extension enforces action validation and URL restrictions.
 
 Do not expose raw runtime errors, tokens, stack traces, internal RPC payloads, or
 unfiltered CDP parameters to end users. Summarize actionable failures and keep

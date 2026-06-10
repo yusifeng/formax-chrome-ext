@@ -14,25 +14,21 @@ This file is intentionally deterministic; the timestamp is fixed so `npm run che
 | `clearEvents` | `browser_clear_events` | - | - | sideEffecting | yes |
 | `waitForEvent` | `browser_wait_for_event` | - | - | readOnly | yes |
 | `getDiagnostics` | `browser_get_diagnostics` | `browser.diagnostics` | - | readOnly, requiresSensitiveDataReview | yes |
-| `getPolicy` | `browser_get_policy` | `browser.policy.get` | - | readOnly | yes |
-| `updatePolicy` | `browser_update_policy` | `browser.policy.update` | - | sideEffecting | yes |
-| `getPendingApprovals` | `browser_get_pending_approvals` | `browser.policy.confirmation` | - | readOnly | yes |
-| `resolveApproval` | `browser_resolve_approval` | `browser.policy.confirmation` | approvalId, decision | sideEffecting | yes |
-| `startSession` | `browser_start_session` | - | sessionId | sideEffecting, requiresHostApproval | yes |
+| `startSession` | `browser_start_session` | - | sessionId | sideEffecting | yes |
 | `nameSession` | `browser_name_session` | `browser.nameSession` | sessionId, name | sideEffecting | yes |
 | `openTabs` | `browser_user_open_tabs` | `browser.user.openTabs` | - | sideEffecting, requiresSensitiveDataReview | yes |
-| `claimTab` | `browser_claim_tab` | `browser.user.claimTab` | sessionId | sideEffecting, requiresHostApproval | yes |
-| `getHistory` | `browser_user_history` | `browser.user.history` | - | readOnly, requiresUserConfirmation, requiresBrowserHistory, requiresSensitiveDataReview | yes |
-| `clipboardReadText` | `browser_clipboard_read_text` | `tab.clipboard.readText` | - | readOnly, requiresUserConfirmation, requiresSensitiveDataReview | yes |
-| `clipboardWriteText` | `browser_clipboard_write_text` | `tab.clipboard.writeText` | text | sideEffecting, requiresUserConfirmation, requiresSensitiveDataReview | yes |
-| `clipboardRead` | `browser_clipboard_read` | `tab.clipboard.read` | - | readOnly, requiresUserConfirmation, requiresSensitiveDataReview | yes |
-| `clipboardWrite` | `browser_clipboard_write` | `tab.clipboard.write` | items | sideEffecting, requiresUserConfirmation, requiresSensitiveDataReview | yes |
-| `createTab` | `browser_create_tab` | `browser.tabs.new` | sessionId | sideEffecting, requiresHostApproval | yes |
+| `claimTab` | `browser_claim_tab` | `browser.user.claimTab` | sessionId | sideEffecting | yes |
+| `getHistory` | `browser_user_history` | `browser.user.history` | - | readOnly, requiresBrowserHistory, requiresSensitiveDataReview | yes |
+| `clipboardReadText` | `browser_clipboard_read_text` | `tab.clipboard.readText` | - | readOnly, requiresSensitiveDataReview | yes |
+| `clipboardWriteText` | `browser_clipboard_write_text` | `tab.clipboard.writeText` | text | sideEffecting, requiresSensitiveDataReview | yes |
+| `clipboardRead` | `browser_clipboard_read` | `tab.clipboard.read` | - | readOnly, requiresSensitiveDataReview | yes |
+| `clipboardWrite` | `browser_clipboard_write` | `tab.clipboard.write` | items | sideEffecting, requiresSensitiveDataReview | yes |
+| `createTab` | `browser_create_tab` | `browser.tabs.new` | sessionId | sideEffecting | yes |
 | `switchTab` | `browser_switch_tab` | `browser.tabs.selected` | - | sideEffecting | yes |
-| `openUrl` | `browser_open_url` | `tab.goto` | url | sideEffecting, requiresHostApproval | yes |
-| `goBack` | `browser_go_back` | `tab.back` | - | sideEffecting, requiresHostApproval | yes |
-| `goForward` | `browser_go_forward` | `tab.forward` | - | sideEffecting, requiresHostApproval | yes |
-| `reload` | `browser_reload` | `tab.reload` | - | sideEffecting, requiresHostApproval | yes |
+| `openUrl` | `browser_open_url` | `tab.goto` | url | sideEffecting | yes |
+| `goBack` | `browser_go_back` | `tab.back` | - | sideEffecting | yes |
+| `goForward` | `browser_go_forward` | `tab.forward` | - | sideEffecting | yes |
+| `reload` | `browser_reload` | `tab.reload` | - | sideEffecting | yes |
 | `waitForLoadState` | `browser_wait_for_load_state` | `tab.playwright.waitForLoadState` | - | readOnly | yes |
 | `waitForUrl` | `browser_wait_for_url` | `tab.playwright.waitForURL` | - | readOnly | yes |
 | `waitForSelector` | `browser_wait_for_selector` | - | selector | readOnly | yes |
@@ -40,35 +36,35 @@ This file is intentionally deterministic; the timestamp is fixed so `npm run che
 | `observe` | `browser_observe` | `tab.dom_cua.get_visible_dom` | - | readOnly, requiresSensitiveDataReview | yes |
 | `elementInfo` | `browser_element_info` | `tab.dom_cua.element_info` | x, y | readOnly, requiresSensitiveDataReview | yes |
 | `locatorQuery` | `browser_locator_query` | `tab.playwright.locator` | locator, kind | readOnly, requiresSensitiveDataReview | yes |
-| `locatorAction` | `browser_locator_action` | `locator.click` | locator, kind | sideEffecting, requiresHostApproval, requiresUserConfirmation, requiresSensitiveDataReview | yes |
+| `locatorAction` | `browser_locator_action` | `locator.click` | locator, kind | sideEffecting, requiresSensitiveDataReview | yes |
 | `locatorWait` | `browser_locator_wait` | `locator.waitFor` | locator | readOnly | yes |
 | `resolveFrame` | `browser_resolve_frame` | `tab.frameLocator.resolve` | frameSelectors | readOnly, requiresSensitiveDataReview | yes |
-| `click` | `browser_click` | `tab.cua.click` | - | sideEffecting, requiresHostApproval, requiresUserConfirmation | yes |
-| `drag` | `browser_drag` | `tab.cua.drag` | path | sideEffecting, requiresHostApproval, requiresUserConfirmation | yes |
+| `click` | `browser_click` | `tab.cua.click` | - | sideEffecting | yes |
+| `drag` | `browser_drag` | `tab.cua.drag` | path | sideEffecting | yes |
 | `moveMouse` | `browser_move_mouse` | `tab.cua.move` | x, y | sideEffecting | yes |
-| `scroll` | `browser_scroll` | `tab.cua.scroll` | - | sideEffecting, requiresHostApproval | yes |
-| `typeText` | `browser_type_text` | `tab.cua.type` | text | sideEffecting, requiresHostApproval, requiresUserConfirmation, requiresSensitiveDataReview | yes |
-| `evaluate` | `browser_evaluate` | `tab.playwright.evaluate` | script | sideEffecting, requiresHostApproval, requiresUserConfirmation, requiresSensitiveDataReview | yes |
-| `pressKey` | `browser_press_key` | `tab.cua.keypress` | key | sideEffecting, requiresHostApproval, requiresUserConfirmation | yes |
-| `handleDialog` | `browser_handle_dialog` | - | - | sideEffecting, requiresUserConfirmation | yes |
+| `scroll` | `browser_scroll` | `tab.cua.scroll` | - | sideEffecting | yes |
+| `typeText` | `browser_type_text` | `tab.cua.type` | text | sideEffecting, requiresSensitiveDataReview | yes |
+| `evaluate` | `browser_evaluate` | `tab.playwright.evaluate` | script | sideEffecting, requiresSensitiveDataReview | yes |
+| `pressKey` | `browser_press_key` | `tab.cua.keypress` | key | sideEffecting | yes |
+| `handleDialog` | `browser_handle_dialog` | - | - | sideEffecting | yes |
 | `screenshot` | `browser_screenshot` | `tab.screenshot` | - | readOnly, requiresSensitiveDataReview | yes |
 | `waitForFileChooser` | `browser_wait_for_file_chooser` | `tab.playwright.fileChooser` | - | readOnly | yes |
-| `setFileChooserFiles` | `browser_set_file_chooser_files` | `tab.playwright.fileChooser` | - | sideEffecting, requiresHostApproval, requiresUserConfirmation, requiresFileSystemRead, requiresSensitiveDataReview | yes |
-| `uploadFile` | `browser_upload_file` | `tab.playwright.fileChooser` | - | sideEffecting, requiresHostApproval, requiresUserConfirmation, requiresFileSystemRead, requiresSensitiveDataReview | yes |
-| `downloadMedia` | `browser_download_media` | `locator.downloadMedia` | locator | sideEffecting, requiresHostApproval, requiresUserConfirmation, requiresSensitiveDataReview | yes |
-| `attachTarget` | `browser_attach_target` | `tab.cdp.target.attach` | targetId | sideEffecting, requiresHostApproval, requiresUserConfirmation, requiresRawCdp, requiresSensitiveDataReview | yes |
+| `setFileChooserFiles` | `browser_set_file_chooser_files` | `tab.playwright.fileChooser` | - | sideEffecting, requiresFileSystemRead, requiresSensitiveDataReview | yes |
+| `uploadFile` | `browser_upload_file` | `tab.playwright.fileChooser` | - | sideEffecting, requiresFileSystemRead, requiresSensitiveDataReview | yes |
+| `downloadMedia` | `browser_download_media` | `locator.downloadMedia` | locator | sideEffecting, requiresSensitiveDataReview | yes |
+| `attachTarget` | `browser_attach_target` | `tab.cdp.target.attach` | targetId | sideEffecting, requiresRawCdp, requiresSensitiveDataReview | yes |
 | `detachTarget` | `browser_detach_target` | `tab.cdp.target.detach` | targetId | sideEffecting, requiresRawCdp | yes |
-| `cdp` | `browser_cdp` | `tab.cdp.raw` | method | sideEffecting, requiresHostApproval, requiresUserConfirmation, requiresRawCdp, requiresSensitiveDataReview | yes |
+| `cdp` | `browser_cdp` | `tab.cdp.raw` | method | sideEffecting, requiresRawCdp, requiresSensitiveDataReview | yes |
 | `listTabs` | `browser_list_tabs` | `browser.tabs.list` | - | readOnly, requiresSensitiveDataReview | yes |
 | `getTab` | `browser_get_tab` | `browser.tabs.get` | - | readOnly, requiresSensitiveDataReview | yes |
 | `listDownloads` | `browser_list_downloads` | `browser.downloads.list` | - | readOnly, requiresSensitiveDataReview | yes |
 | `waitForDownload` | `browser_wait_for_download` | `browser.downloads.wait` | - | readOnly, requiresSensitiveDataReview | yes |
 | `getDevLogs` | `browser_get_dev_logs` | `tab.dev.logs` | - | readOnly, requiresSensitiveDataReview | yes |
 | `getCapabilities` | `browser_get_capabilities` | `browser.capabilities.list` | - | readOnly | yes |
-| `closeTab` | `browser_close_tab` | `tab.close` | - | sideEffecting, destructive, requiresUserConfirmation | yes |
-| `finalizeSession` | `browser_finalize_session` | `browser.tabs.finalize` | sessionId | sideEffecting, destructive, requiresUserConfirmation | yes |
+| `closeTab` | `browser_close_tab` | `tab.close` | - | sideEffecting, destructive | yes |
+| `finalizeSession` | `browser_finalize_session` | `browser.tabs.finalize` | sessionId | sideEffecting, destructive | yes |
 | `endTurn` | `browser_end_turn` | - | sessionId, turnId | sideEffecting | yes |
-| `stopSession` | `browser_stop_session` | - | sessionId | sideEffecting, destructive, requiresUserConfirmation | yes |
+| `stopSession` | `browser_stop_session` | - | sessionId | sideEffecting, destructive | yes |
 
-Total actions: 61
+Total actions: 57
 

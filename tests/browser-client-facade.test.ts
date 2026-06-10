@@ -144,45 +144,6 @@ function createMockBrowser() {
         }, args.sessionId as string | null, args.tabId as number | null);
       }
 
-      if (name === "browser_get_pending_approvals") {
-        return envelope(name, {
-          approvals: [
-            {
-              approvalId: "confirm:session-a:example.test:click:destructive_action",
-              kind: "confirmation",
-              status: "pending",
-              action: "click",
-              host: "example.test",
-              sessionId: args.sessionId ?? "session-a",
-              message: "Browser action click requires confirmation.",
-              requiredParams: {
-                confirmed: true,
-                confirmationId: "confirm:session-a:example.test:click:destructive_action"
-              }
-            }
-          ]
-        }, args.sessionId as string | null, args.tabId as number | null);
-      }
-
-      if (name === "browser_resolve_approval") {
-        return envelope(name, {
-          approval: {
-            approvalId: args.approvalId,
-            kind: "confirmation",
-            status: args.decision === "approve" ? "approved" : "denied",
-            action: "click",
-            host: "example.test",
-            message: "Browser action click requires confirmation."
-          },
-          requiredParams: args.decision === "approve"
-            ? {
-                confirmed: true,
-                confirmationId: args.approvalId
-              }
-            : undefined
-        }, args.sessionId as string | null, args.tabId as number | null);
-      }
-
       if (name === "browser_clipboard_read_text") {
         return envelope(name, {
           text: "clipboard text",
@@ -668,28 +629,6 @@ describe("browser-client object facade", () => {
     });
   });
 
-  it("exposes pending approvals through the policy facade", async () => {
-    const { browser, calls } = createMockBrowser();
-
-    const approvals = await browser.policy.pending({ kind: "confirmation" });
-    const resolved = await browser.policy.resolve({
-      approvalId: "confirm:session-a:example.test:click:destructive_action",
-      decision: "approve"
-    }) as any;
-
-    expect(approvals).toHaveLength(1);
-    expect(approvals[0]).toMatchObject({
-      approvalId: "confirm:session-a:example.test:click:destructive_action",
-      kind: "confirmation"
-    });
-    expect(resolved.requiredParams).toMatchObject({
-      confirmed: true,
-      confirmationId: "confirm:session-a:example.test:click:destructive_action"
-    });
-    expect(calls.map((call) => call.name)).toContain("browser_get_pending_approvals");
-    expect(calls.map((call) => call.name)).toContain("browser_resolve_approval");
-  });
-
   it("generates a stable default session id for direct clients", async () => {
     const { browser, calls } = createMockBrowser();
 
@@ -846,7 +785,7 @@ describe("browser-client object facade", () => {
     await expect(
       tab.locator(".item").evaluateAll((elements) => elements.map((element) => (element as HTMLElement).textContent))
     ).resolves.toEqual(["One", "Two"]);
-    await tab.locator("#submit").dispatchEvent("click", { detail: { source: "test" } }, { confirmed: true });
+    await tab.locator("#submit").dispatchEvent("click", { detail: { source: "test" } });
 
     const locatorActionCalls = calls.filter((call) => call.name === "browser_locator_action");
     expect(locatorActionCalls.at(-3)).toMatchObject({
@@ -874,8 +813,7 @@ describe("browser-client object facade", () => {
         kind: "dispatchEvent",
         args: {
           type: "click",
-          eventInit: { detail: { source: "test" } },
-          confirmed: true
+          eventInit: { detail: { source: "test" } }
         }
       }
     });
@@ -954,8 +892,7 @@ describe("browser-client object facade", () => {
 
     await tab.locator(".source").dragTo(tab.getByText("Drop here"), {
       button: "left",
-      waitMs: 25,
-      confirmed: true
+      waitMs: 25
     });
 
     expect(calls.at(-1)).toMatchObject({
@@ -974,8 +911,7 @@ describe("browser-client object facade", () => {
             kind: "text",
             text: "Drop here"
           },
-          button: "left",
-          confirmed: true
+          button: "left"
         }
       }
     });
@@ -988,9 +924,7 @@ describe("browser-client object facade", () => {
     await tab.locator("#submit").click({
       force: true,
       button: "right",
-      waitMs: 25,
-      confirmed: true,
-      confirmationId: "confirm-permission"
+      waitMs: 25
     });
 
     expect(calls.at(-1)).toEqual({
@@ -1008,9 +942,7 @@ describe("browser-client object facade", () => {
         waitMs: 25,
         args: {
           force: true,
-          button: "right",
-          confirmed: true,
-          confirmationId: "confirm-permission"
+          button: "right"
         }
       }
     });
@@ -1589,13 +1521,12 @@ describe("browser-client object facade", () => {
     });
   });
 
-  it("maps browser user history to the confirmed history backend action", async () => {
+  it("maps browser user history to the backend action", async () => {
     const { browser, calls } = createMockBrowser();
 
     await expect(browser.user.history({
       query: "example",
-      limit: 5,
-      confirmed: true
+      limit: 5
     })).resolves.toEqual([
       expect.objectContaining({
         url: "https://example.test/callback?code=%5Bredacted%5D",
@@ -1609,24 +1540,23 @@ describe("browser-client object facade", () => {
       name: "browser_user_history",
       args: {
         query: "example",
-        limit: 5,
-        confirmed: true
+        limit: 5
       }
     });
   });
 
-  it("maps tab clipboard text helpers to confirmed clipboard backend actions", async () => {
+  it("maps tab clipboard text helpers to backend actions", async () => {
     const { browser, calls } = createMockBrowser();
     const tab = await browser.tabs.new("https://example.test");
 
-    await expect(tab.clipboard.readText({ confirmed: true })).resolves.toBe("clipboard text");
-    await expect(tab.clipboard.writeText("hello", { confirmed: true })).resolves.toMatchObject({
+    await expect(tab.clipboard.readText()).resolves.toBe("clipboard text");
+    await expect(tab.clipboard.writeText("hello")).resolves.toMatchObject({
       result: {
         written: true,
         textLength: 5
       }
     });
-    await expect(tab.clipboard.write("direct text", { confirmed: true })).resolves.toMatchObject({
+    await expect(tab.clipboard.write("direct text")).resolves.toMatchObject({
       result: {
         written: true,
         textLength: 11
@@ -1637,8 +1567,7 @@ describe("browser-client object facade", () => {
       name: "browser_clipboard_read_text",
       args: {
         sessionId: "session-a",
-        tabId: 101,
-        confirmed: true
+        tabId: 101
       }
     });
     expect(calls.at(-2)).toEqual({
@@ -1646,8 +1575,7 @@ describe("browser-client object facade", () => {
       args: {
         sessionId: "session-a",
         tabId: 101,
-        text: "hello",
-        confirmed: true
+        text: "hello"
       }
     });
     expect(calls.at(-1)).toEqual({
@@ -1655,8 +1583,7 @@ describe("browser-client object facade", () => {
       args: {
         sessionId: "session-a",
         tabId: 101,
-        text: "direct text",
-        confirmed: true
+        text: "direct text"
       }
     });
   });
@@ -1674,7 +1601,7 @@ describe("browser-client object facade", () => {
       }
     ];
 
-    await expect(tab.clipboard.read({ confirmed: true })).resolves.toEqual([
+    await expect(tab.clipboard.read()).resolves.toEqual([
       expect.objectContaining({
         types: expect.arrayContaining([
           expect.objectContaining({ mimeType: "text/plain" }),
@@ -1686,7 +1613,7 @@ describe("browser-client object facade", () => {
         ])
       })
     ]);
-    await expect(tab.clipboard.write(items, { confirmed: true })).resolves.toMatchObject({
+    await expect(tab.clipboard.write(items)).resolves.toMatchObject({
       result: {
         written: true,
         itemCount: 1
@@ -1697,8 +1624,7 @@ describe("browser-client object facade", () => {
       name: "browser_clipboard_read",
       args: {
         sessionId: "session-a",
-        tabId: 101,
-        confirmed: true
+        tabId: 101
       }
     });
     expect(calls.at(-1)).toEqual({
@@ -1715,8 +1641,7 @@ describe("browser-client object facade", () => {
               }
             ]
           }
-        ],
-        confirmed: true
+        ]
       }
     });
   });
@@ -1731,16 +1656,16 @@ describe("browser-client object facade", () => {
         "text/html": { text: "<strong>Plain text</strong>" },
         "image/png": { dataUrl: "data:image/png;base64,iVBORw0KGgo=" }
       }
-    ], { confirmed: true });
+    ]);
     await tab.clipboard.write({
       "text/plain": "Single item"
-    }, { confirmed: true });
+    });
     await tab.clipboard.write({
       "application/octet-stream": new Uint8Array([1, 2, 3]),
       "image/png": { bytes: Buffer.from([4, 5, 6]) },
       "application/pdf": { data: Uint8Array.from([7, 8]).buffer },
       "application/x-bytes": { bytes: [9, 10, 11] }
-    }, { confirmed: true });
+    });
 
     expect(calls.at(-3)).toEqual({
       name: "browser_clipboard_write",
@@ -1764,8 +1689,7 @@ describe("browser-client object facade", () => {
               }
             ]
           }
-        ],
-        confirmed: true
+        ]
       }
     });
     expect(calls.at(-2)).toEqual({
@@ -1782,8 +1706,7 @@ describe("browser-client object facade", () => {
               }
             ]
           }
-        ],
-        confirmed: true
+        ]
       }
     });
     expect(calls.at(-1)).toEqual({
@@ -1812,8 +1735,7 @@ describe("browser-client object facade", () => {
               }
             ]
           }
-        ],
-        confirmed: true
+        ]
       }
     });
   });
@@ -1917,7 +1839,6 @@ describe("browser-client object facade", () => {
 
     const result = await tab.locator("img.hero").downloadMedia({
       filename: "assets/photo.png",
-      originApproved: true,
       waitForCompletion: true,
       fallbackFetch: true,
       fallbackMaxBytes: 1024 * 1024
@@ -1947,7 +1868,6 @@ describe("browser-client object facade", () => {
           strict: false
         },
         filename: "assets/photo.png",
-        originApproved: true,
         waitForCompletion: true,
         fallbackFetch: true,
         fallbackMaxBytes: 1024 * 1024
@@ -1970,8 +1890,7 @@ describe("browser-client object facade", () => {
     });
 
     await fileChooser.setFiles(["/tmp/a.png", "/tmp/b.jpg"], {
-      waitMs: 25,
-      confirmed: true
+      waitMs: 25
     });
 
     expect(calls.at(-2)).toEqual({
@@ -1990,8 +1909,7 @@ describe("browser-client object facade", () => {
         fileChooserId: "fc-test",
         file_chooser_id: "fc-test",
         files: ["/tmp/a.png", "/tmp/b.jpg"],
-        waitMs: 25,
-        confirmed: true
+        waitMs: 25
       }
     });
   });
@@ -2909,43 +2827,6 @@ describe("browser-client object facade", () => {
         keepTabIds: [101],
         closeRest: true
       }
-    });
-  });
-
-  it("maps browser policy facade without tab defaults", async () => {
-    const { browser, calls } = createMockBrowser();
-    await browser.tabs.new();
-
-    await browser.policy.allowHost("example.com", { sessionId: "session-a" });
-    await browser.policy.alwaysAllowHost("docs.example");
-    await browser.policy.blockHost("blocked.example");
-    await browser.getPolicy();
-
-    expect(calls.at(-4)).toEqual({
-      name: "browser_update_policy",
-      args: {
-        decision: "allow",
-        host: "example.com",
-        sessionId: "session-a"
-      }
-    });
-    expect(calls.at(-3)).toEqual({
-      name: "browser_update_policy",
-      args: {
-        decision: "always_allow",
-        host: "docs.example"
-      }
-    });
-    expect(calls.at(-2)).toEqual({
-      name: "browser_update_policy",
-      args: {
-        decision: "deny",
-        host: "blocked.example"
-      }
-    });
-    expect(calls.at(-1)).toEqual({
-      name: "browser_get_policy",
-      args: {}
     });
   });
 

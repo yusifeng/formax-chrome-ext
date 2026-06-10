@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { resolveExtensionId } from "./extension-ids.js";
 
 const root = process.cwd();
 
@@ -46,7 +47,7 @@ function printUsage() {
 
 Options:
   --json                    Print machine-readable JSON
-  --extension-id <id>       Override expected Chrome extension ID
+  --extension-id <id>       Override expected Chrome extension ID. Known labels: dev, prod
   --host-name <name>        Override expected native host name
   --manifest-path <path>    Native host manifest path override
   --config <path>           Extension config JSON. Default: ./config/extension-id.json
@@ -117,7 +118,7 @@ function defaultManifestPath(hostName) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const config = await readJson(args.config);
-  const extensionId = args.extensionId ?? config.extensionId;
+  const extensionId = resolveExtensionId(args.extensionId ?? config.extensionId);
   const hostName = args.hostName ?? config.extensionHostName;
   const manifestPath = args.manifestPath ?? defaultManifestPath(hostName);
   const expectedOrigin = `chrome-extension://${extensionId}/`;

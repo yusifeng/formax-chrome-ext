@@ -19,7 +19,6 @@ Check these fields first:
 - `extension`: the loaded extension version and action registry.
 - `permissions`: required Chrome permissions are present.
 - `fileUrlAccess`: whether Chrome allows extension access to `file://` URLs.
-- `policy`: session and persistent allow/block state.
 
 If `nativeConnected` is false, switch to
 `docs/chrome-troubleshooting.md#native-host-missing`.
@@ -57,43 +56,11 @@ Return concise user-facing messages. Keep raw errors for logs and tests.
 | Native host missing | The local Formax native host is not installed or Chrome cannot launch it. Reinstall the runtime. |
 | Extension ID mismatch | The active Chrome extension ID is not allowed by the native host manifest. Reinstall with the active unpacked extension ID. |
 | Stale extension background | Chrome is still running an old extension background. Reload the extension in `chrome://extensions`. |
-| Blocked host | Browser access to this website is blocked by policy. |
-| Missing confirmation | This action needs explicit user confirmation before it can run. |
 | File upload rejected | The file path must be absolute, exist locally, and pass native host upload-root validation. |
 | Debugger detached | Chrome detached the debugger, often because DevTools opened or the tab changed. Refresh state before retrying. |
 
 Do not show local tokens, full stack traces, internal RPC payloads, or unfiltered
 CDP parameters in final user-facing replies.
-
-## Confirmation Failures
-
-These actions require explicit user approval in the current task:
-
-- file uploads
-- sensitive typing
-- clipboard reads and writes
-- browser history reads
-- deleting or modifying third-party records
-- sending messages or posts
-- submitting forms with external side effects
-- financial, subscription, or permission changes
-- raw CDP on arbitrary websites
-- mutating `evaluate` calls
-
-Only pass `confirmed: true` or `originApproved: true` after the user approved
-that exact action and destination.
-
-## Policy Blocks
-
-Inspect policy state:
-
-```js
-await browser.getPolicy();
-```
-
-If the host is blocked, do not bypass the block by using raw CDP, manual URL
-construction, or another tab. Ask the user whether they want that host unblocked
-or report the task as blocked.
 
 ## Stale Handles And Snapshots
 
@@ -141,7 +108,6 @@ Use high-level APIs for normal work. Raw CDP and mutating `evaluate` are
 advanced diagnostic tools:
 
 - Provide a short `reason`.
-- Require origin approval when policy requires it.
 - Do not log script bodies, secrets, or bulky CDP parameters in user-facing
   messages.
 - Prefer `tab.observe()`, locators, screenshots, network summaries, console

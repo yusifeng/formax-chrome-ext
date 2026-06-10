@@ -23,10 +23,6 @@ import type {
   GetDevLogsResult,
   GetEventsParams,
   GetEventsResult,
-  GetPolicyParams,
-  GetPolicyResult,
-  GetPendingApprovalsParams,
-  GetPendingApprovalsResult,
   GetTabParams,
   GetTabResult,
   HandleDialogParams,
@@ -78,8 +74,6 @@ import type {
   ReloadExtensionResult,
   ResolveFrameParams,
   ResolveFrameResult,
-  ResolveApprovalParams,
-  ResolveApprovalResult,
   ScrollParams,
   ScreenshotParams,
   ScreenshotResult,
@@ -89,8 +83,6 @@ import type {
   SwitchTabParams,
   SwitchTabResult,
   TypeTextParams,
-  UpdatePolicyParams,
-  UpdatePolicyResult,
   UploadFileParams,
   WaitForFileChooserParams,
   WaitForFileChooserResult,
@@ -246,22 +238,6 @@ export async function browserWaitForEvent(args: WaitForEventParams = {}) {
 
 export async function browserGetDiagnostics(args: GetDiagnosticsParams = {}) {
   return browserRpc<GetDiagnosticsResult>("getDiagnostics", args as JsonObject);
-}
-
-export async function browserGetPolicy(args: GetPolicyParams = {}) {
-  return browserRpc<GetPolicyResult>("getPolicy", args as JsonObject);
-}
-
-export async function browserUpdatePolicy(args: UpdatePolicyParams = {}) {
-  return browserRpc<UpdatePolicyResult>("updatePolicy", args as JsonObject);
-}
-
-export async function browserGetPendingApprovals(args: GetPendingApprovalsParams = {}) {
-  return browserRpc<GetPendingApprovalsResult>("getPendingApprovals", args as JsonObject);
-}
-
-export async function browserResolveApproval(args: ResolveApprovalParams) {
-  return browserRpc<ResolveApprovalResult>("resolveApproval", args as JsonObject);
 }
 
 export async function browserStartSession(args: StartSessionParams) {
@@ -508,14 +484,6 @@ export async function callBrowserTool(name: string, args: JsonObject) {
       return browserWaitForEvent(args as WaitForEventParams);
     case "browser_get_diagnostics":
       return browserGetDiagnostics(args as GetDiagnosticsParams);
-    case "browser_get_policy":
-      return browserGetPolicy(args as GetPolicyParams);
-    case "browser_update_policy":
-      return browserUpdatePolicy(args as UpdatePolicyParams);
-    case "browser_get_pending_approvals":
-      return browserGetPendingApprovals(args as GetPendingApprovalsParams);
-    case "browser_resolve_approval":
-      return browserResolveApproval(args as ResolveApprovalParams);
     case "browser_start_session":
       return browserStartSession(args as StartSessionParams);
     case "browser_name_session":

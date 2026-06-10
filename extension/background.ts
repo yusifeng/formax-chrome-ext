@@ -19,20 +19,13 @@ const CLIPBOARD_OFFSCREEN_URL = "clipboard-offscreen.html";
 const EVENT_SNAPSHOT_STORAGE_KEY = "formax.agentBrowser.eventSnapshots.v1";
 const FINALIZED_BADGE_STORAGE_KEY = "TAB_FAVICON_BADGES";
 const PENDING_UPDATE_STORAGE_KEY = "formax.pendingUpdateVersion.v1";
-const POLICY_STORAGE_KEY = "formax.browserPolicy.v1";
 const DEFAULT_CDP_TIMEOUT_MS = 10000;
 const MAX_EVENT_SNAPSHOTS = 50;
 const MAX_EVENTS_PER_SESSION_SNAPSHOT = 200;
 const FILE_CHOOSER_TTL_MS = 5 * 60 * 1000;
 const MAX_FILE_CHOOSERS = 100;
-const APPROVAL_TTL_MS = 10 * 60 * 1000;
-const MAX_PENDING_APPROVALS = 100;
 const BACKEND_REVISION = 5;
 const MAX_PROFILE_HINT_LENGTH = 80;
-const DESTRUCTIVE_BROWSER_ACTION_PATTERN = /\b(delete|remove|destroy|cancel|close\s+account|deactivate|terminate|drop)\b/i;
-const EXTERNAL_SIDE_EFFECT_PATTERN = /\b(send|submit|post|publish|comment|reply|create|book|schedule|invite|save|update|confirm|pay|purchase|subscribe|unsubscribe)\b/i;
-const PERMISSION_GRANT_PATTERN = /\b(allow|enable|grant|authorize|request|share|use|start|turn\s+on|access)\b/i;
-const BROWSER_PERMISSION_TARGET_PATTERN = /\b(camera|webcam|microphone|\bmic\b|location|geolocation|notification|notify|screen|display|clipboard|account\s+access|login\s+access|extension\s+install|install\s+extension)\b/i;
 const CAPTCHA_HANDOFF_PATTERN = /\b(captcha|re\s*captcha|hcaptcha|turnstile|i'?m not a robot|verify (that )?you are human|human verification)\b/i;
 const SECURITY_INTERSTITIAL_PATTERN = /\b(your connection is not private|deceptive site ahead|malware|phishing|security warning|certificate error|err_cert_|unsafe site|dangerous site)\b/i;
 const SECURITY_INTERSTITIAL_ACTION_PATTERN = /\b(advanced|proceed|continue|visit|ignore|accept|unsafe)\b/i;
@@ -47,10 +40,6 @@ const SUPPORTED_ACTIONS = [
   "clearEvents",
   "waitForEvent",
   "getDiagnostics",
-  "getPolicy",
-  "updatePolicy",
-  "getPendingApprovals",
-  "resolveApproval",
   "startSession",
   "nameSession",
   "openTabs",
@@ -118,7 +107,7 @@ type CursorPhase =
   | "taken_over";
 type FinalizedBadgePhase = "handoff" | "deliverable";
 type EffectiveBadgePhase = "active" | FinalizedBadgePhase;
-type BrowserPolicyAction =
+type BrowserActionTargetKind =
   | "navigate"
   | "click"
   | "type"
@@ -130,94 +119,6 @@ type BrowserPolicyAction =
   | "rawCdp"
   | "permission"
   | "other";
-type BrowserPolicyState = {
-  sessionAllowedHosts: Record<string, string[]>;
-  persistentAllowedHosts: string[];
-  blockedHosts: string[];
-};
-type HostAccessVerdict = {
-  allowed: boolean;
-  requiresApproval: boolean;
-  code: "allowed" | "requires_host_approval" | "host_blocked" | "invalid_url";
-  host: string | null;
-  scope: "session" | "persistent" | "blocked" | null;
-  message: string;
-};
-type HostApprovalPromptDetails = {
-  action: BrowserPolicyAction;
-  approvalId: string;
-  host: string;
-  message: string;
-  sessionId: string | null;
-  tabId: number | null;
-  suggestedDecisions: {
-    allowForSession: {
-      decision: "allow";
-      host: string;
-      sessionId: string;
-    } | null;
-    alwaysAllow: {
-      decision: "always_allow";
-      host: string;
-    };
-    deny: {
-      decision: "deny";
-      host: string;
-    };
-  };
-};
-type BrowserActionConfirmationDetails = {
-  action: BrowserPolicyAction;
-  confirmationId: string;
-  host: string | null;
-  message: string;
-  reasons: string[];
-  sessionId: string | null;
-  tabId: number | null;
-  target?: {
-    label: string;
-    text: string;
-    tagName: string | null;
-  };
-  requiredParams: {
-    confirmed: true;
-    confirmationId: string;
-  };
-};
-type BrowserOriginApprovalDetails = {
-  action: BrowserPolicyAction;
-  approvalId: string;
-  host: string | null;
-  message: string;
-  reasons: string[];
-  sessionId: string | null;
-  tabId: number | null;
-  subject?: ActionParams;
-  requiredParams: {
-    originApproved: true;
-  };
-};
-type PendingApprovalRecord = {
-  approvalId: string;
-  kind: "host" | "confirmation" | "origin";
-  status: "pending" | "approved" | "denied" | "expired";
-  action: BrowserPolicyAction;
-  host: string | null;
-  sessionId: string | null;
-  tabId: number | null;
-  message: string;
-  createdAt: number;
-  expiresAt: number;
-  reasons?: string[];
-  subject?: ActionParams;
-  target?: {
-    label: string;
-    text: string;
-    tagName: string | null;
-  };
-  requiredParams?: ActionParams;
-  suggestedDecisions?: ActionParams;
-};
 type CursorOverlayState = {
   arrivedMoveSequence?: number;
   moveSequence: number;
@@ -265,15 +166,10 @@ const networkRequestsByTab = new Map<number, Map<string, number>>();
 const cursorArrivalWaiters = new Map<string, CursorArrivalWaiter>();
 const expectedDebuggerDetachTabs = new Set<number>();
 const fileChoosers = new Map<string, FileChooserRecord>();
-const pendingApprovals = new Map<string, PendingApprovalRecord>();
-const approvalExpiryTimers = new Map<string, number>();
 const finalizedBadgesByTab = new Map<number, FinalizedBadgePhase>();
 const faviconDataUrlsByTab = new Map<number, { dataUrl: string; pageUrl: string }>();
 let activeActionContext: ActionContext | null = null;
 let nextCursorMoveSequence = 0;
-let browserPolicyState = createDefaultBrowserPolicyState();
-let browserPolicyLoaded = false;
-let browserPolicyLoadPromise: Promise<void> | null = null;
 let finalizedBadgesLoaded = false;
 let finalizedBadgesLoadPromise: Promise<void> | null = null;
 let finalizedBadgeStateQueue: Promise<void> = Promise.resolve();
@@ -285,7 +181,6 @@ let pendingUpdateReloadInProgress = false;
 registerTopLevelListeners();
 connectNativeHost();
 ensureReconnectAlarm();
-void ensureBrowserPolicyLoaded();
 void ensureFinalizedBadgesLoaded();
 void restoreSessionFaviconBadges();
 void maybeReloadForPendingUpdate("startup");
@@ -315,68 +210,10 @@ function registerTopLevelListeners() {
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message?.type === "POPUP_HEALTH") {
-      void ensureBrowserPolicyLoaded().then(() => {
-        void health().then((healthResult) => {
-          sendResponse({
-            ok: nativePort != null,
-            health: healthResult
-          });
-        });
-      });
-      return true;
-    }
-
-    if (message?.type === "POPUP_PENDING_APPROVALS") {
-      void getPendingApprovals({
-        includeResolved: false,
-        limit: approvalLimit(message.limit)
-      }).then((result) => {
+      void health().then((healthResult) => {
         sendResponse({
-          ok: true,
-          ...result
-        });
-      }).catch((error) => {
-        sendResponse({
-          ok: false,
-          error: structuredError(error)
-        });
-      });
-      return true;
-    }
-
-    if (message?.type === "POPUP_RESOLVE_APPROVAL") {
-      void resolveApproval({
-        approvalId: message.approvalId,
-        decision: message.decision,
-        policyDecision: message.policyDecision
-      }).then((result) => {
-        sendResponse({
-          ok: true,
-          ...result
-        });
-      }).catch((error) => {
-        sendResponse({
-          ok: false,
-          error: structuredError(error)
-        });
-      });
-      return true;
-    }
-
-    if (message?.type === "CONTENT_RESOLVE_APPROVAL") {
-      void resolveApproval({
-        approvalId: message.approvalId,
-        decision: message.decision,
-        policyDecision: message.policyDecision
-      }).then((result) => {
-        sendResponse({
-          ok: true,
-          ...result
-        });
-      }).catch((error) => {
-        sendResponse({
-          ok: false,
-          error: structuredError(error)
+          ok: nativePort != null,
+          health: healthResult
         });
       });
       return true;
@@ -648,7 +485,6 @@ async function dispatchAction(
 
   try {
     await sessionManager.initialize();
-    await ensureBrowserPolicyLoaded();
     validateExtensionActionParams(action, params);
     const result = await dispatchActionRaw(action, params);
     const endedAt = Date.now();
@@ -714,18 +550,6 @@ async function dispatchActionRaw(action: string, params: ActionParams) {
 
     case "getDiagnostics":
       return getDiagnostics(params);
-
-    case "getPolicy":
-      return getPolicy(params);
-
-    case "updatePolicy":
-      return updatePolicy(params);
-
-    case "getPendingApprovals":
-      return getPendingApprovals(params);
-
-    case "resolveApproval":
-      return resolveApproval(params);
 
     case "startSession":
       return startSession(params);
@@ -916,13 +740,7 @@ function extractParamsMetadata(params: ActionParams = {}) {
     sessionId: typeof params.sessionId === "string" ? params.sessionId : null,
     tabId: typeof params.tabId === "number" ? params.tabId : null,
     turnId: typeof params.turnId === "string" ? params.turnId : null,
-    url: typeof params.url === "string" ? params.url : null,
-    confirmed: params.confirmed === true,
-    originApproved: params.originApproved === true,
-    confirmationId:
-      typeof params.confirmationId === "string" && params.confirmationId.trim()
-        ? truncateAndRedactString(params.confirmationId.trim(), 120)
-        : null
+    url: typeof params.url === "string" ? params.url : null
   };
 }
 
@@ -957,9 +775,6 @@ async function postBrowserActionAudit(args: {
       status: args.status,
       resultCode: args.resultCode ?? null,
       errorCode: args.errorCode ?? null,
-      confirmed: paramsMeta.confirmed,
-      originApproved: paramsMeta.originApproved,
-      confirmationId: paramsMeta.confirmationId,
       timing: {
         startedAt: args.startedAt,
         endedAt: args.endedAt,
@@ -988,7 +803,6 @@ function actionAuditCategory(action: string) {
   if (["health", "getCapabilities", "reloadExtension"].includes(action)) return "runtime";
   if (["startSession", "nameSession", "createTab", "switchTab", "claimTab", "openTabs", "closeTab", "finalizeSession", "endTurn", "stopSession", "listTabs", "getTab"].includes(action)) return "session";
   if (["getEvents", "clearEvents", "waitForEvent", "getDevLogs"].includes(action)) return "diagnostic";
-  if (["getPolicy", "updatePolicy"].includes(action)) return "policy";
   if (["openUrl", "goBack", "goForward", "reload", "waitForLoadState", "waitForUrl"].includes(action)) return "navigation";
   if (["waitForSelector", "waitForText", "observe", "elementInfo", "locatorQuery", "locatorWait", "resolveFrame", "screenshot"].includes(action)) return "inspection";
   if (["locatorAction", "click", "drag", "moveMouse", "scroll", "typeText", "pressKey", "handleDialog"].includes(action)) return "interaction";
@@ -1083,12 +897,12 @@ function errorCodeForMessage(message: string) {
     return "unknown_action";
   }
 
-  if (message.includes("requires approval")) {
-    return "requires_host_approval";
+  if (message.includes("user_handoff_required")) {
+    return "user_handoff_required";
   }
 
-  if (message.includes("blocked by policy")) {
-    return "host_blocked";
+  if (message.includes("requires_host_approval")) {
+    return "requires_host_approval";
   }
 
   if (message.includes("confirmation_required")) {
@@ -1097,10 +911,6 @@ function errorCodeForMessage(message: string) {
 
   if (message.includes("origin_approval_required")) {
     return "origin_approval_required";
-  }
-
-  if (message.includes("user_handoff_required")) {
-    return "user_handoff_required";
   }
 
   if (
@@ -1122,16 +932,14 @@ function userFacingErrorMessage(code: string, message: string) {
   switch (code) {
     case "unknown_action":
       return "The requested browser action is not supported by this extension runtime.";
-    case "requires_host_approval":
-      return "This website requires approval before the browser action can continue.";
-    case "host_blocked":
-      return "This website is blocked by the current browser policy.";
-    case "confirmation_required":
-      return "This browser action requires explicit user confirmation.";
-    case "origin_approval_required":
-      return "Raw browser diagnostics require origin approval before continuing.";
     case "user_handoff_required":
       return "This browser action must be handed off to the user.";
+    case "requires_host_approval":
+      return "This browser action requires host approval before it can continue.";
+    case "confirmation_required":
+      return "This browser action requires explicit confirmation before it can continue.";
+    case "origin_approval_required":
+      return "This browser action requires origin approval before it can continue.";
     case "strict_mode_violation":
       return "The locator matched an unexpected number of elements.";
     case "locator_not_found":
@@ -1165,7 +973,6 @@ async function health(params: ActionParams = {}) {
     nativeConnected: nativePort != null,
     lastNativeError,
     sessions: sessionManager.serializeAll(),
-    policy: cloneBrowserPolicyState(browserPolicyState),
     extensionInstanceId: sessionManager.getExtensionInstanceId(),
     attachedTabs: debuggerManager.listAttachedTabs(),
     attachedTargets: debuggerManager.listAttachedTargets(),
@@ -1666,286 +1473,6 @@ function summarizeEventSnapshot(snapshot: ActionParams | null) {
     eventCount: snapshot.eventCount,
     firstSequence: snapshot.firstSequence,
     lastSequence: snapshot.lastSequence
-  };
-}
-
-async function getPolicy(params: ActionParams = {}) {
-  await ensureBrowserPolicyLoaded();
-
-  return {
-    policy: cloneBrowserPolicyState(browserPolicyState, params.sessionId)
-  };
-}
-
-async function updatePolicy(params: ActionParams = {}) {
-  await ensureBrowserPolicyLoaded();
-
-  if (params.reset === true) {
-    browserPolicyState = createDefaultBrowserPolicyState();
-    await persistBrowserPolicyState();
-    return {
-      policy: cloneBrowserPolicyState(browserPolicyState, params.sessionId)
-    };
-  }
-
-  const decision = normalizePolicyDecision(params.decision);
-  const host = normalizePolicyHost(params.host ?? params.url);
-
-  if (!host) {
-    throw new Error("updatePolicy.params requires a valid http/https host or URL");
-  }
-
-  applyHostAccessDecision(browserPolicyState, {
-    decision,
-    host,
-    sessionId: params.sessionId
-  });
-  await persistBrowserPolicyState();
-
-  safePostEvent({
-    name: "policyUpdated",
-    sessionId: typeof params.sessionId === "string" ? params.sessionId : null,
-    host,
-    decision
-  });
-
-  return {
-    policy: cloneBrowserPolicyState(browserPolicyState, params.sessionId)
-  };
-}
-
-function approvalLimit(value: unknown) {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return MAX_PENDING_APPROVALS;
-  }
-
-  return Math.max(1, Math.min(Math.floor(value), MAX_PENDING_APPROVALS));
-}
-
-function prunePendingApprovals() {
-  const now = Date.now();
-
-  for (const approval of pendingApprovals.values()) {
-    if (approval.status === "pending" && approval.expiresAt <= now) {
-      expirePendingApproval(approval.approvalId);
-    }
-  }
-
-  while (pendingApprovals.size > MAX_PENDING_APPROVALS) {
-    const oldest = Array.from(pendingApprovals.values())
-      .sort((left, right) => left.createdAt - right.createdAt)[0];
-    if (!oldest) break;
-    deletePendingApproval(oldest);
-  }
-}
-
-function scheduleApprovalExpiry(approval: PendingApprovalRecord) {
-  clearApprovalExpiryTimer(approval.approvalId);
-  if (approval.status !== "pending") {
-    return;
-  }
-
-  const timeoutId = self.setTimeout(() => {
-    expirePendingApproval(approval.approvalId);
-  }, Math.max(0, approval.expiresAt - Date.now()));
-  approvalExpiryTimers.set(approval.approvalId, timeoutId);
-}
-
-function clearApprovalExpiryTimer(approvalId: string) {
-  const timeoutId = approvalExpiryTimers.get(approvalId);
-  if (timeoutId == null) {
-    return;
-  }
-
-  self.clearTimeout(timeoutId);
-  approvalExpiryTimers.delete(approvalId);
-}
-
-function expirePendingApproval(approvalId: string) {
-  const approval = pendingApprovals.get(approvalId);
-  if (!approval || approval.status !== "pending") {
-    clearApprovalExpiryTimer(approvalId);
-    return;
-  }
-
-  if (approval.expiresAt > Date.now()) {
-    scheduleApprovalExpiry(approval);
-    return;
-  }
-
-  approval.status = "expired";
-  clearApprovalExpiryTimer(approval.approvalId);
-  void clearPendingApprovalFromTab(approval);
-}
-
-function deletePendingApproval(approval: PendingApprovalRecord) {
-  clearApprovalExpiryTimer(approval.approvalId);
-  pendingApprovals.delete(approval.approvalId);
-  void clearPendingApprovalFromTab(approval);
-}
-
-function sanitizePendingApproval(approval: PendingApprovalRecord): ActionParams {
-  return {
-    approvalId: approval.approvalId,
-    kind: approval.kind,
-    status: approval.status,
-    action: approval.action,
-    host: approval.host,
-    sessionId: approval.sessionId,
-    tabId: approval.tabId,
-    message: approval.message,
-    createdAt: approval.createdAt,
-    expiresAt: approval.expiresAt,
-    ...(approval.reasons ? { reasons: approval.reasons } : {}),
-    ...(approval.subject ? { subject: approval.subject } : {}),
-    ...(approval.target ? { target: approval.target } : {}),
-    ...(approval.requiredParams ? { requiredParams: approval.requiredParams } : {}),
-    ...(approval.suggestedDecisions ? { suggestedDecisions: approval.suggestedDecisions } : {})
-  };
-}
-
-function registerPendingApproval(approval: Omit<PendingApprovalRecord, "status" | "createdAt" | "expiresAt">) {
-  prunePendingApprovals();
-  const now = Date.now();
-  const existing = pendingApprovals.get(approval.approvalId);
-  const record: PendingApprovalRecord = {
-    ...approval,
-    status: "pending",
-    createdAt: existing?.createdAt ?? now,
-    expiresAt: now + APPROVAL_TTL_MS
-  };
-  pendingApprovals.set(record.approvalId, record);
-  scheduleApprovalExpiry(record);
-  void publishPendingApprovalToTab(record);
-  return record;
-}
-
-async function publishPendingApprovalToTab(approval: PendingApprovalRecord) {
-  if (approval.status !== "pending" || typeof approval.tabId !== "number") {
-    return;
-  }
-
-  try {
-    if (!(await prepareContentScript(approval.tabId))) {
-      return;
-    }
-
-    await withChromeMessageTimeout(
-      chrome.tabs.sendMessage(approval.tabId, {
-        type: "AGENT_APPROVAL_REQUEST",
-        approval: sanitizePendingApproval(approval)
-      }),
-      250
-    );
-  } catch {
-    // Approval remains available through the SDK and popup when the page cannot host UI.
-  }
-}
-
-async function clearPendingApprovalFromTab(approval: PendingApprovalRecord) {
-  if (typeof approval.tabId !== "number") {
-    return;
-  }
-
-  try {
-    if (!(await prepareContentScript(approval.tabId))) {
-      return;
-    }
-
-    await withChromeMessageTimeout(
-      chrome.tabs.sendMessage(approval.tabId, {
-        type: "AGENT_APPROVAL_RESOLVED",
-        approvalId: approval.approvalId,
-        status: approval.status
-      }),
-      250
-    );
-  } catch {
-    // Best-effort cleanup; stale in-page UI cannot affect the approval registry.
-  }
-}
-
-async function getPendingApprovals(params: ActionParams = {}) {
-  prunePendingApprovals();
-  const sessionId = typeof params.sessionId === "string" && params.sessionId.trim()
-    ? params.sessionId.trim()
-    : null;
-  const kind = ["host", "confirmation", "origin"].includes(params.kind)
-    ? params.kind
-    : null;
-  const includeResolved = params.includeResolved === true;
-  const approvals = Array.from(pendingApprovals.values())
-    .filter((approval) => includeResolved || approval.status === "pending")
-    .filter((approval) => !sessionId || approval.sessionId === sessionId)
-    .filter((approval) => !kind || approval.kind === kind)
-    .sort((left, right) => right.createdAt - left.createdAt)
-    .slice(0, approvalLimit(params.limit))
-    .map(sanitizePendingApproval);
-
-  return { approvals };
-}
-
-async function resolveApproval(params: ActionParams = {}) {
-  prunePendingApprovals();
-  const approvalId = requireString(params.approvalId, "resolveApproval.params.approvalId");
-  const decision = requireString(params.decision, "resolveApproval.params.decision");
-  if (decision !== "approve" && decision !== "deny") {
-    throw new Error("resolveApproval.params.decision must be approve or deny");
-  }
-
-  const approval = pendingApprovals.get(approvalId);
-  if (!approval) {
-    throw new Error(`resolveApproval.params.approvalId not found: ${approvalId}`);
-  }
-
-  if (approval.status !== "pending") {
-    return {
-      approval: sanitizePendingApproval(approval),
-      ...(approval.requiredParams ? { requiredParams: approval.requiredParams } : {})
-    };
-  }
-
-  approval.status = decision === "approve" ? "approved" : "denied";
-  clearApprovalExpiryTimer(approval.approvalId);
-  let policy: BrowserPolicyState | undefined;
-  let requiredParams = approval.requiredParams;
-
-  if (approval.kind === "host") {
-    await ensureBrowserPolicyLoaded();
-    const policyDecision = decision === "deny"
-      ? "deny"
-      : normalizePolicyDecision(params.policyDecision ?? (approval.sessionId ? "allow" : "always_allow"));
-    if (approval.host) {
-      applyHostAccessDecision(browserPolicyState, {
-        decision: policyDecision,
-        host: approval.host,
-        sessionId: typeof params.sessionId === "string" && params.sessionId.trim()
-          ? params.sessionId.trim()
-          : approval.sessionId ?? undefined
-      });
-      await persistBrowserPolicyState();
-      policy = cloneBrowserPolicyState(browserPolicyState, approval.sessionId ?? params.sessionId);
-    }
-    requiredParams = {};
-  }
-
-  safePostEvent({
-    name: "approvalResolved",
-    approvalId: approval.approvalId,
-    kind: approval.kind,
-    status: approval.status,
-    action: approval.action,
-    host: approval.host,
-    sessionId: approval.sessionId,
-    tabId: approval.tabId,
-    decision
-  });
-  void clearPendingApprovalFromTab(approval);
-
-  return {
-    approval: sanitizePendingApproval(approval),
-    ...(requiredParams ? { requiredParams } : {}),
-    ...(policy ? { policy } : {})
   };
 }
 
@@ -3398,8 +2925,6 @@ async function locatorAction(params: ActionParams = {}) {
     await assertBrowserPolicyForTab("click", tabId, session?.sessionId, {
       ...params,
       ...args,
-      confirmed: args.confirmed ?? params.confirmed,
-      confirmationId: args.confirmationId ?? params.confirmationId,
       label: typeof pointerTarget.label === "string" ? pointerTarget.label : undefined,
       text: typeof pointerTarget.text === "string" ? pointerTarget.text : undefined,
       tagName: typeof pointerTarget.tagName === "string" ? pointerTarget.tagName : undefined
@@ -3463,8 +2988,6 @@ async function locatorAction(params: ActionParams = {}) {
     await assertBrowserPolicyForTab("click", tabId, session?.sessionId, {
       ...params,
       ...args,
-      confirmed: args.confirmed ?? params.confirmed,
-      confirmationId: args.confirmationId ?? params.confirmationId,
       label: typeof sourcePoint.label === "string" ? sourcePoint.label : undefined,
       text: typeof sourcePoint.text === "string" ? sourcePoint.text : undefined,
       tagName: typeof sourcePoint.tagName === "string" ? sourcePoint.tagName : undefined
@@ -3683,8 +3206,6 @@ async function locatorAction(params: ActionParams = {}) {
         ...args,
         script,
         mode: args.mode === "read" ? "read" : "write",
-        confirmed: args.confirmed ?? params.confirmed,
-        confirmationId: args.confirmationId ?? params.confirmationId
       });
       await postDiagnosticActionAudit({
         action: "evaluate",
@@ -3701,9 +3222,7 @@ async function locatorAction(params: ActionParams = {}) {
         ...params,
         ...args,
         label: `dispatchEvent:${eventType}`,
-        text: eventType,
-        confirmed: args.confirmed ?? params.confirmed,
-        confirmationId: args.confirmationId ?? params.confirmationId
+        text: eventType
       });
     }
 
@@ -5210,12 +4729,6 @@ async function openTabs(params: ActionParams = {}) {
 }
 
 async function getHistory(params: ActionParams = {}) {
-  if (params.confirmed !== true) {
-    throw new Error(
-      "confirmation_required: Browser history access requires confirmed=true for this request."
-    );
-  }
-
   const limit = Math.max(1, Math.min(Math.floor(numberOrDefault(params.limit, 50)), 100));
   const search: chrome.history.HistoryQuery = {
     text: typeof params.query === "string" ? params.query : "",
@@ -5239,12 +4752,6 @@ async function getHistory(params: ActionParams = {}) {
 }
 
 async function clipboardReadText(params: ActionParams = {}) {
-  if (params.confirmed !== true) {
-    throw new Error(
-      "confirmation_required: Clipboard read requires confirmed=true for this request."
-    );
-  }
-
   const result = await sendClipboardOffscreenMessage({
     action: "readText"
   });
@@ -5260,12 +4767,6 @@ async function clipboardReadText(params: ActionParams = {}) {
 }
 
 async function clipboardWriteText(params: ActionParams = {}) {
-  if (params.confirmed !== true) {
-    throw new Error(
-      "confirmation_required: Clipboard write requires confirmed=true for this request."
-    );
-  }
-
   const text = requireString(params.text, "clipboardWriteText.params.text");
   await sendClipboardOffscreenMessage({
     action: "writeText",
@@ -5283,12 +4784,6 @@ async function clipboardWriteText(params: ActionParams = {}) {
 }
 
 async function clipboardRead(params: ActionParams = {}) {
-  if (params.confirmed !== true) {
-    throw new Error(
-      "confirmation_required: Clipboard read requires confirmed=true for this request."
-    );
-  }
-
   const result = await sendClipboardOffscreenMessage({
     action: "readItems"
   });
@@ -5304,12 +4799,6 @@ async function clipboardRead(params: ActionParams = {}) {
 }
 
 async function clipboardWrite(params: ActionParams = {}) {
-  if (params.confirmed !== true) {
-    throw new Error(
-      "confirmation_required: Clipboard write requires confirmed=true for this request."
-    );
-  }
-
   const items = normalizeClipboardItems(params.items);
   await sendClipboardOffscreenMessage({
     action: "writeItems",
@@ -5415,7 +4904,7 @@ async function ensureClipboardOffscreenDocument() {
     await offscreen.createDocument({
       url: CLIPBOARD_OFFSCREEN_URL,
       reasons: ["CLIPBOARD"],
-      justification: "Read and write clipboard text for confirmed Formax browser requests."
+      justification: "Read and write clipboard text for Formax browser requests."
     });
   } catch (error) {
     const message = stringifyError(error);
@@ -10711,8 +10200,6 @@ function listCapabilities() {
 
   return [
     browserCapability("browser.tabs", "List, create, select, and finalize controlled tabs.", true),
-    browserCapability("browser.policy.hosts", "Require approval for new hosts and store session, persistent, and blocked host decisions.", true),
-    browserCapability("browser.policy.confirmation", "Classify browser actions that require confirmation before execution.", true),
     browserCapability("browser.user.openTabs", "List user-visible claimable Chrome tabs with claim tokens.", true),
     browserCapability("browser.user.claimTab", "Claim a user tab with a claim token or current-tab fallback.", true),
     browserCapability("browser.session.name", "Name the current browser automation session.", true),
@@ -10720,8 +10207,8 @@ function listCapabilities() {
     browserCapability("downloads", "List and wait for Chrome downloads.", true),
     browserCapability("dev.logs", "Read buffered console/log/runtime exception entries.", true),
     browserCapability("rawCdp", "Send raw Chrome DevTools Protocol commands.", true),
-    browserCapability("clipboard", "Read and write browser clipboard text with explicit per-request confirmation.", true),
-    browserCapability("browser.user.history", "Read user browsing history with explicit per-request confirmation.", true),
+    browserCapability("clipboard", "Read and write browser clipboard text.", true),
+    browserCapability("browser.user.history", "Read user browsing history.", true),
     browserCapability("browser.user.bookmarks", "Browser bookmarks are intentionally not exposed by this runtime.", false, "unsupported_sensitive_browser_state"),
     browserCapability("browser.notifications", "Browser/system notifications are intentionally not exposed by this runtime.", false, "unsupported_sensitive_browser_state"),
     tabCapability("tab.navigation", "Navigate, reload, and read URL/title for tabs.", true),
@@ -10733,7 +10220,7 @@ function listCapabilities() {
     tabCapability("tab.locator.css", "Use CSS selector based waits/actions.", true),
     tabCapability("tab.locator.semantic", "Use role/label/text/test-id locator engine.", true),
     tabCapability("tab.upload.locator", "Upload files through selector or locator targets.", true),
-    tabCapability("locator.downloadMedia", "Download image, video, audio, or linked media resolved from a locator with origin approval.", true),
+    tabCapability("locator.downloadMedia", "Download image, video, audio, or linked media resolved from a locator.", true),
     tabCapability("tab.frameLocator", "Target nested frames with locator chains.", true),
     tabCapability("tab.frameLocator.resolve", "Resolve frame locator selector paths to CDP frame metadata.", true),
     tabCapability("native.connected", "Native host connection is available.", nativeAvailable, nativeAvailable ? undefined : "native_disconnected")
@@ -11912,36 +11399,6 @@ function urlMatches(url: string, matcher: ActionParams) {
   return true;
 }
 
-function createDefaultBrowserPolicyState(): BrowserPolicyState {
-  return {
-    sessionAllowedHosts: {},
-    persistentAllowedHosts: [],
-    blockedHosts: []
-  };
-}
-
-async function ensureBrowserPolicyLoaded() {
-  if (browserPolicyLoaded) {
-    return;
-  }
-
-  if (!browserPolicyLoadPromise) {
-    browserPolicyLoadPromise = loadBrowserPolicyState();
-  }
-
-  await browserPolicyLoadPromise;
-}
-
-async function loadBrowserPolicyState() {
-  const stored = await storageGet(POLICY_STORAGE_KEY);
-  browserPolicyState = sanitizeBrowserPolicyState(stored);
-  browserPolicyLoaded = true;
-}
-
-async function persistBrowserPolicyState() {
-  await storageSet(POLICY_STORAGE_KEY, cloneBrowserPolicyState(browserPolicyState));
-}
-
 function storageGet(key: string): Promise<unknown> {
   return new Promise((resolve) => {
     chrome.storage.local.get(key, (items) => {
@@ -11997,176 +11454,36 @@ function storageSessionRemove(key: string): Promise<void> {
   });
 }
 
-function sanitizeBrowserPolicyState(value: unknown): BrowserPolicyState {
-  const source = value && typeof value === "object" && !Array.isArray(value)
-    ? value as ActionParams
-    : {};
-  const sessionAllowedHosts: Record<string, string[]> = {};
-
-  if (
-    source.sessionAllowedHosts &&
-    typeof source.sessionAllowedHosts === "object" &&
-    !Array.isArray(source.sessionAllowedHosts)
-  ) {
-    for (const [sessionId, hosts] of Object.entries(source.sessionAllowedHosts)) {
-      if (Array.isArray(hosts)) {
-        sessionAllowedHosts[sessionId] = normalizeHostList(hosts);
-      }
-    }
-  }
-
-  return {
-    sessionAllowedHosts,
-    persistentAllowedHosts: normalizeHostList(source.persistentAllowedHosts),
-    blockedHosts: normalizeHostList(source.blockedHosts)
-  };
-}
-
-function cloneBrowserPolicyState(
-  state: BrowserPolicyState,
-  sessionId?: unknown
-): BrowserPolicyState {
-  const normalizedSessionId = typeof sessionId === "string" && sessionId.trim()
-    ? sessionId.trim()
-    : null;
-
-  return {
-    sessionAllowedHosts: normalizedSessionId
-      ? {
-          [normalizedSessionId]: [
-            ...(state.sessionAllowedHosts[normalizedSessionId] ?? [])
-          ]
-        }
-      : Object.fromEntries(
-          Object.entries(state.sessionAllowedHosts).map(([id, hosts]) => [
-            id,
-            [...hosts]
-          ])
-        ),
-    persistentAllowedHosts: [...state.persistentAllowedHosts],
-    blockedHosts: [...state.blockedHosts]
-  };
-}
-
-function normalizeHostList(value: unknown) {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  return Array.from(new Set(value.map(normalizePolicyHost).filter(Boolean) as string[])).sort();
-}
-
-function normalizePolicyDecision(value: unknown) {
-  if (value === "allow" || value === "always_allow" || value === "deny") {
-    return value;
-  }
-
-  throw new Error("updatePolicy.params.decision must be allow, always_allow, or deny");
-}
-
-function applyHostAccessDecision(
-  state: BrowserPolicyState,
-  args: { decision: "allow" | "always_allow" | "deny"; host: string; sessionId?: unknown }
-) {
-  removeHostFromPolicy(state, args.host);
-
-  if (args.decision === "deny") {
-    state.blockedHosts = addPolicyHost(state.blockedHosts, args.host);
-    return;
-  }
-
-  if (args.decision === "always_allow") {
-    state.persistentAllowedHosts = addPolicyHost(state.persistentAllowedHosts, args.host);
-    return;
-  }
-
-  const sessionId = typeof args.sessionId === "string" && args.sessionId.trim()
-    ? args.sessionId.trim()
-    : null;
-
-  if (!sessionId) {
-    throw new Error("Per-session host allow requires updatePolicy.params.sessionId");
-  }
-
-  state.sessionAllowedHosts[sessionId] = addPolicyHost(
-    state.sessionAllowedHosts[sessionId] ?? [],
-    args.host
-  );
-}
-
 async function assertBrowserPolicyForTab(
-  action: BrowserPolicyAction,
+  action: BrowserActionTargetKind,
   tabId: number,
-  sessionId: unknown,
+  _sessionId: unknown,
   params: ActionParams = {}
 ) {
   const tab = await chrome.tabs.get(tabId);
-  await assertBrowserPolicyForUrl(action, tab.url ?? null, sessionId, {
+  await assertBrowserPolicyForUrl(action, tab.url ?? null, _sessionId, {
     ...params,
     tabId
   });
 }
 
 async function assertBrowserPolicyForUrl(
-  action: BrowserPolicyAction,
+  _action: BrowserActionTargetKind,
   url: unknown,
-  sessionId: unknown,
-  params: ActionParams = {}
+  _sessionId: unknown,
+  _params: ActionParams = {}
 ) {
-  await ensureBrowserPolicyLoaded();
-  const verdict = evaluateBrowserHostAccess(browserPolicyState, {
-    action,
-    sessionId,
-    url
-  });
-
-  if (!verdict.allowed) {
-    if (verdict.code === "requires_host_approval" && verdict.host) {
-      const details = hostApprovalPromptDetails(action, verdict, sessionId, params);
-      postHostApprovalRequiredEvent(details);
-      safePostEvent({
-        name: "policyBlocked",
-        sessionId: details.sessionId,
-        tabId: details.tabId,
-        host: verdict.host,
-        action,
-        code: verdict.code,
-        approvalId: details.approvalId
-      });
-      throw browserActionError("requires_host_approval", verdict.message, details);
-    }
-
-    safePostEvent({
-      name: "policyBlocked",
-      sessionId: typeof sessionId === "string" ? sessionId : null,
-      tabId: typeof params.tabId === "number" ? params.tabId : null,
-      host: verdict.host,
-      action,
-      code: verdict.code
-    });
-    throw new Error(`${verdict.code}: ${verdict.message}`);
+  if (!normalizeBrowserHost(url)) {
+    throw new Error("A valid http/https URL is required for browser actions.");
   }
+}
 
-  const classification = classifyBrowserPolicyAction(action, url, params);
-  postPermissionPromptDetectedIfNeeded(action, sessionId, params, classification);
-
-  if (classification.requiresOriginApproval && params.originApproved !== true) {
-    const details = browserOriginApprovalDetails(action, classification, sessionId, params);
-    postBrowserOriginApprovalRequiredEvent(details);
-    throw browserActionError("origin_approval_required", details.message, details);
-  }
-
-  const originApprovalSatisfiesConfirmation =
-    action === "rawCdp" && !classification.reasons.includes("sensitive_browser_state");
-  const confirmed =
-    params.confirmed === true ||
-    (originApprovalSatisfiesConfirmation && classification.requiresOriginApproval && params.originApproved === true);
-
-  if (classification.requiresConfirmation && !confirmed) {
-    const details = browserActionConfirmationDetails(action, classification, sessionId, params);
-    postBrowserActionConfirmationRequiredEvent(details);
-    throw browserActionError("confirmation_required", details.message, details);
-  }
+async function assertBrowserBlocklistForUrl(
+  action: BrowserActionTargetKind,
+  url: unknown,
+  sessionId: unknown
+) {
+  await assertBrowserPolicyForUrl(action, url, sessionId);
 }
 
 function browserActionError(code: string, message: string, details?: ActionParams) {
@@ -12179,455 +11496,6 @@ function browserActionError(code: string, message: string, details?: ActionParam
   return error;
 }
 
-function hostApprovalPromptDetails(
-  action: BrowserPolicyAction,
-  verdict: HostAccessVerdict,
-  sessionId: unknown,
-  params: ActionParams
-): HostApprovalPromptDetails {
-  const host = verdict.host ?? "unknown";
-  const normalizedSessionId =
-    typeof sessionId === "string" && sessionId.trim()
-      ? sessionId.trim()
-      : null;
-  const approvalId = hostApprovalId(host, normalizedSessionId, action);
-  const allowForSession = normalizedSessionId
-    ? {
-        decision: "allow" as const,
-        host,
-        sessionId: normalizedSessionId
-      }
-    : null;
-
-  return {
-    action,
-    approvalId,
-    host,
-    message: verdict.message,
-    sessionId: normalizedSessionId,
-    tabId: typeof params.tabId === "number" ? params.tabId : null,
-    suggestedDecisions: {
-      allowForSession,
-      alwaysAllow: {
-        decision: "always_allow",
-        host
-      },
-      deny: {
-        decision: "deny",
-        host
-      }
-    }
-  };
-}
-
-function postHostApprovalRequiredEvent(details: HostApprovalPromptDetails) {
-  registerPendingApproval({
-    approvalId: details.approvalId,
-    kind: "host",
-    action: details.action,
-    host: details.host,
-    sessionId: details.sessionId,
-    tabId: details.tabId,
-    message: details.message,
-    suggestedDecisions: details.suggestedDecisions
-  });
-  safePostEvent({
-    name: "hostApprovalRequired",
-    sessionId: details.sessionId,
-    tabId: details.tabId,
-    action: details.action,
-    host: details.host,
-    approvalId: details.approvalId,
-    message: details.message,
-    suggestedDecisions: details.suggestedDecisions
-  });
-}
-
-function hostApprovalId(host: string, sessionId: string | null, action: BrowserPolicyAction) {
-  return `host:${sessionId ?? "global"}:${host}:${action}`;
-}
-
-function browserOriginApprovalDetails(
-  action: BrowserPolicyAction,
-  classification: ActionParams,
-  sessionId: unknown,
-  params: ActionParams
-): BrowserOriginApprovalDetails {
-  const reasons = Array.isArray(classification.reasons)
-    ? classification.reasons.filter((reason): reason is string => typeof reason === "string")
-    : [];
-  const host = typeof classification.host === "string" ? classification.host : null;
-  const normalizedSessionId =
-    typeof sessionId === "string" && sessionId.trim()
-      ? sessionId.trim()
-      : null;
-  const approvalId = browserOriginApprovalId(action, host, normalizedSessionId);
-
-  return {
-    action,
-    approvalId,
-    host,
-    message: `Browser action ${action} on ${host ?? "unknown origin"} requires originApproved=true.`,
-    reasons,
-    sessionId: normalizedSessionId,
-    tabId: typeof params.tabId === "number" ? params.tabId : null,
-    subject: browserOriginApprovalSubject(action, params),
-    requiredParams: {
-      originApproved: true
-    }
-  };
-}
-
-function postBrowserOriginApprovalRequiredEvent(details: BrowserOriginApprovalDetails) {
-  registerPendingApproval({
-    approvalId: details.approvalId,
-    kind: "origin",
-    action: details.action,
-    host: details.host,
-    sessionId: details.sessionId,
-    tabId: details.tabId,
-    message: details.message,
-    reasons: details.reasons,
-    subject: details.subject,
-    requiredParams: details.requiredParams
-  });
-  safePostEvent({
-    name: "browserOriginApprovalRequired",
-    sessionId: details.sessionId,
-    tabId: details.tabId,
-    action: details.action,
-    host: details.host,
-    approvalId: details.approvalId,
-    message: details.message,
-    reasons: details.reasons,
-    subject: details.subject,
-    requiredParams: details.requiredParams
-  });
-}
-
-function browserOriginApprovalSubject(action: BrowserPolicyAction, params: ActionParams): ActionParams | undefined {
-  if (action === "rawCdp") {
-    const subject: ActionParams = {
-      kind: "rawCdp",
-      method: typeof params.method === "string" ? truncateAndRedactString(params.method, 120) : "unknown"
-    };
-    if (typeof params.targetId === "string" && params.targetId.trim()) {
-      subject.targetId = truncateAndRedactString(params.targetId.trim(), 120);
-    }
-    return subject;
-  }
-
-  if (action === "download") {
-    const subject: ActionParams = {
-      kind: "download"
-    };
-    for (const key of ["url", "finalUrl", "filename", "filePath", "attribute"] as const) {
-      const value = params[key];
-      if (typeof value === "string" && value.trim()) {
-        subject[key] = truncateAndRedactString(value.trim(), key === "url" || key === "finalUrl" ? 240 : 160);
-      }
-    }
-    if (typeof params.locator === "object" && params.locator && !Array.isArray(params.locator)) {
-      const locator = params.locator as ActionParams;
-      subject.locator = {
-        kind: typeof locator.kind === "string" ? locator.kind : undefined,
-        selector: typeof locator.selector === "string" ? truncateAndRedactString(locator.selector, 160) : undefined,
-        text: typeof locator.text === "string" ? truncateAndRedactString(locator.text, 160) : undefined,
-        role: typeof locator.role === "string" ? truncateAndRedactString(locator.role, 80) : undefined
-      };
-    }
-    return subject;
-  }
-
-  return undefined;
-}
-
-function browserOriginApprovalId(
-  action: BrowserPolicyAction,
-  host: string | null,
-  sessionId: string | null
-) {
-  return `origin:${sessionId ?? "global"}:${host ?? "unknown"}:${action}`;
-}
-
-function browserActionConfirmationDetails(
-  action: BrowserPolicyAction,
-  classification: ActionParams,
-  sessionId: unknown,
-  params: ActionParams
-): BrowserActionConfirmationDetails {
-  const reasons = Array.isArray(classification.reasons)
-    ? classification.reasons.filter((reason): reason is string => typeof reason === "string")
-    : [];
-  const normalizedSessionId =
-    typeof sessionId === "string" && sessionId.trim()
-      ? sessionId.trim()
-      : null;
-  const host = typeof classification.host === "string" ? classification.host : null;
-  const confirmationId = browserActionConfirmationId(
-    action,
-    host,
-    normalizedSessionId,
-    reasons
-  );
-
-  return {
-    action,
-    confirmationId,
-    host,
-    message: `Browser action ${action} requires confirmation (${reasons.join(", ")}).`,
-    reasons,
-    sessionId: normalizedSessionId,
-    tabId: typeof params.tabId === "number" ? params.tabId : null,
-    target: {
-      label: truncateAndRedactString(typeof params.label === "string" ? params.label : "", 120),
-      text: truncateAndRedactString(typeof params.text === "string" ? params.text : "", 120),
-      tagName: typeof params.tagName === "string" ? params.tagName.toLowerCase() : null
-    },
-    requiredParams: {
-      confirmed: true,
-      confirmationId
-    }
-  };
-}
-
-function postBrowserActionConfirmationRequiredEvent(details: BrowserActionConfirmationDetails) {
-  registerPendingApproval({
-    approvalId: details.confirmationId,
-    kind: "confirmation",
-    action: details.action,
-    host: details.host,
-    sessionId: details.sessionId,
-    tabId: details.tabId,
-    message: details.message,
-    reasons: details.reasons,
-    target: details.target,
-    requiredParams: details.requiredParams
-  });
-  safePostEvent({
-    name: "browserActionConfirmationRequired",
-    sessionId: details.sessionId,
-    tabId: details.tabId,
-    action: details.action,
-    host: details.host,
-    confirmationId: details.confirmationId,
-    message: details.message,
-    reasons: details.reasons,
-    target: details.target,
-    requiredParams: details.requiredParams
-  });
-}
-
-function browserActionConfirmationId(
-  action: BrowserPolicyAction,
-  host: string | null,
-  sessionId: string | null,
-  reasons: string[]
-) {
-  const reasonKey = reasons.length > 0 ? reasons.slice().sort().join(".") : "unspecified";
-  return `confirm:${sessionId ?? "global"}:${host ?? "unknown"}:${action}:${reasonKey}`;
-}
-
-function postPermissionPromptDetectedIfNeeded(
-  action: BrowserPolicyAction,
-  sessionId: unknown,
-  params: ActionParams,
-  classification: ActionParams
-) {
-  if (!Array.isArray(classification.reasons) || !classification.reasons.includes("browser_permission")) {
-    return;
-  }
-
-  safePostEvent({
-    name: "permissionPromptDetected",
-    sessionId: typeof sessionId === "string" ? sessionId : null,
-    tabId: typeof params.tabId === "number" ? params.tabId : null,
-    action,
-    host: typeof classification.host === "string" ? classification.host : null,
-    confirmed: params.confirmed === true,
-    reasons: classification.reasons,
-    target: {
-      label: truncateAndRedactString(typeof params.label === "string" ? params.label : "", 120),
-      text: truncateAndRedactString(typeof params.text === "string" ? params.text : "", 120),
-      tagName: typeof params.tagName === "string" ? params.tagName.toLowerCase() : null
-    }
-  });
-}
-
-async function assertBrowserBlocklistForUrl(
-  action: BrowserPolicyAction,
-  url: unknown,
-  sessionId: unknown
-) {
-  await ensureBrowserPolicyLoaded();
-  const verdict = evaluateBrowserHostAccess(browserPolicyState, {
-    action,
-    sessionId,
-    url
-  });
-
-  if (verdict.code !== "host_blocked") {
-    return;
-  }
-
-  safePostEvent({
-    name: "policyBlocked",
-    sessionId: typeof sessionId === "string" ? sessionId : null,
-    host: verdict.host,
-    action,
-    code: verdict.code
-  });
-  throw new Error(`${verdict.code}: ${verdict.message}`);
-}
-
-function evaluateBrowserHostAccess(
-  state: BrowserPolicyState,
-  check: { action: BrowserPolicyAction; sessionId?: unknown; url?: unknown }
-): HostAccessVerdict {
-  const host = normalizePolicyHost(check.url);
-
-  if (!host) {
-    return {
-      allowed: false,
-      requiresApproval: false,
-      code: "invalid_url",
-      host: null,
-      scope: null,
-      message: "A valid http/https URL is required for browser host policy checks."
-    };
-  }
-
-  if (hostSetHas(state.blockedHosts, host)) {
-    return {
-      allowed: false,
-      requiresApproval: false,
-      code: "host_blocked",
-      host,
-      scope: "blocked",
-      message: `Browser access to ${host} is blocked by policy.`
-    };
-  }
-
-  if (hostSetHas(state.persistentAllowedHosts, host)) {
-    return {
-      allowed: true,
-      requiresApproval: false,
-      code: "allowed",
-      host,
-      scope: "persistent",
-      message: `Browser access to ${host} is allowed persistently.`
-    };
-  }
-
-  const sessionId = typeof check.sessionId === "string" && check.sessionId.trim()
-    ? check.sessionId.trim()
-    : null;
-  if (sessionId && hostSetHas(state.sessionAllowedHosts[sessionId] ?? [], host)) {
-    return {
-      allowed: true,
-      requiresApproval: false,
-      code: "allowed",
-      host,
-      scope: "session",
-      message: `Browser access to ${host} is allowed for this session.`
-    };
-  }
-
-  return {
-    allowed: false,
-    requiresApproval: true,
-    code: "requires_host_approval",
-    host,
-    scope: null,
-    message: `Browser access to ${host} requires approval before ${check.action}.`
-  };
-}
-
-function classifyBrowserPolicyAction(
-  action: BrowserPolicyAction,
-  url: unknown,
-  params: ActionParams
-) {
-  const reasons = new Set<string>();
-  const script = typeof params.script === "string" ? params.script : "";
-  const rawCdpText = action === "rawCdp"
-    ? `${typeof params.method === "string" ? params.method : ""} ${stringifyPolicyParams(params.params)}`
-    : "";
-  const readOnlyEvaluate =
-    action === "evaluate" &&
-    params.mode !== "write" &&
-    !looksLikeMutatingScript(script);
-  const label = typeof params.label === "string" ? params.label : "";
-  const text = typeof params.text === "string" ? params.text : "";
-
-  if (action === "upload") {
-    reasons.add("file_upload");
-  }
-
-  if (action === "download" && looksLikeRunnableDownload(url, params.filename ?? params.filePath)) {
-    reasons.add("download_run_or_install");
-  }
-
-  if (action === "history") {
-    reasons.add("browser_history");
-  }
-
-  if (action === "clipboard") {
-    reasons.add("clipboard");
-  }
-
-  if (action === "type" && params.sensitive === true) {
-    reasons.add("sensitive_input");
-  }
-
-  if (
-    DESTRUCTIVE_BROWSER_ACTION_PATTERN.test(label) ||
-    DESTRUCTIVE_BROWSER_ACTION_PATTERN.test(text)
-  ) {
-    reasons.add("destructive_action");
-  } else if (
-    EXTERNAL_SIDE_EFFECT_PATTERN.test(label) ||
-    EXTERNAL_SIDE_EFFECT_PATTERN.test(text)
-  ) {
-    reasons.add("external_side_effect");
-  }
-
-  if (action === "permission" || looksLikeBrowserPermissionPrompt(label, text)) {
-    reasons.add("browser_permission");
-  }
-
-  if (action === "rawCdp") {
-    reasons.add("raw_cdp");
-  }
-
-  if ((action === "evaluate" && looksLikeSensitiveBrowserStateAccess(script)) ||
-      (action === "rawCdp" && looksLikeSensitiveBrowserStateAccess(rawCdpText))) {
-    reasons.add("sensitive_browser_state");
-  }
-
-  if (action === "evaluate" && !readOnlyEvaluate) {
-    reasons.add("mutating_evaluate");
-  }
-
-  return {
-    host: normalizePolicyHost(url),
-    readOnly: readOnlyEvaluate,
-    requiresConfirmation: reasons.size > 0,
-    requiresOriginApproval: action === "rawCdp" || action === "download",
-    reasons: Array.from(reasons)
-  };
-}
-
-function looksLikeRunnableDownload(url: unknown, filename: unknown) {
-  const source = `${typeof filename === "string" ? filename : ""} ${typeof url === "string" ? url : ""}`.toLowerCase();
-  return /\.(app|apk|bat|bin|cmd|com|deb|dmg|exe|msi|pkg|ps1|rpm|run|scr|sh)(?:[?#\s]|$)/i.test(source);
-}
-
-function looksLikeBrowserPermissionPrompt(label: string, text: string) {
-  const source = `${label} ${text}`.trim();
-  return PERMISSION_GRANT_PATTERN.test(source) && BROWSER_PERMISSION_TARGET_PATTERN.test(source);
-}
-
 function assertReadOnlyEvaluateAllowed(script: string, params: ActionParams, operation: string) {
   if (params.mode !== "read" || !looksLikeMutatingScript(script)) {
     return;
@@ -12635,7 +11503,7 @@ function assertReadOnlyEvaluateAllowed(script: string, params: ActionParams, ope
 
   throw browserActionError(
     "read_only_evaluate_violation",
-    "Read-only evaluate mode rejected a script that appears to mutate page or browser state. Use mode: \"write\" with confirmation for mutating scripts.",
+    "Read-only evaluate mode rejected a script that appears to mutate page or browser state. Use mode: \"write\" for mutating scripts.",
     {
       operation,
       mode: "read",
@@ -12652,23 +11520,7 @@ function looksLikeSensitiveBrowserStateAccess(text: string) {
   return /\b(document\s*\.\s*cookie|cookieStore|localStorage|sessionStorage|indexedDB|chrome\s*\.\s*storage|Storage\.|Network\.get(All)?Cookies|password|passwd|pwd|credential|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|session[_-]?(id|token)?|csrf)\b/i.test(text);
 }
 
-function stringifyPolicyParams(params: unknown) {
-  if (params == null) {
-    return "";
-  }
-
-  if (typeof params === "string") {
-    return params;
-  }
-
-  try {
-    return JSON.stringify(params).slice(0, 8000);
-  } catch {
-    return String(params);
-  }
-}
-
-function normalizePolicyHost(value: unknown): string | null {
+function normalizeBrowserHost(value: unknown): string | null {
   if (typeof value !== "string" || !value.trim()) {
     return null;
   }
@@ -12689,28 +11541,6 @@ function normalizePolicyHost(value: unknown): string | null {
   }
 
   return parsed.host.toLowerCase();
-}
-
-function hostSetHas(hosts: string[], host: string) {
-  return hosts.some((candidate) => candidate === host || host.endsWith(`.${candidate}`));
-}
-
-function addPolicyHost(hosts: string[], host: string) {
-  return Array.from(new Set([...hosts, host])).sort();
-}
-
-function removeHostFromPolicy(state: BrowserPolicyState, host: string) {
-  state.blockedHosts = state.blockedHosts.filter((candidate) => candidate !== host);
-  state.persistentAllowedHosts = state.persistentAllowedHosts.filter((candidate) => candidate !== host);
-
-  for (const [sessionId, hosts] of Object.entries(state.sessionAllowedHosts)) {
-    const nextHosts = hosts.filter((candidate) => candidate !== host);
-    if (nextHosts.length > 0) {
-      state.sessionAllowedHosts[sessionId] = nextHosts;
-    } else {
-      delete state.sessionAllowedHosts[sessionId];
-    }
-  }
 }
 
 function assertAllowedNavigationUrl(url: string) {

@@ -36,7 +36,6 @@ import {
   browserStartSession,
   browserStopSession,
   browserTypeText,
-  browserUpdatePolicy,
   browserUploadFile,
   browserWaitForDownload,
   browserWaitForEvent,
@@ -1163,12 +1162,6 @@ async function run() {
     sessionId = session.sessionId;
     assert(typeof sessionId === "string", "sessionId should be returned", session);
 
-    await browserUpdatePolicy({
-      sessionId,
-      decision: "allow",
-      url: `${baseUrl}/`
-    });
-
     const opened = (
       await browserOpenUrl({
         sessionId,
@@ -1822,8 +1815,6 @@ async function run() {
         document.getElementById("nested-scroll-occlusion-fixture").scrollTop = 144;
       `,
       mode: "write",
-      confirmed: true,
-      confirmationId: "real-e2e-reset-nested-scroll",
       reason: "reset actionability fixture state"
     });
     const nestedScrollFailure = await expectBrowserActionFailure(
@@ -1924,7 +1915,9 @@ async function run() {
       await browserEvaluate({
         sessionId,
         script: `(() => {
-          const rect = document.getElementById("visual-canvas").getBoundingClientRect();
+          const canvas = document.getElementById("visual-canvas");
+          canvas.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+          const rect = canvas.getBoundingClientRect();
           return { x: rect.left + 120, y: rect.top + 60 };
         })()`
       })
@@ -2328,52 +2321,25 @@ async function run() {
     });
   });
 
-  await test("risky clicks require confirmation and handoff boundaries emit events", async () => {
+  await test("risky clicks and handoff boundaries emit events", async () => {
     await resetFixturePage();
-    const confirmationSince = await latestEventSequence(sessionId);
-    await expectBrowserActionFailure(
-      () => browserClick({
-        sessionId,
-        selector: "#delete-account-button",
-        waitMs: 50
-      }),
-      /confirmation_required/
-    );
+    await browserClick({
+      sessionId,
+      selector: "#delete-account-button",
+      waitMs: 100
+    });
     let riskResult = (
       await browserEvaluate({
         sessionId,
         script: `document.getElementById("risk-result").textContent`
       })
     ).result.value;
-    assert(riskResult === "Risk: none" || riskResult === "Risk: idle", "destructive click ran without confirmation", {
-      riskResult
-    });
-    const confirmationEvents = (
-      await browserGetEvents({
-        sessionId,
-        name: "browserActionConfirmationRequired",
-        sinceSequence: confirmationSince,
-        limit: 5
-      })
-    ).result.events;
-    assert(confirmationEvents.length >= 1, "browserActionConfirmationRequired event was not buffered", confirmationEvents);
-    assert(
-      confirmationEvents.some((event) =>
-        event.target?.label === "Delete account" &&
-        event.reasons?.includes("destructive_action") &&
-        event.requiredParams?.confirmed === true &&
-        typeof event.requiredParams?.confirmationId === "string"
-      ),
-      "confirmation event did not include target, reasons, and retry params",
-      confirmationEvents
-    );
+    assert(riskResult === "Risk: deleted", "destructive click did not run", { riskResult });
 
     await browserClick({
       sessionId,
-      selector: "#delete-account-button",
-      confirmed: true,
-      confirmationId: "real-e2e-delete",
-      waitMs: 100
+      selector: "#allow-camera-button",
+      waitMs: 50
     });
     riskResult = (
       await browserEvaluate({
@@ -2381,38 +2347,14 @@ async function run() {
         script: `document.getElementById("risk-result").textContent`
       })
     ).result.value;
-    assert(riskResult === "Risk: deleted", "confirmed destructive click did not run", { riskResult });
-
-    const permissionSince = await latestEventSequence(sessionId);
-    await expectBrowserActionFailure(
-      () => browserClick({
-        sessionId,
-        selector: "#allow-camera-button",
-        waitMs: 50
-      }),
-      /confirmation_required/
-    );
-    const permissionEvents = (
-      await browserGetEvents({
-        sessionId,
-        name: "permissionPromptDetected",
-        sinceSequence: permissionSince,
-        limit: 5
-      })
-    ).result.events;
-    assert(permissionEvents.length >= 1, "permissionPromptDetected event was not buffered", permissionEvents);
-    assert(
-      permissionEvents.some((event) => event.target?.label === "Allow camera access" && event.confirmed === false),
-      "permissionPromptDetected event did not include target and confirmation state",
-      permissionEvents
-    );
+    assert(riskResult === "Risk: camera allowed", "camera-permission fixture click did not run", {
+      riskResult
+    });
 
     await expectBrowserActionFailure(
       () => browserClick({
         sessionId,
         selector: "#captcha-button",
-        confirmed: true,
-        confirmationId: "real-e2e-captcha",
         waitMs: 50
       }),
       /user_handoff_required/
@@ -2480,17 +2422,12 @@ async function run() {
 
   await test("object facade: tabs, locator, waits, and evaluate", async () => {
     const objectBrowser = createBrowserClient();
-    await objectBrowser.policy.alwaysAllowHost(baseUrl);
     const tab = await objectBrowser.tabs.new(`${baseUrl}/`, { active: true });
 
     try {
       await tab.waitForLoadState("load");
       await tab.getByPlaceholder("Type a test name").fill("Facade User", { waitMs: 100 });
-      await tab.getByRole("button", { name: "Submit" }).click({
-        waitMs: 150,
-        confirmed: true,
-        confirmationId: "real-e2e-facade-submit"
-      });
+      await tab.getByRole("button", { name: "Submit" }).click({ waitMs: 150 });
       await tab.waitForUrl({ urlContains: "/submitted?name=Facade%20User", timeoutMs: 3000 });
 
       const submitted = await tab.evaluate(
@@ -2505,11 +2442,7 @@ async function run() {
       await tab.getByText("Count click", { exact: true }).click({ waitMs: 150 });
       await tab.waitForText("Clicks: 1", { timeoutMs: 3000 });
 
-      await tab.locator("#upload-input").setInputFiles(uploadFixturePath, {
-        waitMs: 300,
-        confirmed: true,
-        confirmationId: "real-e2e-facade-upload"
-      });
+      await tab.locator("#upload-input").setInputFiles(uploadFixturePath, { waitMs: 300 });
       const uploadedName = await tab.evaluate(
         `document.getElementById("upload-input").files[0]?.name || ""`
       );
@@ -2521,10 +2454,7 @@ async function run() {
       await tab.locator("#upload-label").click({ waitMs: 100 });
       const chooser = await chooserPromise;
       assert(chooser.isMultiple() === true, "filechooser should report multiple upload input");
-      await chooser.setFiles([uploadFixturePath, secondUploadFixturePath], {
-        confirmed: true,
-        waitMs: 300
-      });
+      await chooser.setFiles([uploadFixturePath, secondUploadFixturePath], { waitMs: 300 });
 
       const chooserUpload = await tab.evaluate(
         `({
@@ -2545,7 +2475,6 @@ async function run() {
 
   await test("object facade edge cases: tab isolation, labels, indexes, and soft waits", async () => {
     const objectBrowser = createBrowserClient();
-    await objectBrowser.policy.alwaysAllowHost(baseUrl);
     const tabA = await objectBrowser.tabs.new(`${baseUrl}/`, { active: true });
     const tabB = await objectBrowser.tabs.new(`${baseUrl}/second`, { active: true });
 
@@ -2686,37 +2615,6 @@ async function run() {
     assert(evaluated.title === "Formax Real Browser Fixture", "evaluate title mismatch", evaluated);
     assert(evaluated.clicks === 1, "evaluate click count mismatch", evaluated);
 
-    const originSince = await latestEventSequence(sessionId);
-    await expectBrowserActionFailure(
-      () => browserCdp({
-        sessionId,
-        method: "Runtime.evaluate",
-        params: {
-          expression: "document.title",
-          returnByValue: true
-        }
-      }),
-      /origin_approval_required/
-    );
-    const originEvents = (
-      await browserGetEvents({
-        sessionId,
-        name: "browserOriginApprovalRequired",
-        sinceSequence: originSince,
-        limit: 5
-      })
-    ).result.events;
-    assert(originEvents.length >= 1, "browserOriginApprovalRequired event was not buffered", originEvents);
-    assert(
-      originEvents.some((event) =>
-        event.action === "rawCdp" &&
-        event.requiredParams?.originApproved === true &&
-        typeof event.approvalId === "string"
-      ),
-      "origin approval event did not include rawCdp retry params",
-      originEvents
-    );
-
     const cdp = (
       await browserCdp({
         sessionId,
@@ -2724,8 +2622,7 @@ async function run() {
         params: {
           expression: "document.title",
           returnByValue: true
-        },
-        originApproved: true
+        }
       })
     ).result;
 
@@ -2866,8 +2763,6 @@ async function run() {
       sessionId,
       selector: "#upload-label",
       filePath: uploadFixturePath,
-      confirmed: true,
-      confirmationId: "real-e2e-upload-label",
       waitMs: 300
     });
 
@@ -2947,8 +2842,7 @@ async function run() {
     await browserEvaluate({
       sessionId,
       script: "console.error('formax secret dev log password: hunter2 token=abc123')",
-      awaitPromise: true,
-      confirmed: true
+      awaitPromise: true
     });
     const logs = (await browserGetDevLogs({ sessionId, level: "error", limit: 20 })).result;
     assert(

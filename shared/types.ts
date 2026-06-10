@@ -5,10 +5,6 @@ export type BrowserAction =
   | "clearEvents"
   | "waitForEvent"
   | "getDiagnostics"
-  | "getPolicy"
-  | "updatePolicy"
-  | "getPendingApprovals"
-  | "resolveApproval"
   | "startSession"
   | "nameSession"
   | "openTabs"
@@ -413,7 +409,6 @@ export type HealthResult = {
   nativeConnected: boolean;
   lastNativeError: string | null;
   sessions: BrowserSession[];
-  policy?: BrowserPolicyState;
   extensionInstanceId?: string | null;
   attachedTabs: number[];
   supportedActions?: BrowserAction[];
@@ -499,81 +494,6 @@ export type BrowserUserHandoffRequiredEvent = BrowserEvent & {
   };
 };
 
-export type BrowserPermissionPromptDetectedEvent = BrowserEvent & {
-  name: "permissionPromptDetected";
-  action: string;
-  host: string | null;
-  confirmed: boolean;
-  reasons: string[];
-  sessionId: string | null;
-  tabId: number | null;
-  target?: {
-    label?: string;
-    text?: string;
-    tagName?: string | null;
-  };
-};
-
-export type BrowserHostApprovalRequiredEvent = BrowserEvent & {
-  name: "hostApprovalRequired";
-  action: string;
-  approvalId: string;
-  host: string;
-  message: string;
-  sessionId: string | null;
-  tabId: number | null;
-  suggestedDecisions: {
-    allowForSession: {
-      decision: "allow";
-      host: string;
-      sessionId: string;
-    } | null;
-    alwaysAllow: {
-      decision: "always_allow";
-      host: string;
-    };
-    deny: {
-      decision: "deny";
-      host: string;
-    };
-  };
-};
-
-export type BrowserActionConfirmationRequiredEvent = BrowserEvent & {
-  name: "browserActionConfirmationRequired";
-  action: string;
-  confirmationId: string;
-  host: string | null;
-  message: string;
-  reasons: string[];
-  sessionId: string | null;
-  tabId: number | null;
-  target?: {
-    label?: string;
-    text?: string;
-    tagName?: string | null;
-  };
-  requiredParams: {
-    confirmed: true;
-    confirmationId: string;
-  };
-};
-
-export type BrowserOriginApprovalRequiredEvent = BrowserEvent & {
-  name: "browserOriginApprovalRequired";
-  action: string;
-  approvalId: string;
-  host: string | null;
-  message: string;
-  reasons: string[];
-  sessionId: string | null;
-  tabId: number | null;
-  subject?: JsonObject;
-  requiredParams: {
-    originApproved: true;
-  };
-};
-
 export type BrowserEventSnapshot = {
   version: 1;
   sessionId: string;
@@ -600,9 +520,6 @@ export type BrowserActionAuditEvent = BrowserEvent & {
   status?: "ok" | "error";
   resultCode?: string | null;
   errorCode?: string | null;
-  confirmed?: boolean;
-  originApproved?: boolean;
-  confirmationId?: string | null;
   timing?: {
     startedAt: number;
     endedAt: number;
@@ -685,83 +602,6 @@ export type GetDiagnosticsResult = {
   };
 };
 
-export type BrowserPolicyState = {
-  sessionAllowedHosts: Record<string, string[]>;
-  persistentAllowedHosts: string[];
-  blockedHosts: string[];
-};
-
-export type GetPolicyParams = {
-  sessionId?: string;
-};
-
-export type GetPolicyResult = {
-  policy: BrowserPolicyState;
-};
-
-export type HostPolicyDecision = "allow" | "always_allow" | "deny";
-
-export type UpdatePolicyParams = {
-  decision?: HostPolicyDecision;
-  sessionId?: string;
-  host?: string;
-  url?: string;
-  reset?: boolean;
-};
-
-export type UpdatePolicyResult = {
-  policy: BrowserPolicyState;
-};
-
-export type PendingApprovalKind = "host" | "confirmation" | "origin";
-export type PendingApprovalStatus = "pending" | "approved" | "denied" | "expired";
-
-export type PendingApprovalRecord = {
-  approvalId: string;
-  kind: PendingApprovalKind;
-  status: PendingApprovalStatus;
-  action?: string;
-  host?: string | null;
-  sessionId?: string | null;
-  tabId?: number | null;
-  message: string;
-  createdAt: number;
-  expiresAt: number;
-  reasons?: string[];
-  subject?: JsonObject;
-  target?: {
-    label?: string;
-    text?: string;
-    tagName?: string | null;
-  };
-  requiredParams?: JsonObject;
-  suggestedDecisions?: JsonObject;
-};
-
-export type GetPendingApprovalsParams = {
-  sessionId?: string;
-  kind?: PendingApprovalKind;
-  includeResolved?: boolean;
-  limit?: number;
-};
-
-export type GetPendingApprovalsResult = {
-  approvals: PendingApprovalRecord[];
-};
-
-export type ResolveApprovalParams = {
-  approvalId: string;
-  decision: "approve" | "deny";
-  policyDecision?: HostPolicyDecision;
-  sessionId?: string;
-};
-
-export type ResolveApprovalResult = {
-  approval: PendingApprovalRecord;
-  requiredParams?: JsonObject;
-  policy?: BrowserPolicyState;
-};
-
 export type StartSessionParams = {
   sessionId: string;
   turnId?: string;
@@ -832,8 +672,6 @@ export type BrowserHistoryParams = {
   from?: number;
   to?: number;
   limit?: number;
-  confirmed?: boolean;
-  confirmationId?: string;
 };
 
 export type BrowserHistoryEntry = {
@@ -856,8 +694,6 @@ export type BrowserHistoryResult = {
 export type ClipboardReadTextParams = {
   sessionId?: string;
   tabId?: number;
-  confirmed?: boolean;
-  confirmationId?: string;
 };
 
 export type ClipboardReadTextResult = {
@@ -869,8 +705,6 @@ export type ClipboardWriteTextParams = {
   sessionId?: string;
   tabId?: number;
   text: string;
-  confirmed?: boolean;
-  confirmationId?: string;
   sensitive?: boolean;
 };
 
@@ -893,8 +727,6 @@ export type ClipboardItemData = {
 export type ClipboardReadParams = {
   sessionId?: string;
   tabId?: number;
-  confirmed?: boolean;
-  confirmationId?: string;
 };
 
 export type ClipboardReadResult = {
@@ -906,8 +738,6 @@ export type ClipboardWriteParams = {
   sessionId?: string;
   tabId?: number;
   items: ClipboardItemData[];
-  confirmed?: boolean;
-  confirmationId?: string;
   sensitive?: boolean;
 };
 
@@ -1215,8 +1045,6 @@ export type ClickParams = {
   clickCount?: number;
   modifiers?: BrowserPointerModifier[];
   waitMs?: number;
-  confirmed?: boolean;
-  confirmationId?: string;
 };
 
 export type DragPoint = {
@@ -1231,8 +1059,6 @@ export type DragParams = {
   button?: BrowserMouseButton;
   modifiers?: BrowserPointerModifier[];
   waitMs?: number;
-  confirmed?: boolean;
-  confirmationId?: string;
 };
 
 export type MoveMouseParams = {
@@ -1274,8 +1100,6 @@ export type TypeTextParams = {
   clear?: boolean;
   waitMs?: number;
   sensitive?: boolean;
-  confirmed?: boolean;
-  confirmationId?: string;
 };
 
 export type EvaluateParams = {
@@ -1287,8 +1111,6 @@ export type EvaluateParams = {
   awaitPromise?: boolean;
   timeoutMs?: number;
   mode?: "read" | "write";
-  confirmed?: boolean;
-  confirmationId?: string;
   reason?: string;
 };
 
@@ -1374,8 +1196,6 @@ export type SetFileChooserFilesParams = {
   filePaths?: string[];
   timeoutMs?: number;
   waitMs?: number;
-  confirmed?: boolean;
-  confirmationId?: string;
 };
 
 export type UploadFileParams = {
@@ -1387,8 +1207,6 @@ export type UploadFileParams = {
   filePath?: string;
   filePaths?: string[];
   waitMs?: number;
-  confirmed?: boolean;
-  confirmationId?: string;
 };
 
 export type DownloadMediaParams = {
@@ -1404,9 +1222,6 @@ export type DownloadMediaParams = {
   pollMs?: number;
   fallbackFetch?: boolean;
   fallbackMaxBytes?: number;
-  originApproved?: boolean;
-  confirmed?: boolean;
-  confirmationId?: string;
 };
 
 export type DownloadMediaResult = {
@@ -1434,9 +1249,6 @@ export type CdpParams = {
   method: string;
   params?: JsonObject;
   timeoutMs?: number;
-  originApproved?: boolean;
-  confirmed?: boolean;
-  confirmationId?: string;
   reason?: string;
 };
 
@@ -1452,9 +1264,6 @@ export type TargetAttachmentParams = {
   sessionId?: string;
   tabId?: number;
   targetId: string;
-  originApproved?: boolean;
-  confirmed?: boolean;
-  confirmationId?: string;
   reason?: string;
 };
 
@@ -1647,10 +1456,6 @@ export type BrowserActionParams =
   | ClearEventsParams
   | WaitForEventParams
   | GetDiagnosticsParams
-  | GetPolicyParams
-  | UpdatePolicyParams
-  | GetPendingApprovalsParams
-  | ResolveApprovalParams
   | StartSessionParams
   | NameSessionParams
   | UserOpenTabsParams

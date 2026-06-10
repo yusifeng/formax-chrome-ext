@@ -28,8 +28,6 @@ describe("browser tool schemas", () => {
     expect(names).toContain("browser_wait_for_file_chooser");
     expect(names).toContain("browser_set_file_chooser_files");
     expect(names).toContain("browser_download_media");
-    expect(names).toContain("browser_get_policy");
-    expect(names).toContain("browser_update_policy");
     expect(names).toContain("browser_name_session");
     expect(names).toContain("browser_user_open_tabs");
     expect(names).toContain("browser_list_tabs");
@@ -78,10 +76,6 @@ describe("browser tool schemas", () => {
       clearEvents: "ClearEventsParams",
       waitForEvent: "WaitForEventParams",
       getDiagnostics: "GetDiagnosticsParams",
-      getPolicy: "GetPolicyParams",
-      updatePolicy: "UpdatePolicyParams",
-      getPendingApprovals: "GetPendingApprovalsParams",
-      resolveApproval: "ResolveApprovalParams",
       startSession: "StartSessionParams",
       nameSession: "NameSessionParams",
       openTabs: "UserOpenTabsParams",
@@ -550,15 +544,13 @@ describe("browser tool schemas", () => {
     expect(
       validateBrowserActionParams("uploadFile", {
         selector: "label[for='multi-upload-input']",
-        filePaths: ["/tmp/a.txt", "/tmp/b.txt"],
-        confirmed: true
+        filePaths: ["/tmp/a.txt", "/tmp/b.txt"]
       })
     ).toEqual({ ok: true });
 
     expect(
       validateBrowserActionParams("uploadFile", {
-        selector: "input[type=file]",
-        confirmed: true
+        selector: "input[type=file]"
       })
     ).toMatchObject({
       ok: false,
@@ -569,15 +561,13 @@ describe("browser tool schemas", () => {
     expect(
       validateBrowserActionParams("setFileChooserFiles", {
         fileChooserId: "fc-test",
-        files: ["/tmp/a.txt"],
-        confirmed: true
+        files: ["/tmp/a.txt"]
       })
     ).toEqual({ ok: true });
 
     expect(
       validateBrowserActionParams("setFileChooserFiles", {
-        fileChooserId: "fc-test",
-        confirmed: true
+        fileChooserId: "fc-test"
       })
     ).toMatchObject({
       ok: false,
@@ -587,8 +577,7 @@ describe("browser tool schemas", () => {
 
     expect(
       validateBrowserActionParams("setFileChooserFiles", {
-        files: ["/tmp/a.txt"],
-        confirmed: true
+        files: ["/tmp/a.txt"]
       })
     ).toMatchObject({
       ok: false,
@@ -603,8 +592,7 @@ describe("browser tool schemas", () => {
         conflictAction: "uniquify",
         filename: "assets/photo.png",
         fallbackFetch: true,
-        fallbackMaxBytes: 1048576,
-        originApproved: true
+        fallbackMaxBytes: 1048576
       })
     ).toEqual({ ok: true });
 
@@ -643,8 +631,6 @@ describe("browser tool schemas", () => {
         method: "DOMSnapshot.captureSnapshot",
         params: {},
         targetId: "page-target-1",
-        originApproved: true,
-        confirmed: true,
         reason: "diagnostic snapshot"
       })
     ).toEqual({ ok: true });
@@ -654,8 +640,6 @@ describe("browser tool schemas", () => {
         sessionId: "session-a",
         tabId: 101,
         targetId: "target-1",
-        originApproved: true,
-        confirmed: true,
         reason: "target lifecycle"
       })
     ).toEqual({ ok: true });
@@ -749,28 +733,22 @@ describe("browser tool schemas", () => {
         query: "example",
         from: 1780876800000,
         to: 1780963200000,
-        limit: 10,
-        confirmed: true
+        limit: 10
       })
     ).toEqual({ ok: true });
 
     expect(
-      validateBrowserActionParams("clipboardReadText", {
-        confirmed: true
-      })
-    ).toEqual({ ok: true });
-
-    expect(
-      validateBrowserActionParams("clipboardWriteText", {
-        text: "hello",
-        confirmed: true
-      })
+      validateBrowserActionParams("clipboardReadText", {})
     ).toEqual({ ok: true });
 
     expect(
       validateBrowserActionParams("clipboardWriteText", {
-        confirmed: true
+        text: "hello"
       })
+    ).toEqual({ ok: true });
+
+    expect(
+      validateBrowserActionParams("clipboardWriteText", {})
     ).toMatchObject({
       ok: false,
       code: "invalid_params",
@@ -779,7 +757,6 @@ describe("browser tool schemas", () => {
 
     expect(
       validateBrowserActionParams("clipboardWrite", {
-        confirmed: true,
         items: [
           {
             types: [
@@ -796,7 +773,6 @@ describe("browser tool schemas", () => {
 
     expect(
       validateBrowserActionParams("clipboardWrite", {
-        confirmed: true,
         items: [
           {
             types: [
@@ -932,129 +908,6 @@ describe("browser tool schemas", () => {
     expect(generatedReference).toContain(`Total actions: ${browserActions.length}`);
   });
 
-  it("emits structured host approval prompts before first interaction with a new host", () => {
-    const background = readFileSync("extension/background.ts", "utf8");
-    const protocol = readFileSync("shared/protocol.md", "utf8");
-    const types = readFileSync("shared/types.ts", "utf8");
-
-    expect(background).toContain('name: "hostApprovalRequired"');
-    expect(background).toContain("function hostApprovalPromptDetails");
-    expect(background).toContain("function postHostApprovalRequiredEvent");
-    expect(background).toContain("function hostApprovalId");
-    expect(background).toContain('throw browserActionError("requires_host_approval"');
-    expect(background).toContain("suggestedDecisions");
-    expect(background).toContain("allowForSession");
-    expect(background).toContain("sanitizeStructuredErrorDetails");
-    expect(protocol).toContain("Host approval request event example");
-    expect(protocol).toContain("The triggering action still fails with `requires_host_approval`");
-    expect(types).toContain("export type BrowserHostApprovalRequiredEvent");
-  });
-
-  it("emits structured browser action confirmation prompts for risky actions", () => {
-    const background = readFileSync("extension/background.ts", "utf8");
-    const protocol = readFileSync("shared/protocol.md", "utf8");
-    const types = readFileSync("shared/types.ts", "utf8");
-
-    expect(background).toContain('name: "browserActionConfirmationRequired"');
-    expect(background).toContain("function browserActionConfirmationDetails");
-    expect(background).toContain("function postBrowserActionConfirmationRequiredEvent");
-    expect(background).toContain("function browserActionConfirmationId");
-    expect(background).toContain('throw browserActionError("confirmation_required"');
-    expect(background).toContain("requiredParams: {");
-    expect(protocol).toContain("Action confirmation request event example");
-    expect(protocol).toContain("retry the exact action with `confirmed: true`");
-    expect(types).toContain("export type BrowserActionConfirmationRequiredEvent");
-  });
-
-  it("emits structured origin approval prompts for raw CDP and page asset downloads", () => {
-    const background = readFileSync("extension/background.ts", "utf8");
-    const protocol = readFileSync("shared/protocol.md", "utf8");
-    const types = readFileSync("shared/types.ts", "utf8");
-
-    expect(background).toContain('name: "browserOriginApprovalRequired"');
-    expect(background).toContain("function browserOriginApprovalDetails");
-    expect(background).toContain("function browserOriginApprovalSubject");
-    expect(background).toContain("function postBrowserOriginApprovalRequiredEvent");
-    expect(background).toContain("function browserOriginApprovalId");
-    expect(background).toContain('throw browserActionError("origin_approval_required"');
-    expect(background).toContain("originApproved: true");
-    expect(background).toContain('kind: "rawCdp"');
-    expect(background).toContain('kind: "download"');
-    expect(protocol).toContain("Origin approval request event example");
-    expect(protocol).toContain("redacted `subject` summary");
-    expect(protocol).toContain('"method": "Runtime.evaluate"');
-    expect(protocol).toContain("retry the exact raw CDP or page asset download action");
-    expect(types).toContain("export type BrowserOriginApprovalRequiredEvent");
-    expect(types).toContain("subject?: JsonObject");
-  });
-
-  it("keeps approval requests available through a pending approval engine", () => {
-    const background = readFileSync("extension/background.ts", "utf8");
-    const content = readFileSync("extension/content.ts", "utf8");
-    const client = readFileSync("mcp-node-repl/browser-client.ts", "utf8");
-    const popup = readFileSync("extension/popup.ts", "utf8");
-    const popupHtml = readFileSync("extension/popup.html", "utf8");
-    const protocol = readFileSync("shared/protocol.md", "utf8");
-    const types = readFileSync("shared/types.ts", "utf8");
-
-    expect(background).toContain("const pendingApprovals = new Map");
-    expect(background).toContain("const approvalExpiryTimers = new Map");
-    expect(background).toContain("function registerPendingApproval");
-    expect(background).toContain("function scheduleApprovalExpiry");
-    expect(background).toContain("function expirePendingApproval");
-    expect(background).toContain("...(approval.target ? { target: approval.target } : {})");
-    expect(background).toContain("async function publishPendingApprovalToTab");
-    expect(background).toContain("async function clearPendingApprovalFromTab");
-    expect(background).toContain("async function getPendingApprovals");
-    expect(background).toContain("async function resolveApproval");
-    expect(background).toContain('message?.type === "POPUP_PENDING_APPROVALS"');
-    expect(background).toContain('message?.type === "POPUP_RESOLVE_APPROVAL"');
-    expect(background).toContain('message?.type === "CONTENT_RESOLVE_APPROVAL"');
-    expect(background).toContain('type: "AGENT_APPROVAL_REQUEST"');
-    expect(background).toContain('type: "AGENT_APPROVAL_RESOLVED"');
-    expect(background).toContain('name: "approvalResolved"');
-    expect(content).toContain('message.type === "AGENT_APPROVAL_REQUEST"');
-    expect(content).toContain('message.type === "AGENT_APPROVAL_RESOLVED"');
-    expect(content).toContain('type: "CONTENT_RESOLVE_APPROVAL"');
-    expect(content).toContain("const approvalExpiryTimers = new Map");
-    expect(content).toContain("function scheduleApprovalExpiry");
-    expect(content).toContain("function renderApprovalPanel");
-    expect(content).toContain("function normalizeApprovalTarget");
-    expect(content).toContain("function createApprovalDetails");
-    expect(content).toContain("function approvalSubjectSummary");
-    expect(content).toContain("originApproved=true");
-    expect(content).toContain("function createApprovalButtons");
-    expect(content).toContain('"Allow session"');
-    expect(content).toContain('"Always allow"');
-    expect(content).toContain("hostPolicyDecision(approval.suggestedDecisions?.alwaysAllow");
-    expect(client).toContain("browser_get_pending_approvals");
-    expect(client).toContain("browser_resolve_approval");
-    expect(popupHtml).toContain("Pending approvals");
-    expect(popup).toContain("async function loadApprovals");
-    expect(popup).toContain('type: "POPUP_PENDING_APPROVALS"');
-    expect(popup).toContain('type: "POPUP_RESOLVE_APPROVAL"');
-    expect(popup).toContain("function approvalCard");
-    expect(popup).toContain("function approvalDetailsList");
-    expect(popup).toContain("function approvalSubjectSummary");
-    expect(popup).toContain("function approvalRetryHints");
-    expect(popup).toContain("originApproved=true");
-    expect(popup).toContain("function approvalActionButtons");
-    expect(popup).toContain('"Allow session"');
-    expect(popup).toContain('"Always allow"');
-    expect(popup).toContain("hostPolicyDecision(approval.suggestedDecisions?.alwaysAllow");
-    expect(protocol).toContain("### getPendingApprovals");
-    expect(protocol).toContain("### resolveApproval");
-    expect(protocol).toContain("Chrome extension popup can list pending approvals");
-    expect(protocol).toContain("allow for the active session");
-    expect(protocol).toContain("host approval buttons pass the selected");
-    expect(protocol).toContain("redacted `target` summary");
-    expect(protocol).toContain("in-page approval banner");
-    expect(protocol).toContain("The content banner also removes itself after `expiresAt`");
-    expect(types).toContain("export type PendingApprovalRecord");
-    expect(types).toContain("target?: {");
-    expect(types).toContain("export type ResolveApprovalParams");
-  });
-
   it("keeps locator actionability checks present in the extension backend", () => {
     const background = readFileSync("extension/background.ts", "utf8");
     const client = readFileSync("mcp-node-repl/browser-client.ts", "utf8");
@@ -1089,9 +942,6 @@ describe("browser tool schemas", () => {
     expect(background).toContain("!el || !isEnabled(el) || isReadonly(el)");
     expect(background).toContain("hitPoint: receivesPointer.hitPoint");
     expect(background).toContain("hitPoint: hitPoint");
-    expect(background).toContain("looksLikeBrowserPermissionPrompt(label, text)");
-    expect(background).toContain("BROWSER_PERMISSION_TARGET_PATTERN");
-    expect(background).toContain("confirmed: args.confirmed");
     expect(background).toContain("locatorActionabilityForce");
     expect(background).toContain('code: "detached"');
     expect(background).toContain('code: "not_visible"');
@@ -1242,9 +1092,7 @@ describe("browser tool schemas", () => {
     expect(background).toContain('await assertBrowserPolicyForUrl("download", fetched.finalUrl');
     expect(background).toContain("async function downloadMedia");
     expect(background).toContain("function mediaDownloadTargetExpression");
-    expect(background).toContain('!classification.reasons.includes("sensitive_browser_state")');
     expect(background).toContain("function assertBrowserBlocklistForUrl");
-    expect(background).toContain('verdict.code !== "host_blocked"');
     expect(background).toContain("downloadId: download.id");
     expect(background).toContain("download_id: download.id");
     expect(background).toContain("downloadId: delta.id");
@@ -1368,14 +1216,13 @@ describe("browser tool schemas", () => {
     expect(client).toContain("browserUse: () =>");
     expect(client).toContain("Expose only the node_repl JavaScript tool surface");
     expect(client).toContain("Use structured connectors, APIs, CLIs, or file parsers before Chrome");
-    expect(client).toContain("browser.policy.pending()");
     expect(api).toContain('await agent.documentation.get("browserUse")');
     expect(api).toContain("intentionally exposes only the JavaScript");
     expect(mcpConfig).toContain('await agent.documentation.get("browserUse")');
     expect(mcpConfig).toContain("mirrors the packaged skill's operating model");
     expect(skill).toContain("## Browser-Use Operating Model");
     expect(skill).toContain("Use the Node REPL as the only MCP tool surface");
-    expect(skill).toContain("Resolve pending approvals only after user approval");
+    expect(skill).not.toContain("Resolve pending approvals only after user approval");
     expect(todo).toContain('runtime `agent.documentation.get("browserUse")`');
   });
 
@@ -1539,7 +1386,6 @@ describe("browser tool schemas", () => {
     expect(background).toContain('auditKind: "action"');
     expect(background).toContain("category: actionAuditCategory(args.action)");
     expect(background).toContain("turnId: paramsMeta.turnId");
-    expect(background).toContain("confirmationId: paramsMeta.confirmationId");
     expect(background).toContain("errorCode: args.errorCode ?? null");
     expect(background).toContain("durationMs: args.endedAt - args.startedAt");
     expect(background).toContain("postDiagnosticActionAudit({");
@@ -1724,9 +1570,6 @@ describe("browser tool schemas", () => {
     expect(background).toContain('name: "pageVisualStatus"');
     expect(background).toContain('name: "userTakeover"');
     expect(background).toContain('name: "userHandoffRequired"');
-    expect(background).toContain('name: "permissionPromptDetected"');
-    expect(background).toContain("function postPermissionPromptDetectedIfNeeded");
-    expect(background).toContain('classification.reasons.includes("browser_permission")');
     expect(background).toContain('type: "AGENT_PAGE_STATUS"');
     expect(background).toContain('type: "TAB_FAVICON_BADGE"');
     expect(background).toContain("faviconDataUrl");
@@ -1745,8 +1588,6 @@ describe("browser tool schemas", () => {
     expect(protocol).toContain("`/_favicon/` endpoint can return the page favicon");
     expect(protocol).toContain("userTakeover");
     expect(protocol).toContain("userHandoffRequired");
-    expect(protocol).toContain("permissionPromptDetected");
-    expect(types).toContain("export type BrowserPermissionPromptDetectedEvent");
   });
 
   it("keeps user-handoff safety boundaries wired before click automation", () => {
@@ -1794,25 +1635,12 @@ describe("browser tool schemas", () => {
     expect(background).toContain("version: healthSnapshot.version");
   });
 
-  it("allows confirmation ids on confirmed browser action schemas", () => {
-    for (const schema of browserToolSchemas) {
-      const properties = schema.parameters.properties ?? {};
-      if (Object.prototype.hasOwnProperty.call(properties, "confirmed")) {
-        expect(properties, schema.name).toHaveProperty("confirmationId", {
-          type: "string"
-        });
-      }
-    }
-  });
-
   it("annotates every browser action with policy-relevant risk metadata", () => {
     for (const entry of browserActionRegistry) {
       expect(entry.annotations, entry.action).toMatchObject({
         readOnly: expect.any(Boolean),
         sideEffecting: expect.any(Boolean),
         destructive: expect.any(Boolean),
-        requiresHostApproval: expect.any(Boolean),
-        requiresUserConfirmation: expect.any(Boolean),
         requiresFileSystemRead: expect.any(Boolean),
         requiresBrowserHistory: expect.any(Boolean),
         requiresRawCdp: expect.any(Boolean),
@@ -1826,33 +1654,24 @@ describe("browser tool schemas", () => {
 
   it("marks known high-risk browser actions conservatively", () => {
     expect(annotationsForAction("openUrl")).toMatchObject({
-      sideEffecting: true,
-      requiresHostApproval: true
+      sideEffecting: true
     });
     expect(annotationsForAction("uploadFile")).toMatchObject({
       sideEffecting: true,
-      requiresHostApproval: true,
-      requiresUserConfirmation: true,
       requiresFileSystemRead: true,
       requiresSensitiveDataReview: true
     });
     expect(annotationsForAction("setFileChooserFiles")).toMatchObject({
       sideEffecting: true,
-      requiresHostApproval: true,
-      requiresUserConfirmation: true,
       requiresFileSystemRead: true,
       requiresSensitiveDataReview: true
     });
     expect(annotationsForAction("downloadMedia")).toMatchObject({
       sideEffecting: true,
-      requiresHostApproval: true,
-      requiresUserConfirmation: true,
       requiresSensitiveDataReview: true
     });
     expect(annotationsForAction("attachTarget")).toMatchObject({
       sideEffecting: true,
-      requiresHostApproval: true,
-      requiresUserConfirmation: true,
       requiresRawCdp: true,
       requiresSensitiveDataReview: true
     });
@@ -1866,35 +1685,28 @@ describe("browser tool schemas", () => {
     });
     expect(annotationsForAction("cdp")).toMatchObject({
       sideEffecting: true,
-      requiresHostApproval: true,
       requiresRawCdp: true,
-      requiresUserConfirmation: true,
       requiresSensitiveDataReview: true
     });
     expect(annotationsForAction("getHistory")).toMatchObject({
       readOnly: true,
       requiresBrowserHistory: true,
-      requiresUserConfirmation: true,
       requiresSensitiveDataReview: true
     });
     expect(annotationsForAction("clipboardReadText")).toMatchObject({
       readOnly: true,
-      requiresUserConfirmation: true,
       requiresSensitiveDataReview: true
     });
     expect(annotationsForAction("clipboardWriteText")).toMatchObject({
       sideEffecting: true,
-      requiresUserConfirmation: true,
       requiresSensitiveDataReview: true
     });
     expect(annotationsForAction("clipboardRead")).toMatchObject({
       readOnly: true,
-      requiresUserConfirmation: true,
       requiresSensitiveDataReview: true
     });
     expect(annotationsForAction("clipboardWrite")).toMatchObject({
       sideEffecting: true,
-      requiresUserConfirmation: true,
       requiresSensitiveDataReview: true
     });
     expect(annotationsForAction("getEvents")).toMatchObject({

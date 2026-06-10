@@ -6,6 +6,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { resolveExtensionId } from "./extension-ids.js";
 
 const root = process.cwd();
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -73,7 +74,7 @@ Options:
   --bin-dir <path>       Directory for command wrappers. Default: ~/.formax/bin
   --install-root <path>  Versioned cache root. Default: ~/.formax/plugins/cache/formax/chrome
   --version <version>    Install version name. Default: package.json version from dist
-  --extension-id <id>    Override Chrome extension ID, useful for local unpacked testing
+  --extension-id <id>    Override Chrome extension ID, useful for local unpacked testing. Known labels: dev, prod
   --include-debug        Also install extension files, tests, docs, and installer helpers
   --dry-run              Print planned writes without changing files
 `);
@@ -95,7 +96,6 @@ const runtimeEntries = [
   ["docs/backend-boundaries.md", "docs/backend-boundaries.md"],
   ["docs/browser-client-api.md", "docs/browser-client-api.md"],
   ["docs/chrome-troubleshooting.md", "docs/chrome-troubleshooting.md"],
-  ["docs/confirmations.md", "docs/confirmations.md"],
   ["docs/file-management.md", "docs/file-management.md"],
   ["docs/playwright.md", "docs/playwright.md"],
   ["docs/plugin-mcp-configuration.md", "docs/plugin-mcp-configuration.md"],
@@ -384,7 +384,9 @@ async function main() {
   const distPackage = await readJson(distPackagePath);
   const config = await readJson(distConfigPath);
   const version = args.version ?? distPackage.version;
-  const extensionId = args.extensionId ?? process.env.FORMAX_EXTENSION_ID ?? config.extensionId;
+  const extensionId = resolveExtensionId(
+    args.extensionId ?? process.env.FORMAX_EXTENSION_ID ?? config.extensionId
+  );
   const hostName = process.env.FORMAX_EXTENSION_HOST_NAME ?? config.extensionHostName;
 
   if (!version || typeof version !== "string") throw new Error("Missing package version");

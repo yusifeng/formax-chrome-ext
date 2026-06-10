@@ -270,73 +270,6 @@ export const browserToolSchemas = [
     }
   },
   {
-    name: "browser_get_policy",
-    description: "Read browser-use policy state including per-session allows, persistent allows, and blocked hosts.",
-    parameters: {
-      type: "object",
-      properties: {
-        sessionId: { type: "string" }
-      },
-      additionalProperties: false
-    }
-  },
-  {
-    name: "browser_update_policy",
-    description: "Update browser-use host policy. Use allow for the current session, always_allow for persistent allow, or deny for blocklist.",
-    parameters: {
-      type: "object",
-      properties: {
-        decision: {
-          type: "string",
-          enum: ["allow", "always_allow", "deny"]
-        },
-        sessionId: { type: "string" },
-        host: { type: "string" },
-        url: { type: "string" },
-        reset: { type: "boolean" }
-      },
-      additionalProperties: false
-    }
-  },
-  {
-    name: "browser_get_pending_approvals",
-    description: "List pending browser host, confirmation, and origin approval requests captured by the extension confirmation engine.",
-    parameters: {
-      type: "object",
-      properties: {
-        sessionId: { type: "string" },
-        kind: {
-          type: "string",
-          enum: ["host", "confirmation", "origin"]
-        },
-        includeResolved: { type: "boolean" },
-        limit: { type: "number" }
-      },
-      additionalProperties: false
-    }
-  },
-  {
-    name: "browser_resolve_approval",
-    description: "Resolve a pending approval request. Host approvals can apply allow/deny policy; confirmation/origin approvals return retry params.",
-    parameters: {
-      type: "object",
-      properties: {
-        approvalId: { type: "string" },
-        decision: {
-          type: "string",
-          enum: ["approve", "deny"]
-        },
-        policyDecision: {
-          type: "string",
-          enum: ["allow", "always_allow", "deny"]
-        },
-        sessionId: { type: "string" }
-      },
-      required: ["approvalId", "decision"],
-      additionalProperties: false
-    }
-  },
-  {
     name: "browser_start_session",
     description: "Start a Chrome browser control session.",
     parameters: {
@@ -396,7 +329,7 @@ export const browserToolSchemas = [
   },
   {
     name: "browser_user_history",
-    description: "Read Chrome browsing history. Requires explicit per-request confirmation and has no always-allow policy path.",
+    description: "Read Chrome browsing history.",
     parameters: {
       type: "object",
       properties: {
@@ -407,38 +340,32 @@ export const browserToolSchemas = [
         to: {
           type: "number"
         },
-        limit: { type: "number" },
-        confirmed: { type: "boolean" },
-        confirmationId: { type: "string" }
+        limit: { type: "number" }
       },
       additionalProperties: false
     }
   },
   {
     name: "browser_clipboard_read_text",
-    description: "Read plain text from the system clipboard through the extension offscreen clipboard backend. Requires explicit per-request confirmation.",
+    description: "Read plain text from the system clipboard through the extension offscreen clipboard backend.",
     parameters: {
       type: "object",
       properties: {
         sessionId: { type: "string" },
-        tabId: { type: "number" },
-        confirmed: { type: "boolean" },
-        confirmationId: { type: "string" }
+        tabId: { type: "number" }
       },
       additionalProperties: false
     }
   },
   {
     name: "browser_clipboard_write_text",
-    description: "Write plain text to the system clipboard through the extension offscreen clipboard backend. Requires explicit per-request confirmation.",
+    description: "Write plain text to the system clipboard through the extension offscreen clipboard backend.",
     parameters: {
       type: "object",
       properties: {
         sessionId: { type: "string" },
         tabId: { type: "number" },
         text: { type: "string" },
-        confirmed: { type: "boolean" },
-        confirmationId: { type: "string" },
         sensitive: { type: "boolean" }
       },
       required: ["text"],
@@ -447,21 +374,19 @@ export const browserToolSchemas = [
   },
   {
     name: "browser_clipboard_read",
-    description: "Read typed clipboard items from the system clipboard. Requires explicit per-request confirmation.",
+    description: "Read typed clipboard items from the system clipboard.",
     parameters: {
       type: "object",
       properties: {
         sessionId: { type: "string" },
-        tabId: { type: "number" },
-        confirmed: { type: "boolean" },
-        confirmationId: { type: "string" }
+        tabId: { type: "number" }
       },
       additionalProperties: false
     }
   },
   {
     name: "browser_clipboard_write",
-    description: "Write typed clipboard items to the system clipboard. Requires explicit per-request confirmation.",
+    description: "Write typed clipboard items to the system clipboard.",
     parameters: {
       type: "object",
       properties: {
@@ -491,8 +416,6 @@ export const browserToolSchemas = [
             additionalProperties: false
           }
         },
-        confirmed: { type: "boolean" },
-        confirmationId: { type: "string" },
         sensitive: { type: "boolean" }
       },
       required: ["items"],
@@ -905,9 +828,7 @@ export const browserToolSchemas = [
             enum: BROWSER_POINTER_MODIFIERS
           }
         },
-        waitMs: { type: "number" },
-        confirmed: { type: "boolean" },
-        confirmationId: { type: "string" }
+        waitMs: { type: "number" }
       },
       additionalProperties: false
     }
@@ -943,9 +864,7 @@ export const browserToolSchemas = [
             enum: BROWSER_POINTER_MODIFIERS
           }
         },
-        waitMs: { type: "number" },
-        confirmed: { type: "boolean" },
-        confirmationId: { type: "string" }
+        waitMs: { type: "number" }
       },
       required: ["path"],
       additionalProperties: false
@@ -1014,9 +933,7 @@ export const browserToolSchemas = [
         text: { type: "string" },
         clear: { type: "boolean" },
         waitMs: { type: "number" },
-        sensitive: { type: "boolean" },
-        confirmed: { type: "boolean" },
-        confirmationId: { type: "string" }
+        sensitive: { type: "boolean" }
       },
       required: ["text"],
       additionalProperties: false
@@ -1039,8 +956,6 @@ export const browserToolSchemas = [
           type: "string",
           enum: ["read", "write"]
         },
-        confirmed: { type: "boolean" },
-        confirmationId: { type: "string" },
         reason: { type: "string" }
       },
       required: ["script"],
@@ -1158,9 +1073,7 @@ export const browserToolSchemas = [
           items: { type: "string" }
         },
         timeoutMs: { type: "number" },
-        waitMs: { type: "number" },
-        confirmed: { type: "boolean" },
-        confirmationId: { type: "string" }
+        waitMs: { type: "number" }
       },
       additionalProperties: false
     }
@@ -1205,16 +1118,14 @@ export const browserToolSchemas = [
           type: "array",
           items: { type: "string" }
         },
-        waitMs: { type: "number" },
-        confirmed: { type: "boolean" },
-        confirmationId: { type: "string" }
+        waitMs: { type: "number" }
       },
       additionalProperties: false
     }
   },
   {
     name: "browser_download_media",
-    description: "Download a media/page asset resolved from a locator after origin policy approval.",
+    description: "Download a media/page asset resolved from a locator.",
     parameters: {
       type: "object",
       properties: {
@@ -1259,10 +1170,7 @@ export const browserToolSchemas = [
         timeoutMs: { type: "number" },
         pollMs: { type: "number" },
         fallbackFetch: { type: "boolean" },
-        fallbackMaxBytes: { type: "number" },
-        originApproved: { type: "boolean" },
-        confirmed: { type: "boolean" },
-        confirmationId: { type: "string" }
+        fallbackMaxBytes: { type: "number" }
       },
       required: ["locator"],
       additionalProperties: false
@@ -1283,9 +1191,6 @@ export const browserToolSchemas = [
           additionalProperties: true
         },
         timeoutMs: { type: "number" },
-        originApproved: { type: "boolean" },
-        confirmed: { type: "boolean" },
-        confirmationId: { type: "string" },
         reason: { type: "string" }
       },
       required: ["method"],
@@ -1301,9 +1206,6 @@ export const browserToolSchemas = [
         sessionId: { type: "string" },
         tabId: { type: "number" },
         targetId: { type: "string" },
-        originApproved: { type: "boolean" },
-        confirmed: { type: "boolean" },
-        confirmationId: { type: "string" },
         reason: { type: "string" }
       },
       required: ["targetId"],

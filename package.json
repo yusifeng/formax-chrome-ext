@@ -13,7 +13,7 @@
     "reload:extension": "node scripts/reload-extension.js",
     "install:formax-runtime": "node scripts/install-formax-runtime.js",
     "package:dist": "npm run build && npm run build:rust-native-host && node scripts/package-dist.js",
-    "install:formax-runtime:dev": "npm run package:dist && node scripts/install-formax-runtime.js --install-root ./.formax-dev/plugins/cache/formax/chrome --bin-dir ./.formax-dev/bin --extension-id hooonkcoopaigliifkabcdjfmjjffmbm",
+    "install:formax-runtime:dev": "npm run package:dist && node scripts/install-formax-runtime.js --install-root ./.formax-dev/plugins/cache/formax/chrome --bin-dir ./.formax-dev/bin --extension-id dev",
     "release": "node scripts/release.js",
     "docs:browser-api": "node scripts/generate-browser-client-api-docs.js",
     "docs:protocol": "npm run build:runtime && node scripts/generate-protocol-action-reference.js",
@@ -24,8 +24,8 @@
     "test:mcp-node-repl": "npm run build:runtime && npm run build:mcp-node-repl && npm run build:browser-client && node tests/scripts/mcp-node-repl-smoke.js",
     "check:extension-installed": "node scripts/check-extension-installed.js --json",
     "check:native-host": "node scripts/check-native-host-manifest.js --json",
-    "test:real": "npm run build && npm run reload:extension && node tests/scripts/real-browser-e2e.js",
-    "test:real-sites": "npm run build && npm run reload:extension && node tests/scripts/real-site-smoke.js",
+    "test:real": "npm run build && node scripts/run-real-browser-test.js tests/scripts/real-browser-e2e.js",
+    "test:real-sites": "npm run build && node scripts/run-real-browser-test.js tests/scripts/real-site-smoke.js",
     "test:watch": "vitest"
   },
   "devDependencies": {

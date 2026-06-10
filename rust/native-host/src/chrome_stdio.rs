@@ -300,10 +300,10 @@ mod tests {
                 "id": "req-3",
                 "ok": false,
                 "error": {
-                    "code": "requires_host_approval",
-                    "message": "Browser access to example.com requires approval",
+                    "code": "invalid_params",
+                    "message": "A valid http/https URL is required for browser actions.",
                     "details": {
-                        "host": "example.com"
+                        "field": "url"
                     }
                 }
             }),
@@ -313,10 +313,10 @@ mod tests {
         let result = rx.await.unwrap();
         match result {
             CallResult::Error(value) => {
-                assert_eq!(value["code"], "requires_host_approval");
+                assert_eq!(value["code"], "invalid_params");
                 assert_eq!(
                     value["message"],
-                    "Browser access to example.com requires approval"
+                    "A valid http/https URL is required for browser actions."
                 );
                 assert_eq!(value["details"]["host"], "example.com");
             }
