@@ -4,18 +4,13 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 const root = process.cwd();
-const dist = path.join(root, "dist");
 
 const copyEntries = [
   [".formax-plugin", ".formax-plugin"],
   ["README.md", "README.md"],
   ["config", "config"],
-  ["skill", "skill"],
   ["build/extension-host", "extension-host"],
   ["mcp-node-repl", "mcp-node-repl"],
-  ["agent/browserTools.js", "agent/browserTools.js"],
-  ["shared", "shared"],
-  ["docs", "docs"],
   ["extension", "extension"],
   ["scripts/browser-client.mjs", "scripts/browser-client.mjs"],
   ["scripts/formax-doctor.js", "scripts/formax-doctor.js"],
@@ -29,11 +24,28 @@ const copyEntries = [
   ["scripts/check-native-host-manifest.js", "scripts/check-native-host-manifest.js"],
   ["tests/scripts/llm-node-repl-chat.js", "tests/scripts/llm-node-repl-chat.js"],
   ["tests/scripts/mcp-node-repl-smoke.js", "tests/scripts/mcp-node-repl-smoke.js"],
-  ["docs/prompts/handoff.md", "docs/prompts/handoff.md"]
+  ["docs/api.md", "docs/api.md"],
+  ["docs/api-troubleshooting.md", "docs/api-troubleshooting.md"],
+  ["docs/backend-boundaries.md", "docs/backend-boundaries.md"],
+  ["docs/browser-client-api.md", "docs/browser-client-api.md"],
+  ["docs/chrome-troubleshooting.md", "docs/chrome-troubleshooting.md"],
+  ["docs/confirmations.md", "docs/confirmations.md"],
+  ["docs/file-management.md", "docs/file-management.md"],
+  ["docs/playwright.md", "docs/playwright.md"],
+  ["docs/plugin-mcp-configuration.md", "docs/plugin-mcp-configuration.md"],
+  ["docs/protocol-action-reference.md", "docs/protocol-action-reference.md"],
+  ["docs/screenshots.md", "docs/screenshots.md"]
 ];
 
 const ignoredExtensions = new Set([".ts", ".map"]);
-const ignoredNames = new Set(["com.example.agentbrowser.json", "com.formax.browserhost.json"]);
+const ignoredNames = new Set([
+  "com.example.agentbrowser.json",
+  "com.formax.browserhost.json",
+]);
+const ignoredRelativePaths = new Set([
+  path.normalize("mcp-node-repl/browser-client.js"),
+  path.normalize("mcp-node-repl/kernel.js"),
+]);
 
 async function exists(filePath) {
   try {
@@ -44,7 +56,12 @@ async function exists(filePath) {
   }
 }
 
-async function copyFiltered(src, dest) {
+async function copyFiltered(src, dest, relativePath = "") {
+  const normalizedRelativePath = relativePath ? path.normalize(relativePath) : "";
+  if (normalizedRelativePath && ignoredRelativePaths.has(normalizedRelativePath)) {
+    return;
+  }
+
   const stat = await fs.stat(src);
 
   if (stat.isDirectory()) {
@@ -56,7 +73,14 @@ async function copyFiltered(src, dest) {
         continue;
       }
 
-      await copyFiltered(path.join(src, entry.name), path.join(dest, entry.name));
+      const childRelativePath = relativePath
+        ? path.join(relativePath, entry.name)
+        : entry.name;
+      await copyFiltered(
+        path.join(src, entry.name),
+        path.join(dest, entry.name),
+        childRelativePath
+      );
     }
     return;
   }
@@ -75,6 +99,7 @@ async function writeJson(filePath, value) {
 }
 
 async function main() {
+  const dist = path.join(root, "dist");
   const rootPackage = JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8"));
   await fs.rm(dist, { recursive: true, force: true });
   await fs.mkdir(dist, { recursive: true });
@@ -91,9 +116,12 @@ async function main() {
       continue;
     }
 
-    await copyFiltered(src, dest);
+    await copyFiltered(src, dest, from);
     copied.push(to);
   }
+
+  await fs.rm(path.join(dist, "mcp-node-repl", "browser-client.js"), { force: true });
+  await fs.rm(path.join(dist, "mcp-node-repl", "kernel.js"), { force: true });
 
   const pluginManifestPath = path.join(dist, ".formax-plugin", "plugin.json");
   if (await exists(pluginManifestPath)) {
@@ -137,9 +165,7 @@ async function main() {
       chromeExtension: "extension/manifest.json",
       nativeHost: "extension-host/<platform>/<arch>/extension-host",
       browserClientSdk: "scripts/browser-client.mjs",
-      legacyBrowserClientSdk: "mcp-node-repl/browser-client.js",
       skill: "skills/control-chrome/SKILL.md",
-      legacySkill: "skill/SKILL.md",
       docs: "docs",
       doctor: "scripts/formax-doctor.js",
       uninstall: "scripts/formax-uninstall.js",

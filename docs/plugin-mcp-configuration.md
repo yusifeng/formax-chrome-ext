@@ -45,12 +45,6 @@ The installer exposes the skill at:
 ~/.formax/plugins/cache/formax/chrome/latest/skills/control-chrome/SKILL.md
 ```
 
-The legacy compatibility location remains:
-
-```text
-~/.formax/plugins/cache/formax/chrome/latest/skill/SKILL.md
-```
-
 If your agent supports custom skills, add the `skills/control-chrome/SKILL.md`
 file. If it does not, paste the file contents into that agent's browser-control
 system instructions.

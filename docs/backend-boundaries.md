@@ -32,7 +32,7 @@ extension
 The supported setup path is:
 
 ```js
-const { setupBrowserRuntime } = await import("./mcp-node-repl/browser-client.js");
+const { setupBrowserRuntime } = await import("./scripts/browser-client.mjs");
 await setupBrowserRuntime({ globals: globalThis });
 const browser = await agent.browsers.get("extension");
 ```

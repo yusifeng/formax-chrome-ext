@@ -22,9 +22,7 @@ if (!globalThis.browser) {
   const { pathToFileURL } = await import("node:url");
   const browserClientCandidates = [
     "./scripts/browser-client.mjs",
-    "./mcp-node-repl/browser-client.js",
     `${nodeRepl.homeDir}/.formax/plugins/cache/formax/chrome/latest/scripts/browser-client.mjs`,
-    `${nodeRepl.homeDir}/.formax/plugins/cache/formax/chrome/latest/mcp-node-repl/browser-client.js`,
   ];
   let setupBrowserRuntime;
   let lastBrowserClientError;
@@ -109,9 +107,7 @@ if (!globalThis.browser) {
   const { pathToFileURL } = await import("node:url");
   const browserClientCandidates = [
     "./scripts/browser-client.mjs",
-    "./mcp-node-repl/browser-client.js",
     `${nodeRepl.homeDir}/.formax/plugins/cache/formax/chrome/latest/scripts/browser-client.mjs`,
-    `${nodeRepl.homeDir}/.formax/plugins/cache/formax/chrome/latest/mcp-node-repl/browser-client.js`,
   ];
   let setupBrowserRuntime;
   let lastBrowserClientError;

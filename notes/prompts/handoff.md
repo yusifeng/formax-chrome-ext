@@ -51,13 +51,13 @@ At handoff time the worktree has modifications in these files:
 agent/browserTools.js
 agent/browserTools.ts
 docs/browser-client-api.md
-docs/codex-gap-todolist.md
+notes/codex-gap-todolist.md
 docs/playwright.md
 extension/action-validator.js
 extension/action-validator.ts
 extension/background.js
 extension/background.ts
-mcp-node-repl/browser-client.js
+scripts/browser-client.mjs
 mcp-node-repl/browser-client.ts
 rust/native-host/src/rpc.rs
 shared/browser-tool-schemas.js
@@ -104,7 +104,7 @@ Results observed:
 
 ### 1. Scope Cleanup And Non-Goals
 
-Updated `docs/codex-gap-todolist.md` to clarify:
+Updated `notes/codex-gap-todolist.md` to clarify:
 
 - In-app browser content comments/annotations are out of scope.
 - Richer approval UX is deferred.
@@ -205,7 +205,7 @@ Relevant files:
 - `mcp-node-repl/browser-client.ts`
 - `shared/protocol.md`
 - `docs/playwright.md`
-- `docs/codex-gap-todolist.md`
+- `notes/codex-gap-todolist.md`
 - `tests/browser-client-facade.test.ts`
 - `tests/browser-tool-schemas.test.ts`
 
@@ -309,12 +309,12 @@ Relevant files:
 - `extension/background.ts`
 - `shared/protocol.md`
 - `docs/playwright.md`
-- `docs/codex-gap-todolist.md`
+- `notes/codex-gap-todolist.md`
 - `tests/browser-tool-schemas.test.ts`
 
 ## Important Current Non-Parity Items
 
-These are documented in `docs/codex-gap-todolist.md` under "Current Known Non-Parity Items". Do not mark the whole goal complete unless these are intentionally resolved or explicitly re-scoped by the user.
+These are documented in `notes/codex-gap-todolist.md` under "Current Known Non-Parity Items". Do not mark the whole goal complete unless these are intentionally resolved or explicitly re-scoped by the user.
 
 ### Clipboard Remaining Gaps
 
@@ -465,7 +465,7 @@ Do not assume `npm run test:real` is safe in arbitrary CI or local contexts; it 
   - `rust/native-host/src/rpc.rs` if native validation changes
   - `shared/protocol.md`
   - generated docs/tests
-- Keep `docs/codex-gap-todolist.md` honest. Do not mark incomplete parity as complete.
+- Keep `notes/codex-gap-todolist.md` honest. Do not mark incomplete parity as complete.
 - Avoid fake Playwright parity. If a method is only an alias, say so. If behavior cannot be faithfully implemented, leave it unclaimed.
 
 ## Files Most Likely Needed Next
@@ -481,7 +481,7 @@ For actionability/OOPIF/real-browser continuation:
 - `agent/browserTools.ts`
 - `shared/protocol.md`
 - `docs/playwright.md`
-- `docs/codex-gap-todolist.md`
+- `notes/codex-gap-todolist.md`
 - `tests/browser-client-facade.test.ts`
 - `tests/browser-tool-schemas.test.ts`
 - `tests/scripts/real-browser-e2e.js`

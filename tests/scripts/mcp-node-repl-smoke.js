@@ -80,7 +80,7 @@ try {
       name: "js",
       arguments: {
         code: [
-          "const runtime = await import('./mcp-node-repl/browser-client.js');",
+          "const runtime = await import('./scripts/browser-client.mjs');",
           "await runtime.setupBrowserRuntime({ globals: globalThis });",
           "const extensionBrowser = await agent.browsers.get('extension');",
           "return {",

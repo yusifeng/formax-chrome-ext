@@ -3693,7 +3693,7 @@ function createDocumentationFacade(runtime: {
       name: "Formax browser runtime",
       model: "The LLM only needs js/js_add_node_module_dir/js_reset. Browser control happens by importing this client inside the persistent Node REPL.",
       entrypoints: [
-        "const { setupBrowserRuntime } = await import('./mcp-node-repl/browser-client.js')",
+        "const { setupBrowserRuntime } = await import('./scripts/browser-client.mjs')",
         "const { agent, browser } = await setupBrowserRuntime()",
         "const browser = await agent.browsers.get('extension')"
       ],

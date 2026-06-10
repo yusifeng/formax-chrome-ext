@@ -223,7 +223,7 @@ Codex extension-host binary
   -> Formax rust/native-host extension-host binary
 
 Codex scripts/browser-client.mjs
-  -> Formax mcp-node-repl/browser-client.js
+  -> Formax scripts/browser-client.mjs
 
 Codex skills/control-chrome/SKILL.md
   -> Formax skill/SKILL.md

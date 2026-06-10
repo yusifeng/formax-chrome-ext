@@ -5,7 +5,7 @@ generated TypeScript reference lives in `docs/browser-client-api.md`.
 
 ## Runtime Setup
 
-Use the guarded bootstrap from `skill/SKILL.md` when running inside the MCP
+Use the guarded bootstrap from `skills/control-chrome/SKILL.md` when running inside the MCP
 `node_repl`. It supports both source checkout imports and packaged installs
 under:
 
@@ -13,9 +13,7 @@ under:
 ~/.formax/plugins/cache/formax/chrome/latest/scripts/browser-client.mjs
 ```
 
-The older `mcp-node-repl/browser-client.js` path remains available as a
-compatibility import, but `scripts/browser-client.mjs` is the stable package
-entry point.
+Use `scripts/browser-client.mjs` as the package entry point.
 
 Then get the Chrome extension backend:
 
@@ -136,7 +134,7 @@ you need current capability details.
 ## Topic Guides
 
 - `docs/browser-client-api.md`: generated SDK type reference.
-- `skill/SKILL.md`: browser-use operating model for agents using the MCP
+- `skills/control-chrome/SKILL.md`: browser-use operating model for agents using the MCP
   `node_repl`.
 - `docs/playwright.md`: Playwright-style locator and wait patterns.
 - `docs/confirmations.md`: confirmation and approval requirements.

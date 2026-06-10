@@ -243,14 +243,13 @@ function runtimeArchiveEntries({ platform, arch }) {
     ["package.json", "package.json"],
     ["package-lock.json", "package-lock.json"],
     ["config", "config"],
-    ["skill", "skill"],
+    ["skills", "skills"],
     [
       `extension-host/${platform}/${arch}/${executable}`,
       `extension-host/${platform}/${arch}/${executable}`,
     ],
     ["mcp-node-repl", "mcp-node-repl"],
-    ["agent/browserTools.js", "agent/browserTools.js"],
-    ["shared", "shared"],
+    ["scripts/browser-client.mjs", "scripts/browser-client.mjs"],
     ["scripts/check-extension-installed.js", "scripts/check-extension-installed.js"],
     ["scripts/check-native-host-manifest.js", "scripts/check-native-host-manifest.js"],
   ];

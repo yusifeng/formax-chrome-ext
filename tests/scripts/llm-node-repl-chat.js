@@ -122,7 +122,7 @@ function loadSkill() {
       "You are an interactive local agent. The user talks naturally; never ask the user to write JavaScript.",
       "You have only three external tools: js, js_add_node_module_dir, and js_reset.",
       "Use js to run your own JavaScript in the persistent Node runtime.",
-      "When the user asks for browser control, bootstrap ./mcp-node-repl/browser-client.js.",
+      "When the user asks for browser control, bootstrap ./scripts/browser-client.mjs.",
       "Reuse globalThis.__activeBrowserTab when possible and do not create multiple new tabs for retries.",
       "Keep replies brief and report what happened after tool calls."
     ].join("\n");
@@ -313,7 +313,7 @@ async function bootstrapBrowser() {
       title: "Bootstrap browser runtime",
       code: [
         "if (!globalThis.browser) {",
-        "  const { setupBrowserRuntime } = await import('./mcp-node-repl/browser-client.js');",
+        "  const { setupBrowserRuntime } = await import('./scripts/browser-client.mjs');",
         "  await setupBrowserRuntime({ globals: globalThis });",
         "}",
         "return { browsers: agent.browsers.list(), kind: browser.kind, toolCount: browser.tools.length };"
@@ -330,7 +330,7 @@ async function cleanupBrowserSessions() {
       timeout_ms: 15000,
       code: [
         "if (!globalThis.browser) {",
-        "  const { setupBrowserRuntime } = await import('./mcp-node-repl/browser-client.js');",
+        "  const { setupBrowserRuntime } = await import('./scripts/browser-client.mjs');",
         "  await setupBrowserRuntime({ globals: globalThis });",
         "}",
         "const browser = await agent.browsers.get('extension');",
@@ -384,7 +384,7 @@ async function runSelfCheck() {
       arguments: {
         title: "LLM node_repl browser self-check",
         code: [
-          "const runtime = await import('./mcp-node-repl/browser-client.js');",
+          "const runtime = await import('./scripts/browser-client.mjs');",
           "const { agent, browser } = await runtime.setupBrowserRuntime({ globals: globalThis });",
           "const docs = await browser.documentation();",
           "const tabDocs = await agent.documentation.get('tabs');",

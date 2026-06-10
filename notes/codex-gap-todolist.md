@@ -24,7 +24,7 @@ Reference sources used:
 - Local Codex Chrome plugin docs:
   `/Users/david/.codex/plugins/cache/openai-bundled/chrome/latest/docs/`
 - Local Codex resource readability map:
-  `docs/research/codex-resource-1.1.5/background-control-map.md`
+  `notes/research/codex-resource-1.1.5/background-control-map.md`
 - Current Formax code and tests.
 
 ## P0 - Product Boundary And Policy

@@ -12,13 +12,13 @@ agent/user explicitly resumes it.
 The active longer-running objective before the pause was:
 
 ```text
-Complete docs/codex-gap-todolist.md, preferably test-first where appropriate.
+Complete notes/codex-gap-todolist.md, preferably test-first where appropriate.
 ```
 
 The main roadmap is:
 
 ```text
-/Users/david/Documents/github/formax-extension/docs/codex-gap-todolist.md
+/Users/david/Documents/github/formax-extension/notes/codex-gap-todolist.md
 ```
 
 ## Workspace
@@ -125,7 +125,7 @@ Important untracked files created during this effort:
 
 - `docs/backend-boundaries.md`
 - `docs/browser-client-api.md`
-- `docs/codex-gap-todolist.md`
+- `notes/codex-gap-todolist.md`
 - `extension/action-validator.ts`
 - `extension/action-validator.js`
 - `extension/clipboard-offscreen.html`
@@ -239,7 +239,7 @@ Files touched:
 - `tests/browser-tool-schemas.test.ts`
 - generated JS files via `npm run build`
 - generated API docs via `npm run docs:browser-api`
-- `docs/codex-gap-todolist.md`
+- `notes/codex-gap-todolist.md`
 
 Behavior added:
 
@@ -299,7 +299,7 @@ reflected in the TODO yet.
 Files touched:
 
 - `mcp-node-repl/browser-client.ts`
-- generated `mcp-node-repl/browser-client.js`
+- bundled `scripts/browser-client.mjs`
 - `tests/browser-client-facade.test.ts`
 - generated `docs/browser-client-api.md`
 
@@ -335,7 +335,7 @@ Not yet done after this partial download helper work:
 - `cargo test` was not rerun after this SDK-only change.
 - `git diff --check` was not rerun after this SDK-only change or this handoff
   file.
-- `docs/codex-gap-todolist.md` still has
+- `notes/codex-gap-todolist.md` still has
   `download.suggestedFilename() equivalent` unchecked. The next agent should
   decide whether the current SDK helper is sufficient to check that item, or
   whether backend/protocol docs should first expose an explicit
@@ -345,7 +345,7 @@ Not yet done after this partial download helper work:
 
 ## Important Current TODO State
 
-Still incomplete high-value areas in `docs/codex-gap-todolist.md`:
+Still incomplete high-value areas in `notes/codex-gap-todolist.md`:
 
 - First-host prompt UI.
 - Browser permission-prompt confirmation UI.
@@ -408,7 +408,7 @@ Then choose one bounded TODO item. Good candidates:
 
 1. Finish the download helper item:
    - Decide whether SDK-only `suggestedFilename()` is enough.
-   - If yes, update `docs/codex-gap-todolist.md` and possibly
+   - If yes, update `notes/codex-gap-todolist.md` and possibly
      `shared/protocol.md` / `docs/browser-client-api.md`.
    - If not, add explicit backend/protocol `suggestedFilename` fields.
 

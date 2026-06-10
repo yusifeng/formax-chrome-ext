@@ -1121,7 +1121,7 @@ describe("browser tool schemas", () => {
     const client = readFileSync("mcp-node-repl/browser-client.ts", "utf8");
     const protocol = readFileSync("shared/protocol.md", "utf8");
     const playwright = readFileSync("docs/playwright.md", "utf8");
-    const todo = readFileSync("docs/codex-gap-todolist.md", "utf8");
+    const todo = readFileSync("notes/codex-gap-todolist.md", "utf8");
 
     expect(client).toContain("function locatorPlanDebugString");
     expect(client).toContain("function frameLocatorDebugString");
@@ -1145,7 +1145,7 @@ describe("browser tool schemas", () => {
     const background = readFileSync("extension/background.ts", "utf8");
     const protocol = readFileSync("shared/protocol.md", "utf8");
     const playwright = readFileSync("docs/playwright.md", "utf8");
-    const todo = readFileSync("docs/codex-gap-todolist.md", "utf8");
+    const todo = readFileSync("notes/codex-gap-todolist.md", "utf8");
 
     expect(client).toContain("innerHTML(args?: JsonObject): Promise<string | null>;");
     expect(client).toContain("const value = (await this.query(\"innerHTML\", args)).value;");
@@ -1168,7 +1168,7 @@ describe("browser tool schemas", () => {
     const client = readFileSync("mcp-node-repl/browser-client.ts", "utf8");
     const protocol = readFileSync("shared/protocol.md", "utf8");
     const playwright = readFileSync("docs/playwright.md", "utf8");
-    const todo = readFileSync("docs/codex-gap-todolist.md", "utf8");
+    const todo = readFileSync("notes/codex-gap-todolist.md", "utf8");
 
     expect(client).toContain("write(items: string | unknown[] | JsonObject, args?: JsonObject): Promise<unknown>;");
     expect(client).toContain('if (typeof items === "string")');
@@ -1192,7 +1192,7 @@ describe("browser tool schemas", () => {
 
   it("keeps real-browser failure smoke coverage wired into test:real", () => {
     const realE2e = readFileSync("tests/scripts/real-browser-e2e.js", "utf8");
-    const todo = readFileSync("docs/codex-gap-todolist.md", "utf8");
+    const todo = readFileSync("notes/codex-gap-todolist.md", "utf8");
 
     expect(realE2e).toContain("real-browser locator failures surface stable structured codes");
     expect(realE2e).toContain("strict-duplicate-button");
@@ -1212,7 +1212,7 @@ describe("browser tool schemas", () => {
   it("keeps cross-origin frame diagnostics wired into test:real", () => {
     const tools = readFileSync("agent/browserTools.ts", "utf8");
     const realE2e = readFileSync("tests/scripts/real-browser-e2e.js", "utf8");
-    const todo = readFileSync("docs/codex-gap-todolist.md", "utf8");
+    const todo = readFileSync("notes/codex-gap-todolist.md", "utf8");
 
     expect(tools).toContain("export async function browserResolveFrame");
     expect(tools).toContain('case "browser_resolve_frame"');
@@ -1363,7 +1363,7 @@ describe("browser tool schemas", () => {
     const api = readFileSync("docs/api.md", "utf8");
     const mcpConfig = readFileSync("docs/plugin-mcp-configuration.md", "utf8");
     const skill = readFileSync("skill/SKILL.md", "utf8");
-    const todo = readFileSync("docs/codex-gap-todolist.md", "utf8");
+    const todo = readFileSync("notes/codex-gap-todolist.md", "utf8");
 
     expect(client).toContain("browserUse: () =>");
     expect(client).toContain("Expose only the node_repl JavaScript tool surface");
@@ -1597,9 +1597,9 @@ describe("browser tool schemas", () => {
   it("keeps Codex-like native disconnect cleanup wired to stop sessions and detach debuggers", () => {
     const background = readFileSync("extension/background.ts", "utf8");
     const protocol = readFileSync("shared/protocol.md", "utf8");
-    const todo = readFileSync("docs/codex-gap-todolist.md", "utf8");
+    const todo = readFileSync("notes/codex-gap-todolist.md", "utf8");
     const researchMap = readFileSync(
-      "docs/research/codex-resource-1.1.5/background-control-map.md",
+      "notes/research/codex-resource-1.1.5/background-control-map.md",
       "utf8"
     );
 
@@ -1629,9 +1629,9 @@ describe("browser tool schemas", () => {
   it("keeps Codex-like extension update reload deferred while browser control is active", () => {
     const background = readFileSync("extension/background.ts", "utf8");
     const protocol = readFileSync("shared/protocol.md", "utf8");
-    const todo = readFileSync("docs/codex-gap-todolist.md", "utf8");
+    const todo = readFileSync("notes/codex-gap-todolist.md", "utf8");
     const researchMap = readFileSync(
-      "docs/research/codex-resource-1.1.5/background-control-map.md",
+      "notes/research/codex-resource-1.1.5/background-control-map.md",
       "utf8"
     );
 
@@ -1665,9 +1665,9 @@ describe("browser tool schemas", () => {
   it("keeps Codex-like handoff leases resumable on the next session start", () => {
     const sessionManager = readFileSync("extension/session-manager.ts", "utf8");
     const protocol = readFileSync("shared/protocol.md", "utf8");
-    const todo = readFileSync("docs/codex-gap-todolist.md", "utf8");
+    const todo = readFileSync("notes/codex-gap-todolist.md", "utf8");
     const researchMap = readFileSync(
-      "docs/research/codex-resource-1.1.5/background-control-map.md",
+      "notes/research/codex-resource-1.1.5/background-control-map.md",
       "utf8"
     );
 
@@ -1907,7 +1907,7 @@ describe("browser tool schemas", () => {
     const client = readFileSync("mcp-node-repl/browser-client.ts", "utf8");
     const api = readFileSync("docs/browser-client-api.md", "utf8");
     const playwright = readFileSync("docs/playwright.md", "utf8");
-    const todo = readFileSync("docs/codex-gap-todolist.md", "utf8");
+    const todo = readFileSync("notes/codex-gap-todolist.md", "utf8");
 
     expect(client).toContain("goto(url: string, args?: JsonObject): Promise<unknown>;");
     expect(client).toContain("goto: (url, args = {}) => tab.goto(url, args)");

@@ -28,21 +28,17 @@ If `nativeConnected` is false, switch to
 
 Symptoms:
 
-- Importing `./scripts/browser-client.mjs` or
-  `./mcp-node-repl/browser-client.js` fails.
+- Importing `./scripts/browser-client.mjs` fails.
 - Packaged installs cannot find the SDK from the current working directory.
 
 Fix:
 
-Use the guarded bootstrap from `skill/SKILL.md`. It tries the source checkout
+Use the guarded bootstrap from `skills/control-chrome/SKILL.md`. It tries the source checkout
 path first, then the packaged install path:
 
 ```text
 ~/.formax/plugins/cache/formax/chrome/latest/scripts/browser-client.mjs
 ```
-
-`mcp-node-repl/browser-client.js` is kept as a compatibility import path, but
-new package bootstraps should use `scripts/browser-client.mjs`.
 
 If both paths fail, install the runtime again:
 

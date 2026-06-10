@@ -133,6 +133,19 @@ npm run install:formax-runtime
 to copy `dist/` into `~/.formax/plugins/cache/formax/chrome/<version>/`, update
 the `latest` symlink, and write Chrome's native messaging manifest.
 
+## Skill Bootstrap Path
+
+The packaged skill bootstrap path is fixed. When `skill/SKILL.md` or packaged
+skill content needs to import the browser client SDK, use exactly:
+
+```text
+~/.formax/plugins/cache/formax/chrome/latest/scripts/browser-client.mjs
+```
+
+Do not add fallback search paths such as source-checkout-relative copies,
+`.formax-dev`, `nodeRepl.cwd`, or alternate candidate lists unless the user
+explicitly asks for that behavior.
+
 The Chrome Web Store upload package is extension-only and should not include the MCP server, native host, skill, or debug scripts.
 
 The full product distribution package contains the extension, native host, MCP node_repl server, browser client SDK, shared protocol files, skill, and debug scripts.

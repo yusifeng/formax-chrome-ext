@@ -82,34 +82,47 @@ Options:
 const runtimeEntries = [
   [".formax-plugin", ".formax-plugin"],
   ["config", "config"],
-  ["skill", "skill"],
   ["skills", "skills"],
   ["extension-host", "extension-host"],
   ["mcp-node-repl", "mcp-node-repl"],
-  ["agent/browserTools.js", "agent/browserTools.js"],
-  ["shared", "shared"],
-  ["docs", "docs"],
   ["scripts/browser-client.mjs", "scripts/browser-client.mjs"],
   ["scripts/formax-doctor.js", "scripts/formax-doctor.js"],
   ["scripts/formax-uninstall.js", "scripts/formax-uninstall.js"],
   ["scripts/check-extension-installed.js", "scripts/check-extension-installed.js"],
   ["scripts/check-native-host-manifest.js", "scripts/check-native-host-manifest.js"],
+  ["docs/api.md", "docs/api.md"],
+  ["docs/api-troubleshooting.md", "docs/api-troubleshooting.md"],
+  ["docs/backend-boundaries.md", "docs/backend-boundaries.md"],
+  ["docs/browser-client-api.md", "docs/browser-client-api.md"],
+  ["docs/chrome-troubleshooting.md", "docs/chrome-troubleshooting.md"],
+  ["docs/confirmations.md", "docs/confirmations.md"],
+  ["docs/file-management.md", "docs/file-management.md"],
+  ["docs/playwright.md", "docs/playwright.md"],
+  ["docs/plugin-mcp-configuration.md", "docs/plugin-mcp-configuration.md"],
+  ["docs/protocol-action-reference.md", "docs/protocol-action-reference.md"],
+  ["docs/screenshots.md", "docs/screenshots.md"],
   ["package.json", "package.json"],
-  ["package-lock.json", "package-lock.json"],
 ];
 
-const optionalRuntimeEntries = [
-  ["node_modules", "node_modules"],
-];
+const ignoredRuntimeRelativePaths = new Set([
+  path.normalize("mcp-node-repl/browser-client.js"),
+  path.normalize("mcp-node-repl/kernel.js"),
+]);
 
 const debugEntries = [
   ["README.md", "README.md"],
   ["DIST-MANIFEST.json", "DIST-MANIFEST.json"],
+  ["package-lock.json", "package-lock.json"],
   ["extension", "extension"],
   ["native-host", "native-host"],
   ["tests/scripts/llm-node-repl-chat.js", "tests/scripts/llm-node-repl-chat.js"],
   ["tests/scripts/mcp-node-repl-smoke.js", "tests/scripts/mcp-node-repl-smoke.js"],
-  ["docs/prompts/handoff.md", "docs/prompts/handoff.md"],
+  ["notes/prompts/handoff.md", "notes/prompts/handoff.md"],
+  ["notes/prompts/browser-node-repl-system.md", "notes/prompts/browser-node-repl-system.md"],
+  ["notes/codex-chrome-architecture-notes.md", "notes/codex-chrome-architecture-notes.md"],
+  ["notes/codex-gap-handoff.md", "notes/codex-gap-handoff.md"],
+  ["notes/codex-gap-todolist.md", "notes/codex-gap-todolist.md"],
+  ["notes/research", "notes/research"],
 ];
 
 async function exists(filePath) {
@@ -125,7 +138,12 @@ async function readJson(filePath) {
   return JSON.parse(await fs.readFile(filePath, "utf8"));
 }
 
-async function copyFiltered(src, dest) {
+async function copyFiltered(src, dest, relativePath = "") {
+  const normalizedRelativePath = relativePath ? path.normalize(relativePath) : "";
+  if (normalizedRelativePath && ignoredRuntimeRelativePaths.has(normalizedRelativePath)) {
+    return;
+  }
+
   const stat = await fs.stat(src);
 
   if (stat.isDirectory()) {
@@ -133,7 +151,14 @@ async function copyFiltered(src, dest) {
     const entries = await fs.readdir(src, { withFileTypes: true });
     for (const entry of entries) {
       if (entry.name.endsWith(".zip")) continue;
-      await copyFiltered(path.join(src, entry.name), path.join(dest, entry.name));
+      const childRelativePath = relativePath
+        ? path.join(relativePath, entry.name)
+        : entry.name;
+      await copyFiltered(
+        path.join(src, entry.name),
+        path.join(dest, entry.name),
+        childRelativePath
+      );
     }
     return;
   }
@@ -155,29 +180,14 @@ async function copyEntries(srcRoot, destRoot, entries) {
       continue;
     }
 
-    await copyFiltered(src, dest);
+    await copyFiltered(src, dest, from);
     copied.push(to);
   }
+
+  await fs.rm(path.join(destRoot, "mcp-node-repl", "browser-client.js"), { force: true });
+  await fs.rm(path.join(destRoot, "mcp-node-repl", "kernel.js"), { force: true });
 
   return { copied, missing };
-}
-
-async function copyOptionalEntries(srcRoot, destRoot, entries) {
-  const copied = [];
-
-  for (const [from, to] of entries) {
-    const src = path.join(srcRoot, from);
-    const dest = path.join(destRoot, to);
-
-    if (!(await exists(src))) {
-      continue;
-    }
-
-    await copyFiltered(src, dest);
-    copied.push(to);
-  }
-
-  return copied;
 }
 
 async function replaceSymlink(target, linkPath, dryRun) {
@@ -286,8 +296,44 @@ async function writeBinWrappers({ binDir, latestLink, installRoot, dryRun }) {
   return wrappers.map((wrapper) => path.join(binDir, wrapper.name));
 }
 
+async function rewriteInstalledPackage(versionDir, includeDebug, dryRun) {
+  if (includeDebug) {
+    return false;
+  }
+
+  const packagePath = path.join(versionDir, "package.json");
+  const runtimePackage = await readJson(packagePath);
+  runtimePackage.dependencies = {};
+  await writeJson(packagePath, runtimePackage, dryRun);
+  return true;
+}
+
+async function rewriteInstalledConfig(versionDir, extensionId, dryRun) {
+  if (!extensionId) {
+    return false;
+  }
+
+  const configPath = path.join(versionDir, "config", "extension-id.json");
+  const config = await readJson(configPath);
+  config.extensionId = extensionId;
+  await writeJson(configPath, config, dryRun);
+  return true;
+}
+
 async function installNodeDependencies(versionDir, dryRun) {
   const nodeModulesDir = path.join(versionDir, "node_modules");
+  const packagePath = path.join(versionDir, "package.json");
+  const runtimePackage = await readJson(packagePath);
+
+  if (Object.keys(runtimePackage.dependencies || {}).length === 0) {
+    if (dryRun) {
+      console.log("  node deps:         none (runtime is self-contained)");
+      return "dry-run";
+    }
+
+    return "self-contained";
+  }
+
   const lockfilePath = path.join(versionDir, "package-lock.json");
 
   if (await exists(nodeModulesDir)) {
@@ -383,7 +429,8 @@ async function main() {
   await fs.mkdir(versionDir, { recursive: true });
   const entries = args.includeDebug ? [...runtimeEntries, ...debugEntries] : runtimeEntries;
   const { copied, missing } = await copyEntries(args.dist, versionDir, entries);
-  copied.push(...(await copyOptionalEntries(args.dist, versionDir, optionalRuntimeEntries)));
+  const selfContained = await rewriteInstalledPackage(versionDir, args.includeDebug, args.dryRun);
+  const rewrittenExtensionId = await rewriteInstalledConfig(versionDir, args.extensionId, args.dryRun);
   const dependencyMode = await installNodeDependencies(versionDir, args.dryRun);
   await writeJson(
     path.join(versionDir, "FORMAX-RUNTIME-MANIFEST.json"),
@@ -394,6 +441,8 @@ async function main() {
       extensionId,
       hostName,
       debugIncluded: args.includeDebug,
+      selfContained,
+      rewrittenExtensionId,
       nodeDependencies: dependencyMode,
       copied,
       missing,
