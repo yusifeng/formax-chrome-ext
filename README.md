@@ -28,13 +28,12 @@ curl -fsSL https://curl-scripts.vercel.app/formax/install.sh | bash
 ```
 
 The installer downloads the Formax runtime, installs it under `~/.formax`, and
-creates the local commands and skill file:
+creates the local commands:
 
 ```text
 ~/.formax/bin/formax-browser-mcp
 ~/.formax/bin/formax-doctor
 ~/.formax/bin/formax-uninstall
-~/.formax/skills/formax-browser/SKILL.md
 ```
 
 ### 2. Install the Chrome extension
@@ -61,12 +60,16 @@ recovery steps.
 
 Add the Formax MCP server to your MCP client.
 
+The `formax-browser-mcp` file is an installed wrapper script. Point your MCP
+client at that wrapper directly; do not wrap it again with `node ...`.
+
 macOS example:
 
 ```json
 {
   "mcpServers": {
     "formax-browser": {
+      "type": "stdio",
       "command": "/Users/<your-user>/.formax/bin/formax-browser-mcp"
     }
   }
@@ -79,6 +82,7 @@ Linux example:
 {
   "mcpServers": {
     "formax-browser": {
+      "type": "stdio",
       "command": "/home/<your-user>/.formax/bin/formax-browser-mcp"
     }
   }
@@ -88,15 +92,15 @@ Linux example:
 Restart your MCP client after adding the server.
 
 If browser-client calls fail after the MCP server starts, see
-`docs/api-troubleshooting.md` for health checks, confirmation failures, policy
-blocks, stale handles, upload validation, and diagnostic guidance.
+`docs/api-troubleshooting.md` for health checks, stale handles, upload
+validation, and diagnostic guidance.
 
 ### 4. Enable the skill
 
-The installer places the Formax browser skill at:
+The installed runtime includes the Formax browser skill at:
 
 ```text
-~/.formax/skills/formax-browser/SKILL.md
+~/.formax/plugins/cache/formax/chrome/latest/skills/control-chrome/SKILL.md
 ```
 
 If your agent supports custom skills, add this file. If it does not, use the

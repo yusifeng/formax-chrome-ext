@@ -507,6 +507,8 @@ async function main() {
   }
 
   console.log("\nInstalled Formax browser runtime.");
+  console.log(`Runtime root: ${path.join(runtimeHomeFromInstallRoot(args.installRoot), "plugins", "cache", "formax", "chrome", "latest")}`);
+  console.log(`Skill path:   ${path.join(runtimeHomeFromInstallRoot(args.installRoot), "plugins", "cache", "formax", "chrome", "latest", "skills", "control-chrome", "SKILL.md")}`);
   console.log(`Native host manifest written to: ${manifestPath}`);
   console.log("Command wrappers:");
   for (const wrapper of binWrappers) console.log(`  ${wrapper}`);

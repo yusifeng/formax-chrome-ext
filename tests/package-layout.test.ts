@@ -51,6 +51,7 @@ describe("package layout", () => {
     const packageDist = read("scripts/package-dist.js");
     const packageJson = JSON.parse(read("package.json"));
     const installer = read("scripts/install-formax-runtime.js");
+    const release = read("scripts/release.js");
     const extensionIds = read("scripts/extension-ids.js");
 
     for (const artifact of [
@@ -63,6 +64,19 @@ describe("package layout", () => {
       "skills/control-chrome/SKILL.md",
     ]) {
       expect(packageDist).toContain(artifact);
+    }
+
+    for (const artifact of [
+      ".formax-plugin",
+      "docs",
+      "scripts/browser-client.mjs",
+      "scripts/formax-doctor.js",
+      "scripts/formax-uninstall.js",
+      "runtime-path-template.js",
+      "extension-ids.js",
+      "skills",
+    ]) {
+      expect(release).toContain(artifact);
     }
 
     for (const artifact of [

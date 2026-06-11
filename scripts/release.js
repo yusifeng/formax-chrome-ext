@@ -239,19 +239,25 @@ function runtimeArchiveEntries({ platform, arch }) {
   const executable = platform === "windows" ? "extension-host.exe" : "extension-host";
 
   return [
+    [".formax-plugin", ".formax-plugin"],
     ["install.js", "install.js"],
     ["package.json", "package.json"],
     ["package-lock.json", "package-lock.json"],
     ["config", "config"],
+    ["docs", "docs"],
     ["skills", "skills"],
     [
       `extension-host/${platform}/${arch}/${executable}`,
       `extension-host/${platform}/${arch}/${executable}`,
     ],
+    ["extension-ids.js", "extension-ids.js"],
     ["mcp-node-repl", "mcp-node-repl"],
     ["scripts/browser-client.mjs", "scripts/browser-client.mjs"],
+    ["scripts/formax-doctor.js", "scripts/formax-doctor.js"],
+    ["scripts/formax-uninstall.js", "scripts/formax-uninstall.js"],
     ["scripts/check-extension-installed.js", "scripts/check-extension-installed.js"],
     ["scripts/check-native-host-manifest.js", "scripts/check-native-host-manifest.js"],
+    ["runtime-path-template.js", "runtime-path-template.js"],
   ];
 }
 
