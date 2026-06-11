@@ -59,6 +59,7 @@ describe("package layout", () => {
       "scripts/browser-client.mjs",
       "scripts/formax-doctor.js",
       "scripts/formax-uninstall.js",
+      "scripts/runtime-path-template.js",
       "skills/control-chrome/SKILL.md",
     ]) {
       expect(packageDist).toContain(artifact);
@@ -81,6 +82,7 @@ describe("package layout", () => {
     expect(installer).toContain("runtime is self-contained");
     expect(installer).toContain("rewriteInstalledPackage");
     expect(installer).toContain("rewriteInstalledConfig");
+    expect(installer).toContain("rewriteInstalledRuntimePaths");
     expect(installer).not.toContain('["node_modules", "node_modules"]');
     expect(extensionIds).toContain('export const WEB_STORE_EXTENSION_ID = "dchkbbjmkheilkmencpckilhmmcppdne";');
     expect(extensionIds).toContain('export const DEV_EXTENSION_ID = "hooonkcoopaigliifkabcdjfmjjffmbm";');
@@ -96,6 +98,8 @@ describe("package layout", () => {
     const distRoot = path.join(root, "dist");
 
     expect(fs.existsSync(path.join(distRoot, "scripts", "browser-client.mjs"))).toBe(true);
+    expect(fs.existsSync(path.join(distRoot, "extension-ids.js"))).toBe(true);
+    expect(fs.existsSync(path.join(distRoot, "runtime-path-template.js"))).toBe(true);
     expect(fs.existsSync(path.join(distRoot, "mcp-node-repl", "browser-client.js"))).toBe(false);
     expect(fs.existsSync(path.join(distRoot, "mcp-node-repl", "kernel.js"))).toBe(false);
     expect(fs.existsSync(path.join(distRoot, "skill"))).toBe(false);

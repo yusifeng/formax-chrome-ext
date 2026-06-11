@@ -95,6 +95,14 @@ If `count()` is greater than `1`:
 - Scope to the correct container or switch to a stronger attribute.
 - Do not use `.first()` as a shortcut.
 
+If the action should open content but the current page does not change as
+expected:
+
+- Do not immediately assume the click failed.
+- Check whether a new selected tab opened with `browser.tabs.selected()`.
+- If needed, inspect `browser.user.openTabs()` and claim the matching tab.
+- Update `globalThis.__activeBrowserTab` to the new tab before continuing.
+
 Example:
 
 ```js

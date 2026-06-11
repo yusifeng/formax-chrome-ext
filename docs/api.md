@@ -5,10 +5,10 @@ runtime.
 
 ## Runtime Bootstrap
 
-The installed browser runtime entry point is:
+The browser runtime entry point is:
 
 ```text
-~/.formax/plugins/cache/formax/chrome/latest/scripts/browser-client.mjs
+__FORMAX_RUNTIME_HOME_DISPLAY__/plugins/cache/formax/chrome/latest/scripts/browser-client.mjs
 ```
 
 Bootstrap the runtime inside the MCP `node_repl`, then select the Chrome
@@ -16,7 +16,7 @@ extension backend:
 
 ```js
 const { pathToFileURL } = await import("node:url");
-const browserClientPath = `${nodeRepl.homeDir}/.formax/plugins/cache/formax/chrome/latest/scripts/browser-client.mjs`;
+const browserClientPath = `${nodeRepl.homeDir}/__FORMAX_RUNTIME_HOME_BASENAME__/plugins/cache/formax/chrome/latest/scripts/browser-client.mjs`;
 const { setupBrowserRuntime } = await import(pathToFileURL(browserClientPath).href);
 await setupBrowserRuntime({ globals: globalThis });
 const browser = await agent.browsers.get("extension");

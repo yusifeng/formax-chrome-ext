@@ -16,6 +16,8 @@ const copyEntries = [
   ["scripts/formax-doctor.js", "scripts/formax-doctor.js"],
   ["scripts/formax-uninstall.js", "scripts/formax-uninstall.js"],
   ["scripts/install-formax-runtime.js", "install.js"],
+  ["scripts/extension-ids.js", "extension-ids.js"],
+  ["scripts/runtime-path-template.js", "runtime-path-template.js"],
   ["native-host/com.formax.browserhost.json.example", "native-host/com.formax.browserhost.json.example"],
   ["native-host/install-linux.sh", "native-host/install-linux.sh"],
   ["native-host/install-macos.sh", "native-host/install-macos.sh"],

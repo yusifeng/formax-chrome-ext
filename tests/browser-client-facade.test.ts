@@ -2832,6 +2832,7 @@ describe("browser-client object facade", () => {
         closeRest: true
       }
     });
+    expect(calls.at(-1)?.args).not.toHaveProperty("tabId");
   });
 
   it("reports unsupported Codex-compatible surfaces explicitly", async () => {

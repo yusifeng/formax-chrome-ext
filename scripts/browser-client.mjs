@@ -2002,6 +2002,8 @@ var noDefaultActions = /* @__PURE__ */ new Set([
 var noDefaultTabActions = /* @__PURE__ */ new Set([
   ...noDefaultActions,
   "browser_create_tab",
+  "browser_finalize_session",
+  "browser_end_turn",
   "browser_stop_session"
 ]);
 var BROWSER_BACKENDS = [

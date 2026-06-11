@@ -588,6 +588,8 @@ const noDefaultActions = new Set<BrowserToolName>([
 const noDefaultTabActions = new Set<BrowserToolName>([
   ...noDefaultActions,
   "browser_create_tab",
+  "browser_finalize_session",
+  "browser_end_turn",
   "browser_stop_session"
 ]);
 

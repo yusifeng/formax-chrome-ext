@@ -129,6 +129,21 @@ mean the in-skill `tab.playwright` API after browser-client setup.
 - For retries, use the same tab and refresh page state before trying again.
 - After creating or claiming a tab, store it on `globalThis.__activeBrowserTab`.
 
+### New Tabs After Clicks
+
+- Some page actions open a new top-level tab instead of updating the current
+  page.
+- After a click or keyboard action that should open content, if the current
+  page does not change as expected, do not immediately assume the action
+  failed.
+- First check whether Chrome opened a new selected tab with
+  `browser.tabs.selected()` or whether a matching tab appeared in
+  `browser.user.openTabs()`.
+- If a new tab opened, immediately update `globalThis.__activeBrowserTab` to
+  that tab and continue the task on that new tab.
+- Do not keep operating on the old `tab` binding after a new tab has clearly
+  opened.
+
 ### Tab Cleanup
 
 - Before ending a turn after Chrome browser work, call

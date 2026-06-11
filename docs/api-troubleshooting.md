@@ -32,7 +32,7 @@ If the installed SDK entry point cannot be imported, or `browser`, `agent`, or
 `SKILL.md` using:
 
 ```text
-~/.formax/plugins/cache/formax/chrome/latest/scripts/browser-client.mjs
+__FORMAX_RUNTIME_HOME_DISPLAY__/plugins/cache/formax/chrome/latest/scripts/browser-client.mjs
 ```
 
 If that path still fails, reinstall the runtime:

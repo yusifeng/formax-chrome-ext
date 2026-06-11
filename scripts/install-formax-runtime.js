@@ -7,6 +7,12 @@ import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { resolveExtensionId } from "./extension-ids.js";
+import {
+  installedRuntimePathFiles,
+  renderRuntimePathTemplate,
+  runtimeHomeDisplay,
+  runtimeHomeFromInstallRoot,
+} from "./runtime-path-template.js";
 
 const root = process.cwd();
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -317,6 +323,42 @@ async function rewriteInstalledConfig(versionDir, extensionId, dryRun) {
   return true;
 }
 
+async function rewriteInstalledRuntimePaths(versionDir, installRoot, dryRun) {
+  const runtimeHome = runtimeHomeFromInstallRoot(installRoot);
+  const displayPath = runtimeHomeDisplay(runtimeHome);
+  const basename = path.basename(runtimeHome);
+  const rewritten = [];
+
+  for (const relativePath of installedRuntimePathFiles) {
+    const filePath = path.join(versionDir, relativePath);
+    if (!(await exists(filePath))) {
+      continue;
+    }
+
+    const original = await fs.readFile(filePath, "utf8");
+    const rendered = renderRuntimePathTemplate(original, { runtimeHome })
+      .replaceAll(
+        "~/.formax/plugins/cache/formax/chrome/latest/scripts/browser-client.mjs",
+        `${displayPath}/plugins/cache/formax/chrome/latest/scripts/browser-client.mjs`
+      )
+      .replaceAll(
+        "${nodeRepl.homeDir}/.formax/plugins/cache/formax/chrome/latest/scripts/browser-client.mjs",
+        "${nodeRepl.homeDir}/" + `${basename}/plugins/cache/formax/chrome/latest/scripts/browser-client.mjs`
+      );
+
+    if (rendered === original) {
+      continue;
+    }
+
+    rewritten.push(relativePath);
+    if (!dryRun) {
+      await fs.writeFile(filePath, rendered, "utf8");
+    }
+  }
+
+  return rewritten;
+}
+
 async function installNodeDependencies(versionDir, dryRun) {
   const nodeModulesDir = path.join(versionDir, "node_modules");
   const packagePath = path.join(versionDir, "package.json");
@@ -430,6 +472,7 @@ async function main() {
   const { copied, missing } = await copyEntries(args.dist, versionDir, entries);
   const selfContained = await rewriteInstalledPackage(versionDir, args.includeDebug, args.dryRun);
   const rewrittenExtensionId = await rewriteInstalledConfig(versionDir, extensionId, args.dryRun);
+  const rewrittenRuntimePaths = await rewriteInstalledRuntimePaths(versionDir, args.installRoot, args.dryRun);
   const dependencyMode = await installNodeDependencies(versionDir, args.dryRun);
   await writeJson(
     path.join(versionDir, "FORMAX-RUNTIME-MANIFEST.json"),
@@ -442,6 +485,7 @@ async function main() {
       debugIncluded: args.includeDebug,
       selfContained,
       rewrittenExtensionId,
+      rewrittenRuntimePaths,
       nodeDependencies: dependencyMode,
       copied,
       missing,
