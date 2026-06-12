@@ -10,21 +10,16 @@ const copyEntries = [
   ["README.md", "README.md"],
   ["config", "config"],
   ["build/extension-host", "extension-host"],
-  ["mcp-node-repl", "mcp-node-repl"],
-  ["extension", "extension"],
-  ["scripts/browser-client.mjs", "scripts/browser-client.mjs"],
+  ["build/extension", "extension"],
+  ["build/runtime/mcp-node-repl", "mcp-node-repl"],
+  ["build/runtime/scripts/browser-client.mjs", "scripts/browser-client.mjs"],
   ["scripts/formax-doctor.js", "scripts/formax-doctor.js"],
   ["scripts/formax-uninstall.js", "scripts/formax-uninstall.js"],
   ["scripts/install-formax-runtime.js", "install.js"],
   ["scripts/extension-ids.js", "extension-ids.js"],
   ["scripts/runtime-path-template.js", "runtime-path-template.js"],
-  ["native-host/com.formax.browserhost.json.example", "native-host/com.formax.browserhost.json.example"],
-  ["native-host/install-linux.sh", "native-host/install-linux.sh"],
-  ["native-host/install-macos.sh", "native-host/install-macos.sh"],
-  ["native-host/install-windows.reg", "native-host/install-windows.reg"],
   ["scripts/check-extension-installed.js", "scripts/check-extension-installed.js"],
   ["scripts/check-native-host-manifest.js", "scripts/check-native-host-manifest.js"],
-  ["tests/scripts/llm-node-repl-chat.js", "tests/scripts/llm-node-repl-chat.js"],
   ["tests/scripts/mcp-node-repl-smoke.js", "tests/scripts/mcp-node-repl-smoke.js"],
   ["docs/api.md", "docs/api.md"],
   ["docs/api-troubleshooting.md", "docs/api-troubleshooting.md"],
@@ -142,7 +137,6 @@ async function main() {
       "mcp:node-repl": "node mcp-node-repl/server.js",
       "doctor": "node scripts/formax-doctor.js",
       "uninstall": "node scripts/formax-uninstall.js",
-      "chat:node-repl": "node tests/scripts/llm-node-repl-chat.js",
       "test:mcp-node-repl": "node tests/scripts/mcp-node-repl-smoke.js"
     },
     dependencies: rootPackage.dependencies || {}
@@ -166,8 +160,7 @@ async function main() {
       skill: "skills/control-chrome/SKILL.md",
       docs: "docs",
       doctor: "scripts/formax-doctor.js",
-      uninstall: "scripts/formax-uninstall.js",
-      debugHarness: "tests/scripts/llm-node-repl-chat.js"
+      uninstall: "scripts/formax-uninstall.js"
     },
     copied,
     missing

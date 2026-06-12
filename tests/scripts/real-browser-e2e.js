@@ -3,7 +3,7 @@
 import http from "node:http";
 import { fileURLToPath } from "node:url";
 import { inflateSync } from "node:zlib";
-import { createBrowserClient } from "../../mcp-node-repl/browser-client.js";
+import { createBrowserClient } from "../../build/runtime/mcp-node-repl/browser-client.js";
 import {
   browserClearEvents,
   browserClick,
@@ -43,7 +43,7 @@ import {
   browserWaitForSelector,
   browserWaitForText,
   browserWaitForUrl
-} from "../../agent/browserTools.js";
+} from "../../build/runtime/agent/browserTools.js";
 
 const KEEP_TABS = process.env.KEEP_TABS === "1";
 const HOST = "127.0.0.1";

@@ -11,7 +11,7 @@ import {
   browserWaitForLoadState,
   browserWaitForText,
   browserWaitForUrl
-} from "../../agent/browserTools.js";
+} from "../../build/runtime/agent/browserTools.js";
 
 const KEEP_TABS = process.env.KEEP_TABS === "1";
 const SIGNED_IN_URL = process.env.FORMAX_REAL_SITE_SIGNED_IN_URL || "";

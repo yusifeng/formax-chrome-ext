@@ -12,8 +12,11 @@ agent tool schemas, and tests.
 
 ## Source Layout
 
-- `extension/`: Chrome MV3 extension sources. TypeScript compiles to adjacent
-  JavaScript files that the unpacked extension loads.
+- `extension/`: Chrome MV3 extension sources and static assets.
+- `build/extension/`: compiled unpacked-extension output that Chrome should load
+  during local development.
+- `build/runtime/`: compiled runtime output for `agent/`, `mcp-node-repl/`, and
+  `shared/`.
 - `mcp-node-repl/`: persistent Node-backed MCP server and browser-client bridge.
 - `agent/`: agent-facing browser tool wrappers plus manual and LLM smoke scripts.
 - `shared/`: shared schemas, types, policies, session store, and protocol docs.
@@ -32,10 +35,11 @@ npm run build
 
 to build both runtime TypeScript and extension TypeScript.
 
-Runtime JavaScript files under `extension/`, `agent/`, `mcp-node-repl/`, and
-`shared/` are generated in place by TypeScript and are intentionally not
-tracked by git. Keep editing the `.ts` sources, then run `npm run build` before
-reloading the unpacked extension or running Node entrypoints directly.
+Runtime JavaScript files for `agent/`, `mcp-node-repl/`, and `shared/` emit
+into `build/runtime/` and are intentionally not tracked by git. The Chrome
+extension build emits into `build/extension/`. Keep editing the `.ts` sources,
+then run `npm run build` before reloading the unpacked extension or running
+Node entrypoints directly.
 
 Use:
 
@@ -45,6 +49,14 @@ npm test
 ```
 
 for normal validation. `npm test` builds the runtime before running Vitest.
+
+Vitest layering:
+
+- Default unit tests should import and exercise TypeScript source modules, not
+  `build/` outputs.
+- Use `build/` or `dist/` only for artifact-oriented tests that intentionally
+  verify compiled extension scripts, bundled MCP/runtime entrypoints, packaged
+  layout, or other post-build behavior.
 
 Use:
 
@@ -63,8 +75,8 @@ npm run test:real
 ```
 
 only after the extension and native host are installed and the extension popup
-shows `Connected`. Reload the unpacked extension in `chrome://extensions` after
-rebuilding extension files.
+shows `Connected`. Reload the unpacked extension in `chrome://extensions` from
+`build/extension/` after rebuilding extension files.
 
 For the local unpacked development extension flow, use:
 
@@ -86,8 +98,7 @@ dchkbbjmkheilkmencpckilhmmcppdne
 Keep this value in sync with:
 
 - `config/extension-id.json`
-- `native-host/com.formax.browserhost.json.example`
-- generated native messaging manifests created by `native-host/install-macos.sh` or `native-host/install-linux.sh`
+- generated native messaging manifests written by `scripts/install-formax-runtime.js`
 
 The native messaging host manifest must include:
 

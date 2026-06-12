@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { browserHealth, browserReloadExtension } from "../agent/browserTools.js";
+import { browserHealth, browserReloadExtension } from "../build/runtime/agent/browserTools.js";
 import { resolveExtensionId } from "./extension-ids.js";
 
 function parseArgs(argv) {

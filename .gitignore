@@ -22,12 +22,8 @@ dist/
 build/
 .vite/
 
-# TypeScript runtime output generated in-place by npm run build.
+# TypeScript build output now emits into build/extension and build/runtime.
 # Keep hand-written scripts in scripts/ and tests/scripts/ tracked.
-/agent/*.js
-/extension/*.js
-/mcp-node-repl/*.js
-/shared/*.js
 
 # Rust build artifacts
 rust/**/target/

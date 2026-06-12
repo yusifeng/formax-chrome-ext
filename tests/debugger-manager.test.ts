@@ -43,7 +43,7 @@ function loadDebuggerManager(options?: {
 }) {
   const calls: DebuggerCall[] = [];
   const sendCommand = options?.sendCommand ?? (async () => ({ ok: true }));
-  const source = fs.readFileSync(path.join(root, "extension/debugger-manager.js"), "utf8");
+  const source = fs.readFileSync(path.join(root, "build/extension/debugger-manager.js"), "utf8");
   const context = vm.createContext({
     chrome: {
       debugger: {

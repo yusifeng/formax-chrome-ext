@@ -118,7 +118,6 @@ const debugEntries = [
   ["package-lock.json", "package-lock.json"],
   ["extension", "extension"],
   ["native-host", "native-host"],
-  ["tests/scripts/llm-node-repl-chat.js", "tests/scripts/llm-node-repl-chat.js"],
   ["tests/scripts/mcp-node-repl-smoke.js", "tests/scripts/mcp-node-repl-smoke.js"],
   ["notes/prompts/handoff.md", "notes/prompts/handoff.md"],
   ["notes/prompts/browser-node-repl-system.md", "notes/prompts/browser-node-repl-system.md"],

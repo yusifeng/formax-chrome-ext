@@ -5,8 +5,8 @@ import path from "node:path";
 import { build } from "esbuild";
 
 const root = process.cwd();
-const entry = path.join(root, "mcp-node-repl", "browser-client.js");
-const outfile = path.join(root, "scripts", "browser-client.mjs");
+const entry = path.join(root, "build", "runtime", "mcp-node-repl", "browser-client.js");
+const outfile = path.join(root, "build", "runtime", "scripts", "browser-client.mjs");
 
 await fs.mkdir(path.dirname(outfile), { recursive: true });
 

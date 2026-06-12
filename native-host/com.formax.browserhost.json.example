@@ -1,9 +1,0 @@
-{
-  "name": "com.formax.browserhost",
-  "description": "Formax Native Host",
-  "path": "/ABSOLUTE/PATH/TO/formax-extension/extension-host/macos/arm64/extension-host",
-  "type": "stdio",
-  "allowed_origins": [
-    "chrome-extension://dchkbbjmkheilkmencpckilhmmcppdne/"
-  ]
-}

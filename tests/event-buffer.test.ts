@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 function loadEventBuffer() {
-  const source = fs.readFileSync(path.join(root, "extension/event-buffer.js"), "utf8");
+  const source = fs.readFileSync(path.join(root, "build/extension/event-buffer.js"), "utf8");
   const context = vm.createContext({
     Date,
   });

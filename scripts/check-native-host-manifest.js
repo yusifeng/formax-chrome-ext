@@ -166,7 +166,7 @@ async function main() {
     errors,
     repairHint: ok
       ? null
-      : "Run native-host/install-macos.sh or node scripts/install-formax-runtime.js with the correct --extension-id, then rerun this check.",
+      : "Run node scripts/install-formax-runtime.js with the correct --extension-id, then rerun this check.",
   };
 
   if (args.json) {

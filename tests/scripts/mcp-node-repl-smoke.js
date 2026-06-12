@@ -1,8 +1,26 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+
+function resolveFirstExistingPath(candidates) {
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  throw new Error(`Could not find any expected runtime path: ${candidates.join(", ")}`);
+}
+
+const serverEntry = resolveFirstExistingPath([
+  "build/runtime/mcp-node-repl/server.js",
+  "mcp-node-repl/server.js"
+]);
+const browserClientSpecifier = fs.existsSync("./build/runtime/scripts/browser-client.mjs")
+  ? "./build/runtime/scripts/browser-client.mjs"
+  : "./scripts/browser-client.mjs";
 
 const client = new Client({
   name: "formax-node-repl-smoke-test",
@@ -11,7 +29,7 @@ const client = new Client({
 
 const transport = new StdioClientTransport({
   command: process.execPath,
-  args: ["mcp-node-repl/server.js"],
+  args: [serverEntry],
   cwd: process.cwd(),
   stderr: "pipe"
 });
@@ -80,7 +98,7 @@ try {
       name: "js",
       arguments: {
         code: [
-          "const runtime = await import('./scripts/browser-client.mjs');",
+          `const runtime = await import(${JSON.stringify(browserClientSpecifier)});`,
           "await runtime.setupBrowserRuntime({ globals: globalThis });",
           "const extensionBrowser = await agent.browsers.get('extension');",
           "return {",

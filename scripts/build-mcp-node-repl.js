@@ -7,12 +7,12 @@ const root = process.cwd();
 
 const bundles = [
   {
-    entry: path.join(root, "mcp-node-repl", "server.js"),
-    outfile: path.join(root, "mcp-node-repl", "server.js"),
+    entry: path.join(root, "build", "runtime", "mcp-node-repl", "server.js"),
+    outfile: path.join(root, "build", "runtime", "mcp-node-repl", "server.js"),
   },
   {
-    entry: path.join(root, "mcp-node-repl", "kernel-child.js"),
-    outfile: path.join(root, "mcp-node-repl", "kernel-child.js"),
+    entry: path.join(root, "build", "runtime", "mcp-node-repl", "kernel-child.js"),
+    outfile: path.join(root, "build", "runtime", "mcp-node-repl", "kernel-child.js"),
   },
 ];
 

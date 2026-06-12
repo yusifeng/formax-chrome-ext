@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import process from "node:process";
-import { setupBrowserRuntime } from "../../scripts/browser-client.mjs";
+import { setupBrowserRuntime } from "../../build/runtime/scripts/browser-client.mjs";
 
 function parseArgs(argv) {
   const args = {
